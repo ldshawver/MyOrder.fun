@@ -594,17 +594,11 @@ function verifyWriterSet(compose) {
   return idsByService;
 }
 
-function stopAndVerifyWriters(compose) {
-  const apiId = run("docker", [
-    ...compose.args,
-    "ps",
-    "--all",
-    "--quiet",
-    "api",
-  ]).trim();
+function stopAndVerifyWriters(compose, containerBaseline) {
+  const apiId = containerBaseline?.get("api")?.id;
   if (!apiId)
     throw new Error(
-      "Production API container disappeared during writer shutdown",
+      "Verified production API container identity is unavailable during writer shutdown",
     );
   const running = run("docker", [
     "inspect",
@@ -614,13 +608,7 @@ function stopAndVerifyWriters(compose) {
   ]).trim();
   if (running !== "false")
     throw new Error("Production API writer did not stop");
-  const nginxId = run("docker", [
-    ...compose.args,
-    "ps",
-    "--all",
-    "--quiet",
-    "nginx",
-  ]).trim();
+  const nginxId = containerBaseline?.get("nginx")?.id;
   if (
     !nginxId ||
     run("docker", [
@@ -653,17 +641,10 @@ function verifyProductionPayPalDisabled(compose) {
   assertNoEncryptedProductionPayPalSettings(Number(encryptedSettings));
 }
 
-function safePrintAssetsCopy(compose, sharedRoot) {
-  const apiId = run("docker", [
-    ...compose.args,
-    "ps",
-    "--all",
-    "--quiet",
-    "api",
-  ]).trim();
+function safePrintAssetsCopy(apiId, sharedRoot) {
   if (!apiId)
     throw new Error(
-      "Existing API container missing; cannot preserve print assets",
+      "Verified API container identity is unavailable; cannot preserve print assets",
     );
   const destination = path.join(sharedRoot, "print-assets");
   if (existsSync(destination))
@@ -1331,8 +1312,8 @@ async function main() {
       run("docker", ["stop", apiId]);
     },
     "verify-writers-stopped": async () => {
-      stopAndVerifyWriters(compose);
-      safePrintAssetsCopy(compose, sharedRoot);
+      stopAndVerifyWriters(compose, containerBaseline);
+      safePrintAssetsCopy(containerBaseline.get("api").id, sharedRoot);
     },
     snapshot: async () => {
       snapshot.value = createSnapshot(compose, backupRoot);
