@@ -738,7 +738,7 @@ const CSR_INVENTORY_EXCLUDED_NAMES = new Set([
 ]);
 
 function isCsrInventoryExcludedName(name: string | null | undefined): boolean {
-  return typeof name === "string" && CSR_INVENTORY_EXCLUDED_NAMES.has(name.trim().toLowerCase().replace(/\\s+/g, " "));
+  return typeof name === "string" && CSR_INVENTORY_EXCLUDED_NAMES.has(name.trim().toLowerCase().replace(/\s+/g, " "));
 }
 
 async function ensureClockInInventoryTemplate(tenantId: number): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
