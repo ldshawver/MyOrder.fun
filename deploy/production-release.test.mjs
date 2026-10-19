@@ -18,6 +18,7 @@ import {
   assertNoEncryptedProductionPayPalSettings,
   executeProductionSequence,
   mayRestoreRollbackApi,
+  sameWriterInventory,
 } from "./production-release.mjs";
 
 const releaseRoot = path.join(PRODUCTION.root, "releases", APPROVED_RELEASE.sha);
@@ -304,6 +305,46 @@ test("deployment ordering stops all writers and verifies the protected snapshot 
   assert.ok(
     observed.indexOf("verify-api") < observed.indexOf("start-platform-proxy"),
   );
+});
+
+test("writer inventory recheck ignores runtime churn but rejects identity changes", () => {
+  const baseline = new Map([
+    ["api", {
+      id: "api-container",
+      image: "myorder-api@sha256:api",
+      imageId: "sha256:api",
+      revision: "release-sha",
+      running: true,
+      restartCount: 16,
+      oomKilled: false,
+    }],
+    ["db", {
+      id: "db-container",
+      image: "postgres:16",
+      imageId: "sha256:db",
+      revision: "db-revision",
+      running: true,
+      restartCount: 0,
+      oomKilled: false,
+    }],
+  ]);
+  const runtimeChanged = new Map([
+    ["api", {
+      ...baseline.get("api"),
+      running: false,
+      restartCount: 17,
+    }],
+    ["db", { ...baseline.get("db"), restartCount: 1 }],
+  ]);
+  assert.equal(sameWriterInventory(baseline, runtimeChanged), true);
+
+  const replaced = new Map(runtimeChanged);
+  replaced.set("api", { ...runtimeChanged.get("api"), id: "replacement-container" });
+  assert.equal(sameWriterInventory(baseline, replaced), false);
+
+  const wrongImage = new Map(runtimeChanged);
+  wrongImage.set("api", { ...runtimeChanged.get("api"), imageId: "sha256:other" });
+  assert.equal(sameWriterInventory(baseline, wrongImage), false);
 });
 
 for (const failedGate of [
