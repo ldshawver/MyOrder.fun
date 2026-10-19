@@ -1322,8 +1322,13 @@ async function main() {
         );
     },
     "stop-writers": async () => {
+      const nginxId = containerBaseline?.get("nginx")?.id;
+      const apiId = containerBaseline?.get("api")?.id;
+      if (!nginxId || !apiId)
+        throw new Error("Verified production API/ingress container IDs are unavailable");
       apiStopAttempted = true;
-      run("docker", [...compose.args, "stop", "nginx", "api"]);
+      run("docker", ["stop", nginxId]);
+      run("docker", ["stop", apiId]);
     },
     "verify-writers-stopped": async () => {
       stopAndVerifyWriters(compose);
