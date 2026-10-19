@@ -47,6 +47,12 @@ jobs:
           test "$(git rev-parse HEAD^{tree})" = "c2851c74077f94e189867b574a3f1aef244f61cc"
           test "$RELEASE_TREE" = "c2851c74077f94e189867b574a3f1aef244f61cc"
 
+      - name: Overlay deployment-only static assertions
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts" \
+            > artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
