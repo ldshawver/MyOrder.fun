@@ -35,13 +35,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.release_sha || '3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb' }}
-  - name: Connect to Tailscale
-  uses: tailscale/github-action@v4
-  with:
-    oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-    oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-    tags: tag:github-actions
-    
+
       - name: Verify frozen release identity
         env:
           RELEASE_SHA: ${{ inputs.release_sha || '3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb' }}
@@ -86,7 +80,6 @@ jobs:
 
       - name: Run tests
         run: pnpm test
-
 
   release-tooling:
     name: Release controller tests
