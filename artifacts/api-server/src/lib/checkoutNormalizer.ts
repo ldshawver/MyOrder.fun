@@ -195,6 +195,14 @@ export async function normalizeCheckoutCart(
         `Catalog item ${line.catalogItemId} is not available for purchase`);
     }
 
+    const lifecycle = ci.metadata && typeof ci.metadata === "object" && !Array.isArray(ci.metadata)
+      ? ci.metadata as Record<string, unknown> : {};
+    if (lifecycle.complianceHold === true || lifecycle.archived === true || lifecycle.safeOnlyDuplicate === true
+      || lifecycle.mergedIntoCatalogItemId != null || lifecycle.isVisible === false) {
+      throw new CheckoutMappingError(line.catalogItemId, "item_unavailable",
+        `Catalog item ${line.catalogItemId} is not available for purchase`);
+    }
+
     const merchantBrand = inferMerchantBrand(ci);
     const isWooManaged = ci.isWooManaged === true;
     const source_type: "local_mapped" | "woo" = isWooManaged ? "woo" : "local_mapped";

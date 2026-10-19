@@ -1,4 +1,5 @@
 import { logger } from "./logger";
+import { isWooCommerceExternalIntegrationEnabled } from "./wooExternalPolicy";
 
 interface WooOrderLine {
   product_id: string;
@@ -23,6 +24,10 @@ function getWooCredentials(): { storeUrl: string; consumerKey: string; consumerS
 }
 
 export async function createWooOrder(params: CreateWooOrderParams): Promise<string | null> {
+  if (!isWooCommerceExternalIntegrationEnabled()) {
+    logger.info({ orderId: params.orderId }, "WooCommerce external integration is disabled");
+    return null;
+  }
   const creds = getWooCredentials();
   if (!creds) {
     logger.info({ orderId: params.orderId }, "WooCommerce credentials not configured — skipping woo order dispatch");

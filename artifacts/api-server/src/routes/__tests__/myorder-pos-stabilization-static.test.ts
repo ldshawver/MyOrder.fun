@@ -242,28 +242,45 @@ describe("receipts and deploy workflow", () => {
     expect(routesIndex.indexOf("router.use(aiRouter)")).toBeLessThan(routesIndex.indexOf("router.use(auditRouter)"));
   });
 
-  it("uses safer deploy flow and OAuth Tailscale tags", () => {
+  it("uses Tailscale-only production SSH with pinned host keys", () => {
     const deploy = src(".github/workflows/deploy.yml");
-    for (const required of ["VPS_KNOWN_HOSTS", "VPS_TAILSCALE_HOST", "VPS_PORT", "SELECTED_VPS_HOST", "SELECTED_VPS_PORT", "tags: tag:github-actions"]) {
+    for (const required of [
+      "VPS_KNOWN_HOSTS",
+      "VPS_TAILSCALE_HOST: 100.85.15.43",
+      "Verify Tailscale route to production SSH",
+      "tags: tag:github-actions",
+      "StrictHostKeyChecking=yes",
+      "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS",
+      "production_confirmation:",
+      "environment: production",
+      "production-release.mjs",
+      "release_sha:",
+      "release_tree:",
+      "RELEASE_BASE_SHA: 8744d8e34ab8627555919aec337abde0c3291e0f",
+      "RELEASE_BASE_TREE: 86c004b66acf42c5394fbfddde807e1882edafba",
+      "RELEASE_SHA: ${{ inputs.release_sha }}",
+      "RELEASE_TREE: ${{ inputs.release_tree }}",
+      "test \"$RELEASE_SHA\" = \"$GITHUB_SHA\"",
+      "git merge-base --is-ancestor",
+      "MYORDER-RELEASE-IDENTITY.json",
+    ]) {
       expect(deploy).toContain(required);
     }
-    expect(deploy).toContain("secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin'");
-    expect(deploy).toContain("DEPLOY_PATH: /opt/alavont");
-    expect(deploy).toContain("COMPOSE_PROJECT_NAME: deploy");
-    expect(deploy).toContain("production_confirmation:");
-    expect(deploy).toContain("environment: production");
-    expect(deploy).toContain("git archive --format=tar");
-    expect(deploy).toContain("production-release.mjs");
-    expect(deploy).toContain("--authorized");
-    expect(deploy).toContain("--release-sha");
-    expect(deploy).toContain("--release-tree");
-    expect(deploy).toContain("--tooling-sha");
-    expect(deploy).toContain("StrictHostKeyChecking=yes");
-    expect(deploy).not.toContain("VPS_HOST_FALLBACK");
-    expect(deploy).not.toMatch(/rsync[^\n]*--delete|rsync\s+-[^\n]*delete/);
-    expect(deploy).toContain("https://myorder.fun/api/healthz");
-    expect(deploy).toContain("RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360");
-    expect(deploy).toContain("Public health check passed with expected release SHA");
+    expect(deploy).toContain("uses: tailscale/github-action@v4");
+    expect(deploy).toContain("oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}");
+    expect(deploy).toContain("oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}");
+    expect(deploy).toContain("nc -z -w 5 \"$VPS_TAILSCALE_HOST\" \"$VPS_PORT\"");
+    expect(deploy).toMatch(/ssh-keygen\s*\\?\s*-F\s+"\$VPS_SSH_HOST_KEY_ALIAS"/);
+    for (const forbidden of [
+      "VPS_HOST_FALLBACK",
+      "StrictHostKeyChecking=accept-new",
+      "Primary VPS_HOST failed",
+      "Trying fallback",
+      "Select reachable VPS host",
+      "ssh-keyscan",
+    ]) {
+      expect(deploy).not.toContain(forbidden);
+    }
     expect(deploy).not.toMatch(/docker compose down/);
     expect(deploy).not.toContain("/root/lux-email-bot");
     expect(deploy).not.toContain("luxit.service");

@@ -1,5 +1,15 @@
 # P0 owner approval hotfix release procedure
 
+> **Superseded historical procedure.** This file describes the earlier
+> production 0067-only hotfix release and must not be used for the current
+> release. The current lineage, owner configuration, P0 patch scope, and
+> separate staging/production plans are in
+> [RELEASE-CONVERGENCE.md](./RELEASE-CONVERGENCE.md). Production already has
+> the P0 marker/provenance schema and requires forward migrations 0068–0076;
+> staging has 0075/0076 but still requires the separately approved P0 patch.
+> No command below authorizes or directs a current staging or production
+> operation.
+
 ## Release identity and migration scope
 
 The current production API revision reported for this recovery is `364bcc72e1da9109a7b2933e818f17af8a8162c3`. The current production platform revision reported for this recovery is `579cce225c0f9e7bee41a4c226d43e5ba5c86606`. These are the deployed versions to record during preflight; neither should be treated as the target. The target API and platform revision is the exact full SHA of the final reviewed PR #147 head after this runbook and code have passed CI. Record that SHA in the release manifest and require both replacement images to carry it in their revision labels.

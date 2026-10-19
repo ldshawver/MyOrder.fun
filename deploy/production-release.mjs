@@ -20,10 +20,27 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const FROZEN_RELEASE = Object.freeze({
-  sha: "65a85f2f82daf9f30a07f1a2de13092d5be80360",
-  tree: "0411a10aa3326308bc480ff2fd15ecca037419bf",
+  // Immutable forward-release base. The protected workflow supplies and
+  // attests the exact successor SHA/tree; this base must remain in ancestry.
+  sha: "8744d8e34ab8627555919aec337abde0c3291e0f",
+  tree: "86c004b66acf42c5394fbfddde807e1882edafba",
 });
-export const ROLLBACK_SHA = "579cce225c0f9e7bee41a4c226d43e5ba5c86606";
+export const APPROVED_RELEASE = Object.freeze({
+  sha: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+  tree: "76bb2bc969450206f0be4754a6ef95434cd27b4a",
+  images: Object.freeze({
+    api: "sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
+    platform: "sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13",
+    migrate: "sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
+  }),
+});
+export const PRODUCTION_BASELINE = Object.freeze({
+  apiImage: "sha256:49cb8da488e00ebb58cd027d5c703768af17c5ec2b053fe028c99362d75d768d",
+  apiRevision: "8a3e1ccd8e132425ad82163a14ca67c53ba745b2",
+  platformImage: "sha256:e9362c335f4f7a8de8db03673d63afb4c8c1e46d7cc5bed9fe45afc5221765e6",
+  platformRevision: "579cce225c0f9e7bee41a4c226d43e5ba5c86606",
+});
+let releaseIdentity = APPROVED_RELEASE;
 export const PRODUCTION = Object.freeze({
   root: "/opt/alavont",
   project: "deploy",
@@ -35,7 +52,7 @@ export const PRODUCTION = Object.freeze({
 
 export const PRODUCTION_STEPS = Object.freeze([
   "validate",
-  "build",
+  "verify-release-images",
   "validate-lineage",
   "verify-writer-inventory",
   "stop-writers",
@@ -59,6 +76,8 @@ export const EXPECTED_PRODUCTION_MIGRATIONS = Object.freeze([
   "0072_order_created_notifications",
   "0073_admin_settings_tenant_uniqueness",
   "0074_tenant_slug_case_insensitive_unique",
+  "0075_catalogue_variant_attributes",
+  "0076_tenant_woo_store_url_no_default",
 ]);
 
 export function assertRelease({
@@ -67,13 +86,17 @@ export function assertRelease({
   releaseRoot,
   archivePath,
   archiveSha256,
+  baseSha = FROZEN_RELEASE.sha,
+  baseTree = FROZEN_RELEASE.tree,
 }) {
-  if (sha !== FROZEN_RELEASE.sha || tree !== FROZEN_RELEASE.tree)
-    throw new Error("Release identity is not the frozen Release 1 commit/tree");
+  if (baseSha !== FROZEN_RELEASE.sha || baseTree !== FROZEN_RELEASE.tree || !/^[a-f0-9]{40}$/.test(sha ?? "") || !/^[a-f0-9]{40}$/.test(tree ?? ""))
+    throw new Error("Release identity is invalid or does not descend from the frozen forward base");
+  if (sha !== APPROVED_RELEASE.sha || tree !== APPROVED_RELEASE.tree)
+    throw new Error("Release identity does not match the approved immutable candidate");
   const expectedRoot = path.join(
     PRODUCTION.root,
     "releases",
-    FROZEN_RELEASE.sha,
+    releaseIdentity.sha,
   );
   if (path.resolve(releaseRoot) !== expectedRoot)
     throw new Error(
@@ -86,6 +109,13 @@ export function assertRelease({
     );
   if (!/^[a-f0-9]{64}$/.test(archiveSha256))
     throw new Error("Invalid release archive checksum");
+  return true;
+}
+
+export function assertReleaseIdentityManifest(identity, expected) {
+  if (identity?.baseSha !== FROZEN_RELEASE.sha || identity?.baseTree !== FROZEN_RELEASE.tree ||
+      identity?.sha !== expected?.sha || identity?.tree !== expected?.tree)
+    throw new Error("Packaged release commit/tree does not match the protected candidate identity");
   return true;
 }
 
@@ -124,10 +154,21 @@ export function assertProductionConfig(config, expected) {
     "CLERK_PUBLISHABLE_KEY",
     "SESSION_SECRET",
     "SETTINGS_ENC_KEY",
+    "MYORDER_OWNER_CLERK_ID",
   ]) {
     if (typeof api[name] !== "string" || api[name].trim() === "")
       throw new Error(`Required production setting is missing: ${name}`);
   }
+  if (!/^user_[A-Za-z0-9_-]+$/.test(api.MYORDER_OWNER_CLERK_ID))
+    throw new Error("Production owner Clerk subject is invalid");
+  if (api.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED !== "false")
+    throw new Error("Production WooCommerce external integration must remain explicitly disabled for this release");
+  if (
+    api.RECEIPT_PRINT_ENABLED !== "false" ||
+    api.LABEL_PRINT_ENABLED !== "false" ||
+    api.ORDER_NOTIFICATION_WORKER_ENABLED !== "0"
+  )
+    throw new Error("Production printing and outbound notification worker must remain disabled for this release");
   if (
     typeof db.POSTGRES_PASSWORD !== "string" ||
     db.POSTGRES_PASSWORD.trim() === ""
@@ -177,6 +218,46 @@ export function assertProductionConfig(config, expected) {
     config.services.platform.image !== expected.platformImage
   )
     throw new Error("Platform image does not match frozen release SHA");
+  if (expected?.migrateImage && config.services.migrate.image !== expected.migrateImage)
+    throw new Error("Migration image does not match frozen release SHA");
+  return true;
+}
+
+function approvedImageReference(service) {
+  return `myorder-${service}@${APPROVED_RELEASE.images[service]}`;
+}
+
+function releaseComposeEnvironment() {
+  return {
+    ...process.env,
+    DEPLOY_SHA: releaseIdentity.sha,
+    MYORDER_API_IMAGE: approvedImageReference("api"),
+    MYORDER_PLATFORM_IMAGE: approvedImageReference("platform"),
+    MYORDER_MIGRATE_IMAGE: approvedImageReference("migrate"),
+    WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "false",
+  };
+}
+
+function verifyApprovedReleaseImages() {
+  for (const service of ["api", "platform", "migrate"]) {
+    const reference = approvedImageReference(service);
+    let image;
+    try {
+      image = JSON.parse(run("docker", ["image", "inspect", reference]))[0];
+    } catch {
+      throw new Error(`Approved ${service} image is unavailable by immutable digest`);
+    }
+    if (
+      image.Id !== APPROVED_RELEASE.images[service] ||
+      image.Os !== "linux" ||
+      image.Architecture !== "amd64" ||
+      image.Config?.Labels?.["org.opencontainers.image.revision"] !== APPROVED_RELEASE.sha ||
+      image.Config?.Labels?.["com.myorder.deploy-sha"] !== APPROVED_RELEASE.sha
+    )
+      throw new Error(`Approved ${service} image metadata does not match the frozen release`);
+    if (!Array.isArray(image.RepoDigests) || !image.RepoDigests.includes(reference))
+      throw new Error(`Approved ${service} immutable digest reference is unavailable`);
+  }
   return true;
 }
 
@@ -289,12 +370,13 @@ function composeArgs(releaseRoot, envFile, overlayFile) {
 function validateComposeRuntimeConfig(releaseRoot, envFile, overlayFile) {
   const args = composeArgs(releaseRoot, envFile, overlayFile);
   const output = run("docker", [...args, "config", "--format", "json"], {
-    env: { ...process.env, DEPLOY_SHA: FROZEN_RELEASE.sha },
+    env: releaseComposeEnvironment(),
   });
   const config = JSON.parse(output);
   assertProductionConfig(config, {
-    apiImage: `myorder-api:${FROZEN_RELEASE.sha}`,
-    platformImage: `myorder-platform:${FROZEN_RELEASE.sha}`,
+    apiImage: approvedImageReference("api"),
+    platformImage: approvedImageReference("platform"),
+    migrateImage: approvedImageReference("migrate"),
   });
   if (
     config.services.api.volumes?.some((value) =>
@@ -340,7 +422,7 @@ function query(compose, sql, env = {}) {
       "-Atc",
       sql,
     ],
-    { env: { ...process.env, DEPLOY_SHA: FROZEN_RELEASE.sha, ...env } },
+    { env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha, ...env } },
   ).trim();
 }
 
@@ -370,6 +452,8 @@ function verifyWriterSet(compose) {
       oomKilled: container.State?.OOMKilled,
       running: container.State?.Running,
       image: container.Config?.Image,
+      imageId: container.Image,
+      revision: labels["org.opencontainers.image.revision"],
     });
   }
   const expected = ["api", "db", "migrate", "nginx", "platform"].sort();
@@ -377,14 +461,16 @@ function verifyWriterSet(compose) {
     throw new Error(
       `Unexpected production project services; expected ${expected.join(",")}`,
     );
-  if (idsByService.get("api")?.image !== `myorder-api:${ROLLBACK_SHA}`)
-    throw new Error("Current production API is not the recorded rollback SHA");
   if (
-    idsByService.get("platform")?.image !== `myorder-platform:${ROLLBACK_SHA}`
+    idsByService.get("api")?.imageId !== PRODUCTION_BASELINE.apiImage ||
+    idsByService.get("api")?.revision !== PRODUCTION_BASELINE.apiRevision
   )
-    throw new Error(
-      "Current production platform is not the recorded rollback SHA",
-    );
+    throw new Error("Current production API does not match the recorded pre-release rollback image");
+  if (
+    idsByService.get("platform")?.imageId !== PRODUCTION_BASELINE.platformImage ||
+    idsByService.get("platform")?.revision !== PRODUCTION_BASELINE.platformRevision
+  )
+    throw new Error("Current production Platform does not match the recorded pre-release rollback image");
   if (idsByService.get("migrate")?.running)
     throw new Error("A production migration container is already running");
   for (const id of run("docker", ["ps", "--all", "--quiet"])
@@ -561,7 +647,7 @@ function createSnapshot(compose, backupRoot) {
   const releaseRoot = path.join(
     PRODUCTION.root,
     "releases",
-    FROZEN_RELEASE.sha,
+    releaseIdentity.sha,
   );
   if (path.resolve(backupRoot).startsWith(releaseRoot + path.sep))
     throw new Error("Snapshot path cannot be inside the disposable release");
@@ -581,7 +667,7 @@ function createSnapshot(compose, backupRoot) {
     .replace(/\.\d{3}/, "");
   const archive = path.join(
     backupRoot,
-    `alavont-before-${FROZEN_RELEASE.sha}-${stamp}.dump`,
+    `alavont-before-${releaseIdentity.sha}-${stamp}.dump`,
   );
   const partial = `${archive}.partial`;
   const dbUser = String(compose.config.services.db.environment.POSTGRES_USER);
@@ -622,7 +708,7 @@ function createSnapshot(compose, backupRoot) {
         "--no-acl",
       ],
       {
-        env: { ...process.env, DEPLOY_SHA: FROZEN_RELEASE.sha },
+        env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha },
         stdio: ["ignore", fd, "pipe"],
       },
     );
@@ -643,7 +729,7 @@ function createSnapshot(compose, backupRoot) {
     "docker",
     [...compose.args, "exec", "-T", "db", "pg_restore", "--list", "-"],
     {
-      env: { ...process.env, DEPLOY_SHA: FROZEN_RELEASE.sha },
+      env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha },
       stdio: [tocInputFd, tocFd, "pipe"],
     },
   );
@@ -660,7 +746,7 @@ function createSnapshot(compose, backupRoot) {
   });
   writeFileSync(
     `${archive}.metadata.json`,
-    `${JSON.stringify({ sourceSha: ROLLBACK_SHA, targetSha: FROZEN_RELEASE.sha, targetTree: FROZEN_RELEASE.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 42, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({ sourceApiRevision: PRODUCTION_BASELINE.apiRevision, sourceApiImage: PRODUCTION_BASELINE.apiImage, sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision, sourcePlatformImage: PRODUCTION_BASELINE.platformImage, targetSha: releaseIdentity.sha, targetTree: releaseIdentity.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 42, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
     { flag: "wx", mode: 0o600 },
   );
   chmodSync(partial, 0o600);
@@ -843,14 +929,16 @@ function verifyMigration(compose) {
     compose,
     "SELECT substring(hash from 1 for 0) || id::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (actual.split("\n").length !== 49)
-    throw new Error("Production migration ledger count is not 49");
+  if (actual.split("\n").length !== 51)
+    throw new Error("Production migration ledger count is not 51");
   const journal = JSON.parse(
     readFileSync(
       path.join(compose.releaseRoot, "lib/db/drizzle/meta/_journal.json"),
       "utf8",
     ),
   );
+  if (journal.entries.length !== 51)
+    throw new Error("Candidate migration journal must contain all 51 canonical entries through 0076");
   if (
     expected.some((tag) => !journal.entries.some((entry) => entry.tag === tag))
   )
@@ -869,15 +957,45 @@ function verifyMigration(compose) {
       "@workspace/db",
       "db:validate-migrations",
     ],
-    { env: { ...process.env, DEPLOY_SHA: FROZEN_RELEASE.sha } },
+    { env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha } },
   );
   for (const tag of expected)
     if (!validator.includes(`APPLIED ${tag} `))
       throw new Error(`Post-migration validator did not confirm ${tag}`);
-  if (!validator.includes("production prefix preserved: 49/49"))
+  if (!validator.includes("recognized lineage preserved: 51/51"))
     throw new Error(
-      "Post-migration validator did not confirm the complete production prefix",
+      "Post-migration validator did not confirm the complete candidate migration lineage",
     );
+  const candidateSchema = query(compose, `
+    SELECT
+      EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='catalogue_options' AND column_name='option_values' AND udt_name='jsonb')
+      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='catalog_items' AND column_name='barcode' AND udt_name='text')
+      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='order_items' AND column_name='variant_snapshot' AND udt_name='jsonb')
+      AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='catalog_items_tenant_sku_ci_unique' AND i.indisunique AND i.indisvalid AND i.indisready)
+      AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='catalog_items_tenant_woo_variation_unique' AND i.indisunique AND i.indisvalid AND i.indisready)
+      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='admin_settings' AND column_name='wc_webhook_secret')
+      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='admin_settings' AND column_name='wc_store_url' AND column_default IS NULL)
+      AND to_regclass('public.woocommerce_webhook_events') IS NOT NULL
+      AND (SELECT count(*)=12 FROM information_schema.columns WHERE table_schema='public' AND table_name='woocommerce_webhook_events')
+      AND NOT EXISTS (
+        SELECT 1 FROM (VALUES
+          ('id','int8','NO'), ('tenant_id','int4','NO'), ('delivery_id','text','NO'),
+          ('topic','text','NO'), ('product_id','text','NO'), ('payload_sha256','text','NO'),
+          ('status','text','NO'), ('attempt_count','int4','NO'), ('error_code','text','YES'),
+          ('created_at','timestamptz','NO'), ('updated_at','timestamptz','NO'), ('processed_at','timestamptz','YES')
+        ) AS expected(column_name, udt_name, is_nullable)
+        WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema='public'
+          AND c.table_name='woocommerce_webhook_events' AND c.column_name=expected.column_name
+          AND c.udt_name=expected.udt_name AND c.is_nullable=expected.is_nullable)
+      )
+      AND (SELECT count(*)=3 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND contype IN ('p','c','u'))
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND conname='woocommerce_webhook_events_tenant_id_fkey' AND contype='f' AND convalidated)
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND conname='woocommerce_webhook_events_pkey' AND contype='p' AND convalidated)
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND conname='woocommerce_webhook_events_tenant_delivery_unique' AND contype='u' AND convalidated)
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND conname='woocommerce_webhook_events_status_check' AND contype='c' AND convalidated)
+  `);
+  if (candidateSchema !== "t") throw new Error("Candidate 0075/0076 physical schema verification failed");
+  verifyP0Schema(compose);
   const checks = query(
     compose,
     "SELECT (SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid='public.admin_settings_tenant_id_unique_idx'::regclass) AND (SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid='public.tenants_slug_ci_unique_idx'::regclass)",
@@ -888,7 +1006,25 @@ function verifyMigration(compose) {
     );
 }
 
+function verifyP0Schema(compose) {
+  if (query(compose, "SELECT to_regclass('public.myorder_hotfix_migrations')::text") !== "myorder_hotfix_migrations")
+    throw new Error("Required P0 marker table is absent");
+  const verified = query(compose, `
+    SELECT
+      (SELECT count(*) FROM public.myorder_hotfix_migrations WHERE migration_id='p0_owner_approval_provenance') = 1
+      AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='myorder_hotfix_migrations')=2
+      AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='myorder_hotfix_migrations' AND ((column_name='migration_id' AND data_type='text' AND is_nullable='NO') OR (column_name='applied_at' AND data_type='timestamp with time zone' AND is_nullable='NO' AND column_default LIKE 'now()%')))=2
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.myorder_hotfix_migrations'::regclass AND contype='p' AND conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid='public.myorder_hotfix_migrations'::regclass AND attname='migration_id')]::smallint[] AND convalidated)
+      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_at' AND data_type='timestamp with time zone' AND is_nullable='YES')
+      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_by_clerk_id' AND data_type='text' AND is_nullable='YES')
+      AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='users_owner_approval_provenance_idx' AND i.indisvalid AND i.indisready AND pg_get_expr(i.indpred, i.indrelid) = '(status = ''approved''::text)')
+  `);
+  if (verified !== "t") throw new Error("Required P0 marker/provenance schema is absent or structurally invalid");
+  return true;
+}
+
 function validatePendingLineage(compose) {
+  verifyP0Schema(compose);
   const expected = EXPECTED_PRODUCTION_MIGRATIONS;
   const output = run(
     "docker",
@@ -904,7 +1040,7 @@ function validatePendingLineage(compose) {
       "@workspace/db",
       "db:validate-migrations",
     ],
-    { env: { ...process.env, DEPLOY_SHA: FROZEN_RELEASE.sha } },
+    { env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha } },
   );
   const pending = [
     ...output.matchAll(/\[migration-ledger\] PENDING ([^ ]+)/g),
@@ -913,9 +1049,9 @@ function validatePendingLineage(compose) {
     throw new Error(
       `Production pending migration sequence differs from expected Release 1 path: ${pending.join(",")}`,
     );
-  if (!output.includes("production prefix preserved: 42/49"))
+  if (!output.includes("recognized lineage preserved: 42/51"))
     throw new Error(
-      "Production lineage validator did not recognize the exact 42-row prefix",
+      "Production lineage validator did not recognize the exact 42-row candidate prefix",
     );
 }
 
@@ -959,7 +1095,7 @@ async function main() {
   const [, , command, ...args] = process.argv;
   if (command !== "deploy")
     throw new Error(
-      "Usage: production-release.mjs deploy --release-sha SHA --release-tree TREE --archive PATH --archive-sha SHA256 --tooling-sha SHA --authorized",
+      "Usage: production-release.mjs deploy --base-sha SHA --base-tree TREE --release-sha SHA --release-tree TREE --archive PATH --archive-sha SHA256 --tooling-sha SHA --authorized",
     );
   const get = (name) => {
     const i = args.indexOf(name);
@@ -974,11 +1110,20 @@ async function main() {
     );
   const sha = get("--release-sha");
   const tree = get("--release-tree");
+  const baseSha = get("--base-sha");
+  const baseTree = get("--base-tree");
   const archivePath = get("--archive");
   const archiveSha256 = get("--archive-sha");
   const toolingSha = get("--tooling-sha");
+  releaseIdentity = Object.freeze({ sha, tree });
+  Object.assign(process.env, {
+    MYORDER_API_IMAGE: approvedImageReference("api"),
+    MYORDER_PLATFORM_IMAGE: approvedImageReference("platform"),
+    MYORDER_MIGRATE_IMAGE: approvedImageReference("migrate"),
+    WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "false",
+  });
   const releaseRoot = path.join(PRODUCTION.root, "releases", String(sha));
-  assertRelease({ sha, tree, releaseRoot, archivePath, archiveSha256 });
+  assertRelease({ sha, tree, baseSha, baseTree, releaseRoot, archivePath, archiveSha256 });
   if (!/^[a-f0-9]{40}$/.test(toolingSha ?? ""))
     throw new Error("Invalid deployment tooling SHA");
   const controlRoot = path.join(PRODUCTION.root, "control", toolingSha);
@@ -1019,6 +1164,11 @@ async function main() {
     .filter(Boolean);
   if (verboseEntries.some((entry) => /^[lh]/.test(entry)))
     throw new Error("Release archive symlinks and hardlinks are not accepted");
+  const packagedIdentityText = run("tar", ["--extract", "--to-stdout", "--gzip", "--file", archivePath, "MYORDER-RELEASE-IDENTITY.json"], { capture: true });
+  let packagedIdentity;
+  try { packagedIdentity = JSON.parse(packagedIdentityText); }
+  catch { throw new Error("Release archive identity manifest is invalid"); }
+  assertReleaseIdentityManifest(packagedIdentity, { sha, tree });
   const unpackRoot = `${releaseRoot}.extract-${process.pid}`;
   if (existsSync(unpackRoot))
     throw new Error(
@@ -1071,15 +1221,12 @@ async function main() {
   let apiStopAttempted = false;
   let migrationStarted = false;
   const actions = {
+    "verify-release-images": async () => verifyApprovedReleaseImages(),
     validate: async () => {
       compose = validateComposeRuntimeConfig(releaseRoot, envFile, overlayFile);
       verifyProductionPayPalDisabled(compose);
       containerBaseline = verifyWriterSet(compose);
     },
-    build: async () =>
-      run("docker", [...compose.args, "build", "api", "platform", "migrate"], {
-        env: { ...process.env, DEPLOY_SHA: sha },
-      }),
     "validate-lineage": async () => validatePendingLineage(compose),
     "verify-writer-inventory": async () => {
       const current = verifyWriterSet(compose);
@@ -1118,21 +1265,21 @@ async function main() {
     "restore-rehearsal": async () => restoreSnapshotInIsolation(snapshot.value),
     migrate: async () => {
       migrationStarted = true;
-      run("docker", [...compose.args, "run", "--rm", "migrate"], {
-        env: { ...process.env, DEPLOY_SHA: sha },
+      run("docker", [...compose.args, "run", "--pull", "never", "--rm", "--no-deps", "migrate"], {
+        env: releaseComposeEnvironment(),
       });
     },
     "verify-migration": async () => verifyMigration(compose),
     "start-api": async () =>
-      run("docker", [...compose.args, "up", "-d", "--no-deps", "api"], {
-        env: { ...process.env, DEPLOY_SHA: sha },
+      run("docker", [...compose.args, "up", "--pull", "never", "--no-build", "-d", "--no-deps", "api"], {
+        env: releaseComposeEnvironment(),
       }),
     "verify-api": async () => waitForApiContainer(compose, sha),
     "start-platform-proxy": async () =>
       run(
         "docker",
-        [...compose.args, "up", "-d", "--no-deps", "platform", "nginx"],
-        { env: { ...process.env, DEPLOY_SHA: sha } },
+        [...compose.args, "up", "--pull", "never", "--no-build", "-d", "--no-deps", "platform", "nginx"],
+        { env: releaseComposeEnvironment() },
       ),
     smoke: async () => {
       const api = await waitFor("http://127.0.0.1:8081/api/healthz", sha);
@@ -1220,11 +1367,12 @@ async function main() {
             `Production ${service} container is missing after rollout`,
           );
       if (
-        afterByService.get("api").Config.Image !== `myorder-api:${sha}` ||
-        afterByService.get("platform").Config.Image !==
-          `myorder-platform:${sha}`
+        afterByService.get("api").Image !== APPROVED_RELEASE.images.api ||
+        afterByService.get("platform").Image !== APPROVED_RELEASE.images.platform ||
+        afterByService.get("api").Config.Image !== approvedImageReference("api") ||
+        afterByService.get("platform").Config.Image !== approvedImageReference("platform")
       )
-        throw new Error("Production API/platform image SHA mismatch");
+        throw new Error("Production API/platform image digest mismatch");
       const recentLogs = run("docker", [
         ...compose.args,
         "logs",
@@ -1264,12 +1412,13 @@ async function main() {
       const priorApiId = containerBaseline.get("api").id;
       const inspected = JSON.parse(run("docker", ["inspect", priorApiId]))[0];
       if (
-        inspected.Config.Image !== `myorder-api:${ROLLBACK_SHA}` ||
+        inspected.Image !== PRODUCTION_BASELINE.apiImage ||
+        inspected.Config.Labels?.["org.opencontainers.image.revision"] !== PRODUCTION_BASELINE.apiRevision ||
         inspected.Config.Labels?.["com.docker.compose.project"] !==
           PRODUCTION.project
       )
         throw new Error(
-          "Pre-migration failure: rollback API identity could not be verified; API remains stopped",
+          "Pre-migration failure: preserved production API baseline could not be verified; API remains stopped",
         );
       const priorNginxId = containerBaseline.get("nginx")?.id;
       const priorNginx = priorNginxId
@@ -1286,7 +1435,7 @@ async function main() {
         );
       if (!inspected.State?.Running) run("docker", ["start", priorApiId]);
       if (!priorNginx.State?.Running) run("docker", ["start", priorNginxId]);
-      await waitFor("http://127.0.0.1:8081/api/healthz", ROLLBACK_SHA);
+      await waitFor("http://127.0.0.1:8081/api/healthz", PRODUCTION_BASELINE.apiRevision);
       throw new Error(
         `Pre-migration deployment gate failed; restored the original API container (${error instanceof Error ? error.message : "unknown"})`,
       );

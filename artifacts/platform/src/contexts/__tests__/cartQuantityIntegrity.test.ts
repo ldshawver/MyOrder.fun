@@ -27,6 +27,12 @@ describe("cart quantity integrity", () => {
     expect(cartContext).not.toContain("localStorage.getItem(STORAGE_KEY)");
   });
 
+  it("persists option values and distinguishes product variant cart lines by option ID", () => {
+    expect(cartContext).toContain("optionValues?: Record<string, string>");
+    expect(cartContext).toContain("optionValues: item.optionValues ?? {}");
+    expect(cartContext).toContain("i.id === item.id && i.optionId === item.optionId");
+  });
+
   it("mounts the cart provider within Clerk before rendering routes", () => {
     const clerkTree = app.slice(app.indexOf("function ClerkProviderWithRoutes()"), app.indexOf("class ClerkInitializationBoundary"));
     const appTree = app.slice(app.indexOf("function App()"));

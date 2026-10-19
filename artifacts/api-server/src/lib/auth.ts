@@ -210,17 +210,19 @@ export function requireDbUser(req: Request, res: Response, next: NextFunction): 
 
 export function requireRole(...roles: Role[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const user = req.dbUser;
-    if (!user) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    const allowed = roles.map(normalizeRole);
-    if (!hasRoleValue(user.role, allowed)) {
-      res.status(403).json({ error: "Forbidden: insufficient role" });
-      return;
-    }
-    next();
+    requireApproved(req, res, () => {
+      const user = req.dbUser;
+      if (!user) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const allowed = roles.map(normalizeRole);
+      if (!hasRoleValue(user.role, allowed)) {
+        res.status(403).json({ error: "Forbidden: insufficient role" });
+        return;
+      }
+      next();
+    });
   };
 }
 
@@ -259,11 +261,13 @@ export function requireAccountOwner(req: Request, res: Response, next: NextFunct
     res.status(401).json({ error: "Authentication required", code: "AUTHENTICATION_REQUIRED" });
     return;
   }
-  if (!isAuthenticatedConfiguredAccountOwner(req, req.dbUser)) {
-    res.status(403).json({ error: "Configured account owner authorization required", code: "OWNER_AUTH_REQUIRED" });
-    return;
-  }
-  next();
+  requireApproved(req, res, () => {
+    if (!isAuthenticatedConfiguredAccountOwner(req, req.dbUser)) {
+      res.status(403).json({ error: "Configured account owner authorization required", code: "OWNER_AUTH_REQUIRED" });
+      return;
+    }
+    next();
+  });
 }
 
 export function requireRecentOwnerAuth(req: Request, res: Response, next: NextFunction): void {

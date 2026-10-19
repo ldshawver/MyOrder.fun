@@ -115,6 +115,19 @@ describe("checkoutNormalizer", () => {
       expect(result[0].woo_product_id).toBe("100");
     });
 
+    it.each([
+      ["compliance hold", { complianceHold: true }],
+      ["archive", { archived: true }],
+      ["safe duplicate", { safeOnlyDuplicate: true }],
+      ["merged duplicate", { mergedIntoCatalogItemId: 99 }],
+      ["unpublished item", { isVisible: false }],
+    ])("rejects a direct cached catalogItemId checkout for a %s", async (_label, metadata) => {
+      makeDbMock(makeSampleLocalMappedItem({ metadata }));
+      await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }])).rejects.toMatchObject({
+        reason: "item_unavailable",
+      });
+    });
+
     it("preserves woo_product_id through normalization", async () => {
       makeDbMock(makeSampleWooItem());
       const result = await normalizeCheckoutCart([{ catalogItemId: 2, quantity: 1 }]);

@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { db, usersTable, notificationsTable, onboardingRequestsTable, auditLogsTable } from "@workspace/db";
+import { db, usersTable, tenantsTable, notificationsTable, onboardingRequestsTable, auditLogsTable } from "@workspace/db";
 import {
   GetCurrentUserResponse,
   ListUsersQueryParams,
@@ -460,6 +460,10 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireAccountOwn
     res.status(400).json({ error: body.error.message });
     return;
   }
+  if (body.data.status === "approved") {
+    res.status(400).json({ error: "Use the owner approval endpoint to approve accounts", code: "USE_OWNER_APPROVAL_ENDPOINT" });
+    return;
+  }
 
   const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
   if (!target) {
@@ -473,11 +477,9 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireAccountOwn
 
   const previousStatus = target.status;
   const newStatus = body.data.status;
-  if (newStatus === "approved" && !isConfiguredAccountOwner(actor)) { res.status(403).json({ error: "Forbidden: account owner approval required" }); return; }
-
   const [updated] = await db
     .update(usersTable)
-    .set(newStatus === "approved" ? { status: newStatus, approvedByClerkId: actor.clerkId, approvedAt: new Date() } : { status: newStatus, approvedByClerkId: null, approvedAt: null })
+    .set({ status: newStatus, approvedByClerkId: null, approvedAt: null })
     .where(eq(usersTable.id, id))
     .returning();
 
@@ -496,23 +498,6 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireAccountOwn
     metadata: { newStatus, previousStatus },
     ipAddress: req.ip,
   });
-
-  if (newStatus === "approved" && previousStatus !== "approved") {
-    // Write in-app notification (non-critical — don't fail the response)
-    try {
-      await db.insert(notificationsTable).values({
-        userId: updated.id,
-        type: "account_approved",
-        title: "Account Approved",
-        message: "Your account has been approved. You can now sign in and start placing orders.",
-        isRead: false,
-        resourceType: "user",
-        resourceId: updated.id,
-      });
-    } catch (err) {
-      logger.error({ err, userId: updated.id }, "Failed to write account approval notification");
-    }
-  }
 
   res.json({
     id: updated.id,
@@ -587,6 +572,23 @@ router.patch("/admin/users/:id/approval", requireAccountOwner, requireRecentOwne
     // Keep nonexistent and out-of-scope targets indistinguishable to callers.
     res.status(404).json({ error: "Approval target unavailable", code: "APPROVAL_TARGET_UNAVAILABLE" });
     return;
+  }
+
+  // A tenant-scoped administrator may manage users only within the actor's
+  // tenant. An explicit destination must not turn that authority into a
+  // cross-tenant transfer.
+  if (body.data.approve && body.data.tenantId !== undefined) {
+    if (normalizeRole(actor.role) !== "global_admin" && body.data.tenantId !== actor.tenantId) {
+      res.status(403).json({ error: "Tenant-scoped administrator cannot change the approval tenant", code: "TENANT_SCOPE_REQUIRED" });
+      return;
+    }
+    if (body.data.tenantId !== null) {
+      const [destination] = await db.select({ id: tenantsTable.id }).from(tenantsTable).where(eq(tenantsTable.id, body.data.tenantId)).limit(1);
+      if (!destination) {
+        res.status(404).json({ error: "Approval tenant unavailable", code: "APPROVAL_TENANT_UNAVAILABLE" });
+        return;
+      }
+    }
   }
 
   const newStatus: "approved" | "rejected" = body.data.approve ? "approved" : "rejected";

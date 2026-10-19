@@ -38,11 +38,13 @@ import returnsRouter from "./returns";
 import publicBrandingRouter from "./public-branding";
 import publicCatalogRouter from "./public-catalog";
 import uberDirectWebhooksRouter from "./uber-direct-webhooks";
+import wooCommerceWebhooksRouter from "./woocommerce-webhooks";
 
 const router: IRouter = Router();
 
 router.use(webhooksRouter);
 router.use(uberDirectWebhooksRouter);
+router.use(wooCommerceWebhooksRouter);
 // Provider webhooks must reach their own signature verifier before any
 // unrelated router-wide customer authentication middleware.
 router.use(paypalPaymentsRouter);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, CHECKOUT_CONVERSION_REQUIRED_MESSAGE, signCheckoutConversion } from "../checkoutConversionGate";
+import { createCheckoutTaxQuoteToken, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, CHECKOUT_CONVERSION_REQUIRED_MESSAGE, signCheckoutConversion, verifyCheckoutTaxQuoteToken } from "../checkoutConversionGate";
 import { buildSafeMerchantPayloadLines, assertSafeMerchantLines } from "../merchantPayloadValidator";
 import type { NormalizedCartLine } from "../checkoutNormalizer";
 
@@ -8,6 +8,19 @@ const safeLine: NormalizedCartLine = {
 };
 
 describe("checkout conversion gate unit invariants", () => {
+  it("binds a short-lived tax quote to tenant, customer, cart, location, and tax configuration", () => {
+    const context = { tenantId: 1, userId: 2, cartFingerprint: "a".repeat(64), locationId: 3, taxConfigurationId: 4, taxRate: 0.0825, taxableBaseCents: 10000, taxCents: 825 };
+    const now = new Date("2026-10-13T12:00:00.000Z");
+    const token = createCheckoutTaxQuoteToken({ ...context, now });
+    expect(verifyCheckoutTaxQuoteToken(token, context, now)).toBe(true);
+    expect(verifyCheckoutTaxQuoteToken(token, { ...context, locationId: 5 }, now)).toBe(false);
+    expect(verifyCheckoutTaxQuoteToken(token, { ...context, taxConfigurationId: 6 }, now)).toBe(false);
+    expect(verifyCheckoutTaxQuoteToken(token, { ...context, cartFingerprint: "b".repeat(64) }, now)).toBe(false);
+    expect(verifyCheckoutTaxQuoteToken(token, { ...context, taxCents: 875 }, now)).toBe(false);
+    expect(verifyCheckoutTaxQuoteToken(token, context, new Date(now.getTime() + 5 * 60 * 1000))).toBe(false);
+    expect(verifyCheckoutTaxQuoteToken(`${token}x`, context, now)).toBe(false);
+  });
+
   it("rejects missing token", async () => {
     await expect(requireVerifiedCheckoutConversion({ tenantId: 1, userId: 2, requestedItems: [{ catalogItemId: 1, quantity: 2 }], legalDisclaimerAccepted: true, finalConfirmationAt: new Date().toISOString(), snapshot: { ok: true } })).rejects.toThrow(CHECKOUT_CONVERSION_REQUIRED_MESSAGE);
   });

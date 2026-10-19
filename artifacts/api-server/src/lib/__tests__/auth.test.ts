@@ -272,6 +272,15 @@ describe("requireRole middleware", () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it("denies a role-matching account without valid approval provenance", () => {
+    const req = { dbUser: makeUser({ role: "admin", approvedByClerkId: null, approvedAt: null }) } as unknown as Request;
+    const res = makeRes();
+    requireRole("admin")(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).code).toBe("ACCOUNT_APPROVAL_PROVENANCE_REQUIRED");
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it("calls next() when user has one of the allowed roles", () => {
     const req = { dbUser: makeUser({ role: "supervisor" }) } as unknown as Request;
     const res = makeRes();

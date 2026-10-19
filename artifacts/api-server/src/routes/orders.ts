@@ -53,6 +53,7 @@ import {
   computeBaseCheckoutTotals,
   computeCheckoutTotals,
   getCheckoutTaxSettings,
+  TaxConfigurationError,
   CheckoutMappingError,
   CartLineInput,
   type NormalizedCartLine,
@@ -77,7 +78,8 @@ import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
 import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
-import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
+import { allocateOrderLineRefundTax } from "../lib/refundAccounting";
+import { createCheckoutTaxQuoteToken, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError, verifyCheckoutTaxQuoteToken } from "../lib/checkoutConversionGate";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import {
   sendOrderStatusSmsEmailIfAllowed,
@@ -126,6 +128,36 @@ class CheckoutReplayConflictError extends Error {}
 type OptionCheckoutRequest = Request & { selectedOptionByCatalog?: Map<number, number> };
 
 class UberQuoteConsumedError extends Error {}
+
+async function resolveCheckoutRouting(tenantId: number) {
+  // Keep the same tenant-scoped location lookup used by order fulfillment.
+  const houseTenantId = tenantId;
+  const routing = await decideRouting(tenantId);
+  let targetLocationId: number | null = null;
+  if (routing.assignedShiftId != null) {
+    const [activeShift] = await db
+      .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
+      .from(labTechShiftsTable)
+      .where(and(
+        eq(labTechShiftsTable.id, routing.assignedShiftId),
+        eq(labTechShiftsTable.tenantId, tenantId),
+      ))
+      .limit(1);
+    const locationName = inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId);
+    if (locationName) {
+      const [location] = await db
+        .select({ id: inventoryLocationsTable.id })
+        .from(inventoryLocationsTable)
+        .where(and(
+          eq(inventoryLocationsTable.tenantId, houseTenantId),
+          eq(inventoryLocationsTable.name, locationName),
+        ))
+        .limit(1);
+      targetLocationId = location?.id ?? null;
+    }
+  }
+  return { routing, targetLocationId };
+}
 
 type InventoryDeductionAuditEntry = {
   orderId: number;
@@ -263,6 +295,7 @@ router.use(async (req, res, next) => {
       WHERE co.tenant_id = ${tenantId} AND co.id = ${line.optionId}
         AND co.active = true AND cp.active = true AND ci.is_available = true
         AND ci.alavont_in_stock IS DISTINCT FROM false
+        AND COALESCE((ci.metadata->>'isVisible')::boolean, true) = true
         AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
         AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
         AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
@@ -573,14 +606,11 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       res.status(422).json({ error: "PAYMENT_METHOD_UNAVAILABLE" }); return;
     }
     if (processor === "paypal" && !(await loadTenantPaymentConfig(tenantId)).enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
-    const taxSettings = processor === "paypal" ? await getCheckoutTaxSettings(tenantId) : null;
+    const { targetLocationId } = await resolveCheckoutRouting(tenantId);
+    const taxSettings = await getCheckoutTaxSettings(tenantId, targetLocationId ?? undefined);
     const cashDiscount = { enabled: Boolean(settings?.cashDiscountEnabled), type: settings?.cashDiscountType === "fixed" ? "fixed" as const : "percentage" as const, value: Number(settings?.cashDiscountValue ?? 0) };
-    const preliminary = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings?.taxRate ?? 0, taxMode: "added", tender, cashDiscount });
-    const merchandiseCents = dollarsToCents(preliminary.taxableSubtotal) + dollarsToCents(preliminary.nonTaxableSubtotal);
-    const creditCents = dollarsToCents(parsed.data.customerCreditAmount ?? (tender === "customer_credit" ? Number(centsToDollars(merchandiseCents)) : 0));
-    const available = await db.transaction(tx => getCustomerCreditBalance(tx, tenantId, actor.id));
-    if (creditCents > merchandiseCents || creditCents > available.available) { res.status(409).json({ error: "INSUFFICIENT_CUSTOMER_CREDIT" }); return; }
-    const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings?.taxRate ?? 0, taxMode: "added", tender, nonTaxableFundingCents: creditCents, cashDiscount });
+    const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings.taxRate, taxMode: "added", taxJurisdiction: taxSettings.taxJurisdiction, taxConfigurationId: taxSettings.taxConfigurationId, tender, cashDiscount });
+    const merchandiseCents = dollarsToCents(financial.taxableSubtotal) + dollarsToCents(financial.nonTaxableSubtotal);
     let deliveryFeeCents = 0;
     if (parsed.data.deliveryMethod === "csr_delivery") {
       deliveryFeeCents = 600 + Number((BigInt(merchandiseCents) * 3n + 50n) / 100n);
@@ -598,10 +628,14 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const tipCents = dollarsToCents(normalizeCheckoutTip(parsed.data.tipAmount));
     const taxCents = dollarsToCents(financial.taxCollected);
     const totalCents = merchandiseCents + taxCents + deliveryFeeCents + tipCents;
+    const creditCents = dollarsToCents(parsed.data.customerCreditAmount ?? (tender === "customer_credit" ? centsToDollars(totalCents) : 0));
+    const available = await db.transaction(tx => getCustomerCreditBalance(tx, tenantId, actor.id));
+    if (creditCents > totalCents || creditCents > available.available) { res.status(409).json({ error: "INSUFFICIENT_CUSTOMER_CREDIT" }); return; }
     const dueCents = totalCents - creditCents;
     if (tender === "customer_credit" && dueCents !== 0) { res.status(422).json({ error: "CUSTOMER_CREDIT_INCOMPLETE" }); return; }
     const amount = (cents: number) => Number(centsToDollars(cents));
-    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(merchandiseCents - creditCents), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings?.taxRate ?? 0, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), [tender]: amount(dueCents) } });
+    const checkoutTaxQuoteToken = createCheckoutTaxQuoteToken({ tenantId, userId: actor.id, cartFingerprint: checkoutFingerprint(lines), locationId: targetLocationId, taxConfigurationId: taxSettings.taxConfigurationId, taxRate: taxSettings.taxRate, taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase), taxCents });
+    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
   } catch (error) {
     res.status(error instanceof CustomerCreditError ? error.status : 422).json({ error: error instanceof CustomerCreditError ? error.code : "CHECKOUT_QUOTE_UNAVAILABLE" });
   }
@@ -927,14 +961,31 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
   const requestedCreditAmount = (body.data.checkoutConfirmation as { customerCreditAmount?: number } | undefined)?.customerCreditAmount;
-  const requestedCreditCents = dollarsToCents(requestedCreditAmount ?? (tender === "customer_credit" ? trustedTotals.subtotal : 0));
-  const merchandiseCents = dollarsToCents(trustedTotals.subtotal);
-  if (requestedCreditCents > merchandiseCents) {
-    res.status(409).json({ error: "CREDIT_OVER_APPLICATION" });
+  const { routing, targetLocationId } = await resolveCheckoutRouting(houseTenantId);
+  let checkoutTaxSettings: Awaited<ReturnType<typeof getCheckoutTaxSettings>>;
+  try {
+    checkoutTaxSettings = await getCheckoutTaxSettings(houseTenantId, targetLocationId ?? undefined);
+  } catch (error) {
+    if (error instanceof TaxConfigurationError) {
+      res.status(422).json({ error: "TAX_CONFIGURATION_UNAVAILABLE" });
+      return;
+    }
+    throw error;
+  }
+  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: checkoutTaxSettings.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: checkoutTaxSettings.taxJurisdiction, taxConfigurationId: checkoutTaxSettings.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
+  if (!verifyCheckoutTaxQuoteToken(body.data.checkoutConfirmation?.checkoutTaxQuoteToken, {
+    tenantId: houseTenantId,
+    userId: actor.id,
+    cartFingerprint: checkoutFingerprint(normalizedLines),
+    locationId: targetLocationId,
+    taxConfigurationId: checkoutTaxSettings.taxConfigurationId,
+    taxRate: checkoutTaxSettings.taxRate,
+    taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase),
+    taxCents: dollarsToCents(financial.taxCollected),
+  })) {
+    res.status(409).json({ error: "CHECKOUT_QUOTE_STALE" });
     return;
   }
-  const paypalTaxSettings = processor === "paypal" ? await getCheckoutTaxSettings(houseTenantId) : null;
-  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: paypalTaxSettings?.taxRate ?? trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: paypalTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction, taxConfigurationId: paypalTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId, tender, nonTaxableFundingCents: requestedCreditCents, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
   const subtotal = financial.taxableSubtotal + financial.nonTaxableSubtotal;
   const tax = financial.taxCollected;
   const merchandiseTotal = financial.merchandiseTotal;
@@ -991,17 +1042,60 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(400).json({ error: (err as Error).message });
     return;
   }
-  const merchandiseAfterDiscountCents = dollarsToCents(subtotal);
-  if (requestedCreditCents > merchandiseAfterDiscountCents) {
+  const finalTotalCents = dollarsToCents(merchandiseTotal) + dollarsToCents(deliveryFee) + dollarsToCents(tipAmount);
+  const finalTotal = Number(centsToDollars(finalTotalCents));
+  const requestedCreditCents = dollarsToCents(requestedCreditAmount ?? (tender === "customer_credit" ? centsToDollars(finalTotalCents) : 0));
+  if (requestedCreditCents > finalTotalCents) {
     res.status(409).json({ error: "CREDIT_OVER_APPLICATION" });
     return;
   }
-  const finalTotalCents = dollarsToCents(merchandiseTotal) + dollarsToCents(deliveryFee) + dollarsToCents(tipAmount);
-  const finalTotal = Number(centsToDollars(finalTotalCents));
   if (tender === "customer_credit" && requestedCreditCents !== finalTotalCents) {
     res.status(422).json({ error: "Customer Credit must cover the full amount when it is the only tender" });
     return;
   }
+  const preDiscountTaxableCents = dollarsToCents(trustedTotals.taxableSubtotal);
+  const preDiscountGrossCents = dollarsToCents(trustedTotals.subtotal);
+  const totalDiscountCents = dollarsToCents(cashDiscountAmount);
+  const taxableDiscountCents = preDiscountGrossCents === 0 ? 0 : Number((BigInt(totalDiscountCents) * BigInt(preDiscountTaxableCents) * 2n + BigInt(preDiscountGrossCents)) / (2n * BigInt(preDiscountGrossCents)));
+  const nonTaxableDiscountCents = totalDiscountCents - taxableDiscountCents;
+  const externalTenderType = tender === "paypal_card" ? "paypal" : tender;
+  const externalTenderCents = finalTotalCents - requestedCreditCents;
+  const originalTenderAllocations = {
+    schemaVersion: 1,
+    totalCents: finalTotalCents,
+    allocations: [
+      ...(requestedCreditCents > 0 ? [{ tender: "customer_credit", amountCents: requestedCreditCents }] : []),
+      ...(externalTenderCents > 0 ? [{ tender: externalTenderType, amountCents: externalTenderCents }] : []),
+    ],
+  };
+  const lineTaxAllocations = allocateOrderLineRefundTax({
+    lines: normalizedLines.map((line, lineIndex) => ({
+      lineIndex,
+      // Replaced with the persisted order item ID inside the order transaction.
+      orderItemId: lineIndex + 1,
+      catalogItemId: line.catalog_item_id,
+      quantity: line.quantity,
+      unitPriceCents: dollarsToCents(line.unit_price),
+      taxable: line.is_taxable !== false,
+    })),
+    taxableDiscountCents,
+    nonTaxableDiscountCents,
+    taxCents: dollarsToCents(tax),
+  });
+  const checkoutTaxSnapshot = {
+    ...taxSnapshot,
+    locationId: targetLocationId,
+    pendingTender: false,
+    taxableMerchandiseBase: financial.taxableSubtotal,
+    tenderAllocation: {
+      customerCreditCents: requestedCreditCents,
+      externalTenderCents: finalTotalCents - requestedCreditCents,
+      taxableMerchandiseCents: dollarsToCents(financial.taxableSubtotal),
+      taxCents: dollarsToCents(tax),
+    },
+    originalTenderAllocations,
+    lineTaxAllocations,
+  };
   const finalConfirmationAt = checkoutConfirmation?.confirmedAt
     ? new Date(checkoutConfirmation.confirmedAt)
     : null;
@@ -1021,10 +1115,6 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
 
-  // supervisor_manual_assignment; routes to assigned CSR + their active
-  // shift, or to the General Account fallback queue).
-  const routing = await decideRouting(houseTenantId);
-
   // Legacy assignedTechId/assignedShiftId mirror active CSR routing only.
   // Fallback/general-account orders must remain unassigned so they do not
   // accidentally attach to a non-ready shift or mutate a CSR box.
@@ -1039,30 +1129,6 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       : null;
 
   const now = new Date();
-
-  let targetLocationId: number | null = null;
-
-  if (assignedShiftId != null) {
-    const [activeShift] = await db
-      .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
-      .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, assignedShiftId))
-      .limit(1);
-
-    const locationName = inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId);
-    if (locationName) {
-      const [loc] = await db
-        .select({ id: inventoryLocationsTable.id })
-        .from(inventoryLocationsTable)
-        .where(and(
-          eq(inventoryLocationsTable.tenantId, houseTenantId),
-          eq(inventoryLocationsTable.name, locationName),
-        ))
-        .limit(1);
-
-      targetLocationId = loc?.id ?? null;
-    }
-  }
 
   await ensureInventoryReservationsTable();
 
@@ -1155,19 +1221,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
         selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
         checkoutConversionExpiresAt: conversionExpiresAt,
-        taxSnapshot: { ...taxSnapshot, locationId: targetLocationId, pendingTender: false },
+        taxSnapshot: checkoutTaxSnapshot,
         cashDiscountSnapshot,
       }).returning();
-
-      await tx.insert(orderTaxSnapshotsTable).values({
-        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: paypalTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction,
-        locationId: targetLocationId, taxConfigurationId: paypalTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId,
-        grossSales: String(trustedTotals.subtotal.toFixed(2)),
-        taxRate: String(paypalTaxSettings?.taxRate ?? trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
-        discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
-        taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: null,
-        snapshotJson: { tax: taxSnapshot, cashDiscount: cashDiscountSnapshot },
-      });
 
       const alavontCartSnapshot = normalizedLines.map(l => ({
         originalCatalogItemId: l.original_catalog_item_id ?? l.catalog_item_id,
@@ -1229,9 +1285,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       }
 
       const inventoryDeductionAuditEntries: InventoryDeductionAuditEntry[] = [];
-      for (const line of normalizedLines) {
-        const option = queryRows<{ optionId: number; productName: string; label: string; sku: string | null; inventoryItemId: number; inventoryCatalogItemId: number; consumptionQuantity: string; locationEvaluation: string }>(await tx.execute(sql`
-          SELECT co.id AS "optionId", cp.name AS "productName", co.label, ci.sku,
+      // Keep staging variant/compliance checks while attaching immutable tax allocations.
+      for (const [lineIndex, line] of normalizedLines.entries()) {
+        const option = queryRows<{ optionId: number; productName: string; label: string; optionValues: Record<string, string>; sku: string | null; barcode: string | null; wooProductId: string | null; wooVariationId: string | null; inventoryItemId: number; inventoryCatalogItemId: number; consumptionQuantity: string; locationEvaluation: string }>(await tx.execute(sql`
+          SELECT co.id AS "optionId", cp.name AS "productName", co.label, co.option_values AS "optionValues", ci.sku, ci.barcode,
+            ci.woo_product_id AS "wooProductId", ci.woo_variation_id AS "wooVariationId",
             co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
             co.consumption_quantity AS "consumptionQuantity", cp.location_evaluation AS "locationEvaluation"
           FROM catalogue_options co
@@ -1241,6 +1299,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           WHERE co.tenant_id = ${houseTenantId} AND co.catalog_item_id = ${line.catalog_item_id}
             AND co.active = true AND cp.active = true AND ci.is_available = true
             AND ci.alavont_in_stock IS DISTINCT FROM false
+            AND COALESCE((ci.metadata->>'isVisible')::boolean, true) = true
             AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
             AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
             AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
@@ -1250,6 +1309,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         if (selectedOptionId !== undefined && option?.optionId !== selectedOptionId) {
           throw new OptionSelectionError("Selected option changed or is no longer available");
         }
+        // Every catalog item is expected to have the inventory identity created
+        // by the catalogue trigger. Fail closed if it disappeared or became
+        // held/unavailable after cart normalization; legacy catalogItemId carts
+        // must not bypass the variant and compliance checks.
+        if (!option) throw new OptionSelectionError("Item is no longer available");
         const inventoryCatalogItemId = option?.inventoryCatalogItemId ?? line.catalog_item_id;
         const physicalQuantity = quantityText(quantityUnits(option?.consumptionQuantity ?? "1") * BigInt(line.quantity));
         const [orderItem] = await tx.insert(orderItemsTable).values({
@@ -1258,6 +1322,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           catalogItemName: option ? `${option.productName}${option.label === "Standard" ? "" : ` — ${option.label}`}` : line.catalog_display_name,
           optionId: option?.optionId ?? null,
           optionLabelSnapshot: option?.label ?? null,
+          variantSnapshot: option ? { variantId: option.optionId, sku: option.sku, barcode: option.barcode,
+            label: option.label, optionValues: option.optionValues ?? {}, wooProductId: option.wooProductId,
+            wooVariationId: option.wooVariationId } : null,
           skuSnapshot: option?.sku ?? line.merchant_sku,
           inventoryItemId: option?.inventoryItemId ?? null,
           inventoryQuantitySnapshot: physicalQuantity,
@@ -1272,6 +1339,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           wooProductId: line.woo_product_id ?? null,
           wooVariationId: line.woo_variation_id ?? null,
         }).returning({ id: orderItemsTable.id });
+        lineTaxAllocations[lineIndex] = { ...lineTaxAllocations[lineIndex]!, orderItemId: orderItem.id };
 
         if (shouldReserveInventory) {
           const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,
@@ -1327,6 +1395,29 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
                 UNION SELECT ${line.catalog_item_id})
           `);
       }
+
+      const finalizedTaxSnapshot = { ...checkoutTaxSnapshot, originalTenderAllocations, lineTaxAllocations };
+      await tx.update(ordersTable).set({ taxSnapshot: finalizedTaxSnapshot })
+        .where(and(eq(ordersTable.id, createdOrder.id), eq(ordersTable.tenantId, houseTenantId)));
+      // order_tax_snapshots is protected by an immutable-row trigger. Build its
+      // complete snapshot only after order item IDs have been assigned, then
+      // insert it once so refund records can safely use the original details.
+      await tx.insert(orderTaxSnapshotsTable).values({
+        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: checkoutTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction,
+        locationId: targetLocationId, taxConfigurationId: checkoutTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId,
+        grossSales: String(trustedTotals.subtotal.toFixed(2)),
+        taxRate: String(checkoutTaxSettings?.taxRate ?? trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
+        discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
+        taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: null,
+        snapshotJson: {
+          tax: finalizedTaxSnapshot,
+          cashDiscount: cashDiscountSnapshot,
+          tenderAllocation: { customerCreditCents: requestedCreditCents, externalTenderCents,
+            taxableMerchandiseCents: dollarsToCents(financial.taxableSubtotal), taxCents: dollarsToCents(tax) },
+          originalTenderAllocations,
+          lineTaxAllocations,
+        },
+      });
 
       for (const entry of inventoryDeductionAuditEntries) {
         await writeAuditLog({

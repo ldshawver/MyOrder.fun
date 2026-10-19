@@ -73,6 +73,9 @@ services:
       CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET}
       SESSION_SECRET: ${SESSION_SECRET}
       SETTINGS_ENC_KEY: ${SETTINGS_ENC_KEY:?SETTINGS_ENC_KEY is required}
+      # Production keeps the established live integration behavior, but the
+      # policy must be explicitly enabled rather than inherited from staging.
+      WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: ${WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED:?Set explicitly to true for production}
       PAYMENT_MODE: ${PAYMENT_MODE:-disabled}
       PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-paypal}
       PAYPAL_ENVIRONMENT: ${PAYPAL_ENVIRONMENT:-}

@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { eq, desc, sql } from "drizzle-orm";
-import { db, onboardingRequestsTable, tenantsTable, usersTable } from "@workspace/db";
+import { db, onboardingRequestsTable, tenantsTable, usersTable, auditLogsTable } from "@workspace/db";
 import {
   SubmitOnboardingRequestBody,
   ListOnboardingRequestsQueryParams,
@@ -11,7 +11,8 @@ import {
   UpdateOnboardingRequestBody,
   UpdateOnboardingRequestResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireRole, requireDbUser, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireApproved, requireRecentOwnerAuth, requireDbUser } from "../lib/auth";
+import { requirePermission } from "../lib/roles";
 
 const router: IRouter = Router();
 
@@ -27,15 +28,15 @@ function mapRequest(r: typeof onboardingRequestsTable.$inferSelect) {
     companyName: r.companyName,
     contactName: r.contactName,
     contactEmail: r.contactEmail,
-    contactPhone: r.contactPhone,
+    contactPhone: r.contactPhone ?? undefined,
     businessType: r.businessType,
-    website: r.website,
-    description: r.description,
-    expectedOrderVolume: r.expectedOrderVolume,
+    website: r.website ?? undefined,
+    description: r.description ?? undefined,
+    expectedOrderVolume: r.expectedOrderVolume ?? undefined,
     status: r.status,
-    reviewNotes: r.reviewNotes,
-    reviewedBy: r.reviewedBy,
-    tenantId: r.tenantId,
+    reviewNotes: r.reviewNotes ?? undefined,
+    reviewedBy: r.reviewedBy ?? undefined,
+    tenantId: r.tenantId ?? undefined,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -88,7 +89,7 @@ export async function submitOnboardingRequestHandler(req: Request, res: Response
 router.post("/onboarding/request", submitOnboardingRequestHandler);
 
 // GET /api/onboarding/requests — global admin only
-router.get("/onboarding/requests", requireAuth, loadDbUser, requireDbUser, requireRole("admin"), async (req, res): Promise<void> => {
+router.get("/onboarding/requests", requireAuth, loadDbUser, requireDbUser, requireApproved, requirePermission("platform.tenants.view"), async (req, res): Promise<void> => {
   const query = ListOnboardingRequestsQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -116,7 +117,7 @@ router.get("/onboarding/requests", requireAuth, loadDbUser, requireDbUser, requi
 });
 
 // GET /api/onboarding/requests/:id — global admin only
-router.get("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, requireRole("admin"), async (req, res): Promise<void> => {
+router.get("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, requireApproved, requirePermission("platform.tenants.view"), async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetOnboardingRequestParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -132,7 +133,7 @@ router.get("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, r
 });
 
 // PATCH /api/onboarding/requests/:id — global admin only
-router.patch("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, requireRole("admin"), async (req, res): Promise<void> => {
+router.patch("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, requireApproved, requirePermission("platform.tenants.manage"), requireRecentOwnerAuth, async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateOnboardingRequestParams.safeParse({ id: parseInt(raw, 10) });
@@ -140,7 +141,7 @@ router.patch("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser,
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const body = UpdateOnboardingRequestBody.safeParse(req.body);
+  const body = UpdateOnboardingRequestBody.strict().safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
@@ -158,32 +159,41 @@ router.patch("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser,
   if (body.data.status) updateValues.status = body.data.status;
   if (body.data.reviewNotes != null) updateValues.reviewNotes = body.data.reviewNotes;
 
-  // If approved, provision tenant and update status
-  if (body.data.status === "approved" && !existing.tenantId) {
-    const slug = existing.companyName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const [tenant] = await db.insert(tenantsTable).values({
-      name: existing.companyName,
-      slug: `${slug}-${Date.now()}`,
-      status: "active",
-      contactEmail: existing.contactEmail,
-    }).returning();
-    updateValues.tenantId = tenant.id;
-  }
+  // This approves the tenant application only. Account status, role, tenant
+  // membership, and P0 approval provenance remain exclusively in the owner
+  // approval flow in routes/users.ts.
+  let createdTenantId: number | null = null;
+  const updated = await db.transaction(async (tx) => {
+    if (body.data.status === "approved" && !existing.tenantId) {
+      const slug = existing.companyName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const [tenant] = await tx.insert(tenantsTable).values({
+        name: existing.companyName,
+        slug: `${slug}-${Date.now()}`,
+        status: "active",
+        contactEmail: existing.contactEmail,
+      }).returning();
+      createdTenantId = tenant.id;
+      updateValues.tenantId = tenant.id;
+    }
 
-  const [updated] = await db.update(onboardingRequestsTable)
-    .set(updateValues)
-    .where(eq(onboardingRequestsTable.id, params.data.id))
-    .returning();
+    const [saved] = await tx.update(onboardingRequestsTable)
+      .set(updateValues)
+      .where(eq(onboardingRequestsTable.id, params.data.id))
+      .returning();
+    if (!saved) throw new Error("Onboarding request changed during update");
 
-  await writeAuditLog({
-    actorId: actor.id,
-    actorEmail: actor.email,
-    actorRole: actor.role,
-    action: "UPDATE_ONBOARDING_REQUEST",
-    resourceType: "onboarding_request",
-    resourceId: String(params.data.id),
-    metadata: { newStatus: body.data.status, previousStatus: existing.status },
-    ipAddress: req.ip,
+    await tx.insert(auditLogsTable).values({
+      actorId: actor.id,
+      actorEmail: actor.email ?? "",
+      actorRole: actor.role,
+      action: "UPDATE_ONBOARDING_REQUEST",
+      tenantId: null,
+      resourceType: "onboarding_request",
+      resourceId: String(params.data.id),
+      metadata: { scope: "platform", newStatus: body.data.status, previousStatus: existing.status, createdTenantId },
+      ipAddress: req.ip ?? null,
+    });
+    return saved;
   });
 
   res.json(UpdateOnboardingRequestResponse.parse(mapRequest(updated)));

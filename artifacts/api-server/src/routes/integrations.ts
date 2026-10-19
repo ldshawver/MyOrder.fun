@@ -25,6 +25,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } 
 import { getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
 import { safeDecrypt } from "../lib/crypto";
 import { fetchWooSafely } from "../lib/wooSafeHttp";
+import { isWooCommerceExternalIntegrationEnabled } from "../lib/wooExternalPolicy";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 
 const router: IRouter = Router();
@@ -69,17 +70,18 @@ function checkGitHub(): IntegrationStatus {
 }
 
 /** Use the same tenant credentials and safe transport as the admin test. */
-async function checkWooCommerce(tenantId: number): Promise<IntegrationStatus> {
+export async function checkWooCommerce(tenantId: number): Promise<IntegrationStatus> {
+  if (!isWooCommerceExternalIntegrationEnabled()) return "missing_config";
   if (!Number.isSafeInteger(tenantId) || tenantId <= 0) return "missing_config";
   try {
     const [row] = await db.select({ enabled: adminSettingsTable.wcEnabled, storeUrl: adminSettingsTable.wcStoreUrl,
       consumerKey: adminSettingsTable.wcConsumerKey, consumerSecret: adminSettingsTable.wcConsumerSecret })
       .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
-    if (!row || row.enabled === false || !row.consumerKey || !row.consumerSecret) return "missing_config";
+    if (!row || row.enabled === false || !row.storeUrl?.trim() || !row.consumerKey || !row.consumerSecret) return "missing_config";
     const consumerKey = safeDecrypt(row.consumerKey);
     const consumerSecret = safeDecrypt(row.consumerSecret);
     if (!consumerKey || !consumerSecret) return "error";
-    const response = await fetchWooSafely(row.storeUrl ?? "https://lucifercruz.com", "/wp-json/wc/v3/system_status", consumerKey, consumerSecret);
+    const response = await fetchWooSafely(row.storeUrl, "/wp-json/wc/v3/system_status", consumerKey, consumerSecret);
     return response.ok ? "connected" : "error";
   } catch { return "error"; }
 }

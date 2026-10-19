@@ -207,6 +207,46 @@ function loadJournal(): LocalMigration[] {
   return local;
 }
 
+async function validateCandidateTailSchema(client: pg.Client, applied: Set<number>): Promise<void> {
+  if (applied.has(49)) {
+    const result = await client.query<{ healthy: boolean }>(`
+      SELECT
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='catalogue_options' AND column_name='option_values' AND udt_name='jsonb' AND is_nullable='NO')
+        AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='catalog_items' AND column_name='barcode' AND udt_name='text')
+        AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='order_items' AND column_name='variant_snapshot' AND udt_name='jsonb')
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.catalogue_options'::regclass AND conname='catalogue_options_option_values_object' AND contype='c' AND convalidated)
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.catalogue_options'::regclass AND conname='catalogue_options_product_values_unique' AND contype='u' AND convalidated)
+        AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='catalog_items_tenant_sku_ci_unique' AND i.indisunique AND i.indisvalid AND i.indisready)
+        AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='catalog_items_tenant_woo_variation_unique' AND i.indisunique AND i.indisvalid AND i.indisready) AS healthy`);
+    if (result.rows[0]?.healthy !== true) fail("0075 catalogue variant physical effects are absent or invalid");
+  }
+  if (applied.has(50)) {
+    const result = await client.query<{ healthy: boolean }>(`
+      SELECT
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='admin_settings' AND column_name='wc_webhook_secret')
+        AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='admin_settings' AND column_name='wc_store_url' AND column_default IS NULL)
+        AND to_regclass('public.woocommerce_webhook_events') IS NOT NULL
+        AND (SELECT count(*)=12 FROM information_schema.columns WHERE table_schema='public' AND table_name='woocommerce_webhook_events')
+        AND NOT EXISTS (
+          SELECT 1 FROM (VALUES
+            ('id','int8','NO'), ('tenant_id','int4','NO'), ('delivery_id','text','NO'),
+            ('topic','text','NO'), ('product_id','text','NO'), ('payload_sha256','text','NO'),
+            ('status','text','NO'), ('attempt_count','int4','NO'), ('error_code','text','YES'),
+            ('created_at','timestamptz','NO'), ('updated_at','timestamptz','NO'), ('processed_at','timestamptz','YES')
+          ) AS expected(column_name, udt_name, is_nullable)
+          WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema='public'
+            AND c.table_name='woocommerce_webhook_events' AND c.column_name=expected.column_name
+            AND c.udt_name=expected.udt_name AND c.is_nullable=expected.is_nullable)
+        )
+        AND (SELECT count(*)=3 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND contype IN ('p','c','u'))
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND conname='woocommerce_webhook_events_tenant_id_fkey' AND contype='f' AND convalidated)
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND conname='woocommerce_webhook_events_pkey' AND contype='p' AND convalidated)
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND conname='woocommerce_webhook_events_status_check' AND contype='c' AND convalidated)
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND conname='woocommerce_webhook_events_tenant_delivery_unique' AND contype='u' AND convalidated) AS healthy`);
+    if (result.rows[0]?.healthy !== true) fail("0076 WooCommerce webhook physical effects are absent or invalid");
+  }
+}
+
 async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
   const url = process.env.DATABASE_URL;
   if (!url) {
@@ -263,6 +303,7 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
       historicalStaging0058Recognized,
       historicalStagingInventoryRecognized,
     } = validateAppliedLineage(local, applied);
+    await validateCandidateTailSchema(client, appliedJournalIndices);
 
     if (historicalStagingInventoryRecognized) {
       // This is the verified result of historical staging 0064-0066. Compare
@@ -282,11 +323,14 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
           UNION ALL SELECT 'column', table_name||'.'||column_name,
             ordinal_position||'|'||udt_name||'|'||is_nullable||'|'||COALESCE(column_default,'<none>')
             FROM information_schema.columns WHERE table_schema='public' AND table_name IN (SELECT name FROM affected)
+              AND NOT (${appliedJournalIndices.has(49) ? "(table_name='catalogue_options' AND column_name='option_values') OR (table_name='catalog_items' AND column_name='barcode') OR (table_name='order_items' AND column_name='variant_snapshot')" : "false"})
           UNION ALL SELECT 'constraint', c.relname||'.'||k.conname, pg_get_constraintdef(k.oid,true)
             FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace
             WHERE n.nspname='public' AND c.relname IN (SELECT name FROM affected)
+              AND (${appliedJournalIndices.has(49) ? "k.conname NOT IN ('catalogue_options_option_values_object','catalogue_options_product_values_unique')" : "true"})
           UNION ALL SELECT 'index', tablename||'.'||indexname, indexdef
             FROM pg_indexes WHERE schemaname='public' AND tablename IN (SELECT name FROM affected)
+              AND (${appliedJournalIndices.has(49) ? "indexname NOT IN ('catalogue_options_product_values_unique','catalog_items_tenant_woo_variation_unique','catalog_items_tenant_sku_ci_unique')" : "true"})
           UNION ALL SELECT 'trigger', c.relname||'.'||t.tgname, pg_get_triggerdef(t.oid,true)
             FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
             WHERE n.nspname='public' AND c.relname IN (SELECT name FROM affected) AND NOT t.tgisinternal
@@ -316,6 +360,17 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
             SELECT 1 FROM catalogue_options o WHERE o.tenant_id=c.tenant_id AND o.catalog_item_id=c.id
           )) AS healthy`);
       if (backfill.rows[0]?.healthy !== true) fail("historical staging inventory/catalogue backfill is incomplete");
+      if (appliedJournalIndices.has(49)) {
+        const variants = await client.query<{ healthy: boolean }>(`
+          SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='catalogue_options' AND column_name='option_values' AND udt_name='jsonb')
+            AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='catalog_items' AND column_name='barcode')
+            AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='order_items' AND column_name='variant_snapshot' AND udt_name='jsonb')
+            AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.catalogue_options'::regclass AND conname='catalogue_options_product_values_unique' AND contype='u' AND convalidated)
+            AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.catalogue_options'::regclass AND conname='catalogue_options_option_values_object' AND contype='c' AND convalidated)
+            AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='catalog_items_tenant_woo_variation_unique' AND i.indisunique AND i.indisvalid AND i.indisready)
+            AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='catalog_items_tenant_sku_ci_unique' AND i.indisunique AND i.indisvalid AND i.indisready) AS healthy`);
+        if (variants.rows[0]?.healthy !== true) fail("catalogue variant schema invariants are missing or invalid");
+      }
       for (const row of historicalStagingInventory.rows) {
         console.log(`[migration-ledger] HISTORICAL-LINEAGE ${row.historicalTag} sha256=${row.hash} canonical=${row.canonicalTag}`);
       }
@@ -667,7 +722,7 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
       );
     }
     console.log(
-      `[migration-ledger] production prefix preserved: ${applied.length}/${local.length}`,
+      `[migration-ledger] recognized lineage preserved: ${applied.length}/${local.length}`,
     );
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);

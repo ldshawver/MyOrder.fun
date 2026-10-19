@@ -10,7 +10,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { useCart } from "@/contexts/CartContext";
-import { optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
+import { optionAxes, optionForValues, optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ArrowLeft, Edit, Trash, Loader2, ShoppingCart, ChevronLeft, ChevronRight } from "lucide-react";
@@ -30,6 +30,7 @@ export default function CatalogItemDetail() {
   const { getToken } = useAuth();
   const { addItem } = useCart();
   const [selectedOptionId, setSelectedOptionId] = useState<number | null>(null);
+  const [selectedValues, setSelectedValues] = useState<Record<string, string>>({});
 
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editForm, setEditForm] = useState({ name: "", price: 0, category: "", description: "" });
@@ -86,7 +87,8 @@ export default function CatalogItemDetail() {
   if (isError || !item) return <div className="p-8 text-destructive">Product not found.</div>;
 
   const product = productQuery.data?.products.find(entry => entry.options.some(option => option.catalogItemId === id));
-  const selectedOption = selectedSellableOption(product, selectedOptionId);
+  const axes = optionAxes(product);
+  const selectedOption = axes.length ? optionForValues(product, selectedValues) : selectedSellableOption(product, selectedOptionId);
   const displayPrice = selectedOption ? Number(selectedOption.price) : item.price;
 
   const itemWithMerchantMedia = item as typeof item & { luciferCruzImageUrl?: string | null };
@@ -260,7 +262,17 @@ export default function CatalogItemDetail() {
                 </div>
               )}
 
-              {showOptionSelector(product) && product && (
+              {axes.length > 0 && product ? axes.map(axis => (
+                <label key={axis.name} className="block text-sm font-medium">
+                  {axis.name}
+                  <select className="mt-2 w-full rounded-lg border border-border bg-background p-3"
+                    value={selectedValues[axis.name] ?? ""} onChange={event => setSelectedValues(current => ({ ...current, [axis.name]: event.target.value }))}
+                    aria-label={`${product.name} ${axis.name}`}>
+                    <option value="">Select {axis.name}</option>
+                    {axis.values.map(value => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+              )) : showOptionSelector(product) && product && (
                 <label className="block text-sm font-medium" htmlFor="detail-product-option">
                   Option
                   <select id="detail-product-option" className="mt-2 w-full rounded-lg border border-border bg-background p-3"

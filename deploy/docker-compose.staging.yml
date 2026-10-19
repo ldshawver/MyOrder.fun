@@ -20,7 +20,7 @@ services:
     networks: [internal]
 
   migrate:
-    image: myorder-migrate:${DEPLOY_SHA:?DEPLOY_SHA is required}
+    image: ${MYORDER_MIGRATE_IMAGE:-myorder-migrate:${DEPLOY_SHA:?DEPLOY_SHA is required}}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.migrate
@@ -37,7 +37,7 @@ services:
     restart: "no"
 
   api:
-    image: myorder-api:${DEPLOY_SHA:?DEPLOY_SHA is required}
+    image: ${MYORDER_API_IMAGE:-myorder-api:${DEPLOY_SHA:?DEPLOY_SHA is required}}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
@@ -57,6 +57,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       DB_SSL: "false"
       DEPLOY_SHA: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+      MYORDER_OWNER_CLERK_ID: ${MYORDER_OWNER_CLERK_ID:?MYORDER_OWNER_CLERK_ID must be supplied}
+      # Explicit fail-closed external integration policy. Production-only
+      # WooCommerce means tenant DB credentials remain stored but unusable here.
+      WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: ${WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED:?Set explicitly to true or false}
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?CLERK_SECRET_KEY is required}
       CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:?CLERK_PUBLISHABLE_KEY is required}
       CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:?VITE_CLERK_PROXY_URL is required}
@@ -128,7 +132,7 @@ services:
     networks: [internal]
 
   platform:
-    image: myorder-platform:${DEPLOY_SHA:?DEPLOY_SHA is required}
+    image: ${MYORDER_PLATFORM_IMAGE:-myorder-platform:${DEPLOY_SHA:?DEPLOY_SHA is required}}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.platform

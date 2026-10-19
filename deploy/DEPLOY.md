@@ -19,19 +19,46 @@ the project/file and rejects a checkout, environment, database, or existing
 container mismatch. Staging and production Compose files declare distinct
 project names: `myorder-staging` and `deploy`.
 
-Staging deployments use the guard from the configured staging checkout:
+Staging deployments use a clean worktree descended from the reviewed release
+base. The guard verifies both full commit and tree SHA, the registered worktree
+location, the Compose project, database, network, volume, ports, and all image
+tags. Set `MYORDER_STAGING_ENV_FILE` to the protected staging environment file
+path supplied by the host's secret-management configuration; the path and its
+contents are not stored in source. The file must be mode `0600`.
 
 ```bash
-cd /home/serveradmin/worktrees/myorder-release-gates-20261002
+cd /path/from/approved/release-worktree-registration
+export DEPLOY_SHA="$(git rev-parse HEAD)"
+export DEPLOY_TREE="$(git rev-parse 'HEAD^{tree}')"
 node deploy/safe-compose.mjs staging build
 node deploy/safe-compose.mjs staging up db
 node deploy/safe-compose.mjs staging migrate
 node deploy/safe-compose.mjs staging up api platform nginx
 ```
 
-The wrapper uses only `deploy/docker-compose.staging.yml` and
-`deploy/.env.staging`, validates the resolved API and migration database, and
-checks that every existing target container belongs to `myorder-staging`.
+The wrapper uses only `deploy/docker-compose.staging.yml` and the protected
+staging environment file, validates the resolved API and migration database,
+and checks that each existing target container belongs to `myorder-staging`.
+For the current staging lineage, first create a verified backup/restore
+rehearsal with `scripts/release/backup-restore-rehearsal.sh`, then apply the
+approved P0 compatibility patch through the staging-only guarded action:
+
+```bash
+export MYORDER_STAGING_BACKUP_DIR=/home/serveradmin/release-backups/<verified-staging-backup-directory>
+node deploy/safe-compose.mjs staging p0
+```
+
+The `p0` action requires the backup evidence to identify the selected staging
+database and match the backup checksum. It validates the recognized 49-row
+lineage and 0075/0076 effects, requires all P0 objects to be absent, checks the
+approved SQL checksum, and verifies the marker/provenance schema and unchanged
+Drizzle ledger after applying the patch. Other staging mutations run the
+read-only migration validator and require P0 provenance, 0075/0076 schema, and
+an explicit WooCommerce external-integration policy. In production-only mode,
+the API runtime must render
+`WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED=false`; staging does not require a
+Woo store and all server-side Woo requests fail closed. Explicitly enabled
+staging retains origin, tenant, webhook-secret, and credential checks.
 
 ---
 
