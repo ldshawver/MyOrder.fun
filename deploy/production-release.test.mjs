@@ -13,6 +13,8 @@ import {
   assertProductionConfig,
   assertRelease,
   assertReleaseIdentityManifest,
+  assertReusableReleaseIdentity,
+  assertKnownNonWriterService,
   assertNoEncryptedProductionPayPalSettings,
   executeProductionSequence,
   mayRestoreRollbackApi,
@@ -209,6 +211,58 @@ test("release deploys only digest-pinned approved artifacts with external Woo di
   assert.match(controller, /docker", \["image", "inspect", reference\]/);
   assert.match(controller, /"--pull", "never", "--no-build"/);
   assert.doesNotMatch(controller, /compose\.args, "build"/);
+});
+
+test("reuses only the exact immutable staged release identity", () => {
+  const expected = {
+    sha: APPROVED_RELEASE.sha,
+    tree: APPROVED_RELEASE.tree,
+    archiveSha256: "a".repeat(64),
+    toolingSha: "b".repeat(40),
+  };
+  assert.equal(assertReusableReleaseIdentity({ ...expected }, expected), true);
+  for (const field of ["sha", "tree", "archiveSha256", "toolingSha"]) {
+    assert.throws(
+      () =>
+        assertReusableReleaseIdentity(
+          { ...expected, [field]: "0".repeat(expected[field].length) },
+          expected,
+        ),
+      /does not match/,
+    );
+  }
+});
+
+test("allowlists only the exact localhost Vite preview service identity", () => {
+  const properties = {
+    Id: "myorder-preview.service",
+    ActiveState: "active",
+    SubState: "running",
+    User: "serveradmin",
+    Group: "serveradmin",
+    ExecStart:
+      "{ path=/usr/bin/npm ; argv[]=/usr/bin/npm run preview -- --host 127.0.0.1 --port 4173 ; ignore_errors=no ; }",
+    WorkingDirectory: "/home/serveradmin/worktrees/myorder-preview",
+    FragmentPath: "/etc/systemd/system/myorder-preview.service",
+    EnvironmentFiles: "",
+  };
+  assert.equal(
+    assertKnownNonWriterService("myorder-preview.service", properties),
+    true,
+  );
+  assert.throws(
+    () =>
+      assertKnownNonWriterService("myorder-preview.service", {
+        ...properties,
+        ExecStart:
+          "{ path=/usr/bin/npm ; argv[]=/usr/bin/npm run worker ; ignore_errors=no ; }",
+      }),
+    /command mismatch/,
+  );
+  assert.throws(
+    () => assertKnownNonWriterService("unknown.service", properties),
+    /not an approved non-writer/,
+  );
 });
 
 test("deployment ordering stops all writers and verifies the protected snapshot before migration", async () => {
