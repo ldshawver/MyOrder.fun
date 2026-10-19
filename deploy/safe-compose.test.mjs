@@ -206,7 +206,10 @@ test("requires explicit production authorization and exact production targets", 
   assert.equal(validatePlan({ ...args, authorization: "DEPLOY-PRODUCTION" }), true);
   const disabledProduction = config("production", "alavont");
   disabledProduction.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "false";
-  assert.throws(() => validatePlan({ ...args, config: disabledProduction, authorization: "DEPLOY-PRODUCTION" }), /Production WooCommerce.*explicitly enabled/);
+  assert.equal(validatePlan({ ...args, config: disabledProduction, authorization: "DEPLOY-PRODUCTION" }), true);
+  const missingProductionPolicy = config("production", "alavont");
+  delete missingProductionPolicy.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED;
+  assert.throws(() => validatePlan({ ...args, config: missingProductionPolicy, authorization: "DEPLOY-PRODUCTION" }), /Production WooCommerce.*explicitly set/);
   assert.throws(() => validatePlan({ ...args, project: "myorder-staging", authorization: "DEPLOY-PRODUCTION" }), /project/);
 });
 test("restricts migration maintenance stop to the API container only", () => {
