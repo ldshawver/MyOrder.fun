@@ -358,6 +358,13 @@
       "when": 1791358517378,
       "tag": "0076_tenant_woo_store_url_no_default",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1792440000000,
+      "tag": "0077_catalogue_inventory_reconciliation",
+      "breakpoints": true
     }
   ]
 }
