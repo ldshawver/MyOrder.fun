@@ -148,12 +148,12 @@ function verifyLiveRollback(prefix, permittedCurrentImages = null) {
   for (const [container, service] of serviceImages) {
     const isServiceBaseline = serviceBaselines.get(service);
     const expectedRevision = isServiceBaseline ? STAGING_FEATURE.rollbackRevision : STAGING_FEATURE.sha;
-    if (container.Config?.Labels?.["org.opencontainers.image.revision"] !== expectedRevision) throw new Error(`Live staging ${service} revision label is not approved`);
+    if (container.Config?.Labels?.["org.opencontainers.image.revision"] !== expectedRevision || container.Config?.Labels?.["com.myorder.deploy-sha"] !== expectedRevision) throw new Error(`Live staging ${service} revision labels are not approved`);
     const expected = isServiceBaseline ? rollbackRefs[service] : permittedCurrentImages[service];
     if (container.Config?.Image !== expected.reference) throw new Error(`Live staging ${service} Compose reference is not immutable and approved`);
     if (isServiceBaseline) {
       const image = JSON.parse(run("docker", ["image", "inspect", expected.id, "--format", "{{json .}}"]));
-      if (image.Id !== expected.id || image.Os !== "linux" || image.Architecture !== STAGING_FEATURE.arch || !image.RepoDigests?.includes(expected.reference) || image.Config?.Labels?.["org.opencontainers.image.revision"] !== STAGING_FEATURE.rollbackRevision) throw new Error(`Staging ${service} rollback artifact identity is unavailable`);
+      if (image.Id !== expected.id || image.Os !== "linux" || image.Architecture !== STAGING_FEATURE.arch || !image.RepoDigests?.includes(expected.reference) || image.Config?.Labels?.["org.opencontainers.image.revision"] !== STAGING_FEATURE.rollbackRevision || image.Config?.Labels?.["com.myorder.deploy-sha"] !== STAGING_FEATURE.rollbackRevision) throw new Error(`Staging ${service} rollback artifact identity is unavailable`);
     }
   }
   return { api, platform, database, nginx };
