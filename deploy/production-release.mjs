@@ -30,7 +30,7 @@ export const APPROVED_RELEASE = Object.freeze({
   tree: "c2851c74077f94e189867b574a3f1aef244f61cc",
   images: Object.freeze({
     api: "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
-    platform: "sha256:760803933f9fd6a705a5d263c6298a94e30fb2f0b861ae962d56d732f27e237e",
+    platform: "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
     migrate: "sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
   }),
   revisions: Object.freeze({
