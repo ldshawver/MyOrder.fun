@@ -509,7 +509,7 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(
     workflow,
-    /RELEASE_BASE_SHA: 8744d8e34ab8627555919aec337abde0c3291e0f/,
+    /RELEASE_BASE_SHA: 40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833/,
   );
   assert.match(
     workflow,
