@@ -278,10 +278,12 @@ describe("POST /api/admin/inventory-template/seed — JSON contract", () => {
     // Existing-rows lookup → empty (everything will be inserted).
     configureDb([[]]);
 
+    let insertedRows: Array<{ itemName: string }> = [];
     (db.insert as ReturnType<typeof vi.fn>).mockImplementation(() => ({
-      values: vi.fn(() => ({
-        returning: () => Promise.resolve([{ id: 1 }]),
-      })),
+      values: vi.fn((rows: Array<{ itemName: string }>) => {
+        insertedRows = rows;
+        return { returning: () => Promise.resolve([{ id: 1 }]) };
+      }),
     }));
     (db.update as ReturnType<typeof vi.fn>).mockImplementation(() => ({
       set: vi.fn(() => ({
@@ -296,6 +298,11 @@ describe("POST /api/admin/inventory-template/seed — JSON contract", () => {
     expect(typeof res.body.inserted).toBe("number");
     expect(typeof res.body.updated).toBe("number");
     expect(res.body.inserted).toBeGreaterThan(0);
+    const insertedNames = insertedRows.map(row => row.itemName);
+    expect(insertedNames).toContain("Butane Lighter");
+    expect(insertedNames).not.toContain("Squirting Dildo");
+    expect(insertedNames).not.toContain("Crimson Brick Condoms");
+    expect(insertedNames).not.toContain("Soft Touch Satin Set");
   });
 
   it("returns JSON 500 (never HTML) when the database throws", async () => {
