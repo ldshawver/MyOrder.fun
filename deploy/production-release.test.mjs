@@ -613,7 +613,12 @@ test("maintenance closes ingress during database work and checks the API private
     new URL("./production-release.mjs", import.meta.url),
     "utf8",
   );
-  assert.match(runner, /"stop",\s*"nginx",\s*"api"/);
+  assert.match(runner, /run\("docker", \["stop", nginxId\]\)/);
+  assert.match(runner, /run\("docker", \["stop", apiId\]\)/);
+  assert.ok(
+    runner.indexOf('run("docker", ["stop", nginxId])') <
+      runner.indexOf('run("docker", ["stop", apiId])'),
+  );
   assert.match(runner, /waitForApiContainer\(compose, sha\)/);
   assert.match(runner, /Production ingress proxy did not stop/);
   assert.ok(
