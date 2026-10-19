@@ -119,6 +119,43 @@ export function assertReleaseIdentityManifest(identity, expected) {
   return true;
 }
 
+export function assertReusableReleaseIdentity(identity, expected) {
+  if (
+    identity?.sha !== expected?.sha ||
+    identity?.tree !== expected?.tree ||
+    identity?.archiveSha256 !== expected?.archiveSha256 ||
+    identity?.toolingSha !== expected?.toolingSha
+  )
+    throw new Error("Existing versioned release identity does not match this guarded deployment");
+  return true;
+}
+
+export function assertKnownNonWriterService(service, properties) {
+  if (service !== "myorder-preview.service")
+    throw new Error("Service is not an approved non-writer");
+  const expected = {
+    Id: "myorder-preview.service",
+    ActiveState: "active",
+    SubState: "running",
+    User: "serveradmin",
+    Group: "serveradmin",
+    WorkingDirectory: "/home/serveradmin/worktrees/myorder-preview",
+    FragmentPath: "/etc/systemd/system/myorder-preview.service",
+    EnvironmentFiles: "",
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if ((properties?.[key] ?? "") !== value)
+      throw new Error(`Known non-writer service identity mismatch: ${key}`);
+  }
+  if (
+    !/^\{ path=\/usr\/bin\/npm ; argv\[\]=\/usr\/bin\/npm run preview -- --host 127\.0\.0\.1 --port 4173 ;/.test(
+      properties?.ExecStart ?? "",
+    )
+  )
+    throw new Error("Known non-writer service command mismatch");
+  return true;
+}
+
 export function assertProductionConfig(config, expected) {
   if (config?.name !== PRODUCTION.project)
     throw new Error("Production Compose project mismatch");
@@ -517,17 +554,41 @@ function verifyWriterSet(compose) {
     )
       throw new Error("A production migration container is already running");
   }
-  const externalWriters = run(
+  const externalWriterCandidates = run(
     "sh",
     [
       "-lc",
       "systemctl list-units --all --type=service --no-legend --plain | awk 'tolower($0) ~ /(myorder|alavont).*active/ {print $1}'; systemctl list-timers --all --no-legend --plain | awk 'tolower($0) ~ /(myorder|alavont)/ {print $1}'; grep -RIlE '/opt/alavont|myorder|alavont' /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily /var/spool/cron/crontabs 2>/dev/null | grep -vE '/(certbot|logrotate|e2scrub|sysstat)' || true",
     ],
     { encoding: "utf8" },
-  ).trim();
-  if (externalWriters)
+  )
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  const previewUnit = "myorder-preview.service";
+  const previewIndex = externalWriterCandidates.indexOf(previewUnit);
+  if (previewIndex !== -1) {
+    const properties = Object.fromEntries(
+      run("systemctl", [
+        "show",
+        previewUnit,
+        "--no-pager",
+        "--property=Id,ActiveState,SubState,User,Group,ExecStart,WorkingDirectory,FragmentPath,EnvironmentFiles",
+      ])
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const separator = line.indexOf("=");
+          return [line.slice(0, separator), line.slice(separator + 1)];
+        }),
+    );
+    assertKnownNonWriterService(previewUnit, properties);
+    externalWriterCandidates.splice(previewIndex, 1);
+  }
+  if (externalWriterCandidates.length)
     throw new Error(
-      `Potential external production writer/scheduler exists: ${externalWriters}`,
+      `Potential external production writer/scheduler exists: ${externalWriterCandidates.join("\n")}`,
     );
   return idsByService;
 }
@@ -1139,10 +1200,11 @@ async function main() {
   if ((await sha256File(archivePath)) !== archiveSha256)
     throw new Error("Release archive SHA-256 does not match workflow metadata");
   mkdirSync(path.dirname(releaseRoot), { recursive: true, mode: 0o755 });
-  if (existsSync(releaseRoot))
-    throw new Error(
-      "Versioned release directory already exists; refusing overwrite",
-    );
+  const identityPath = path.join(
+    PRODUCTION.root,
+    "releases",
+    `${sha}.identity.json`,
+  );
   const archiveEntries = run("tar", ["--list", "--gzip", "--file", archivePath])
     .split("\n")
     .filter(Boolean);
@@ -1169,38 +1231,58 @@ async function main() {
   try { packagedIdentity = JSON.parse(packagedIdentityText); }
   catch { throw new Error("Release archive identity manifest is invalid"); }
   assertReleaseIdentityManifest(packagedIdentity, { sha, tree });
-  const unpackRoot = `${releaseRoot}.extract-${process.pid}`;
-  if (existsSync(unpackRoot))
-    throw new Error(
-      "A prior incomplete extraction exists; refusing to overwrite it",
+  if (existsSync(releaseRoot)) {
+    assertRealFilesystemPath(releaseRoot, "directory");
+    assertRealFilesystemPath(identityPath, "file");
+    let existingIdentity;
+    let installedManifest;
+    try {
+      existingIdentity = JSON.parse(readFileSync(identityPath, "utf8"));
+      installedManifest = JSON.parse(
+        readFileSync(
+          path.join(releaseRoot, "MYORDER-RELEASE-IDENTITY.json"),
+          "utf8",
+        ),
+      );
+    } catch {
+      throw new Error("Existing versioned release identity metadata is invalid");
+    }
+    assertReusableReleaseIdentity(existingIdentity, {
+      sha,
+      tree,
+      archiveSha256,
+      toolingSha,
+    });
+    assertReleaseIdentityManifest(installedManifest, { sha, tree });
+  } else {
+    const unpackRoot = `${releaseRoot}.extract-${process.pid}`;
+    if (existsSync(unpackRoot))
+      throw new Error(
+        "A prior incomplete extraction exists; refusing to overwrite it",
+      );
+    mkdirSync(unpackRoot, { mode: 0o755 });
+    try {
+      run("tar", [
+        "--extract",
+        "--gzip",
+        "--file",
+        archivePath,
+        "--directory",
+        unpackRoot,
+        "--no-same-owner",
+        "--no-same-permissions",
+      ]);
+      renameSync(unpackRoot, releaseRoot);
+    } catch (error) {
+      rmSync(unpackRoot, { recursive: true, force: true });
+      throw error;
+    }
+    writeFileSync(
+      identityPath,
+      `${JSON.stringify({ sha, tree, archiveSha256, toolingSha, installedAt: new Date().toISOString() }, null, 2)}\n`,
+      { flag: "wx", mode: 0o444 },
     );
-  mkdirSync(unpackRoot, { mode: 0o755 });
-  try {
-    run("tar", [
-      "--extract",
-      "--gzip",
-      "--file",
-      archivePath,
-      "--directory",
-      unpackRoot,
-      "--no-same-owner",
-      "--no-same-permissions",
-    ]);
-    renameSync(unpackRoot, releaseRoot);
-  } catch (error) {
-    rmSync(unpackRoot, { recursive: true, force: true });
-    throw error;
   }
-  const identityPath = path.join(
-    PRODUCTION.root,
-    "releases",
-    `${sha}.identity.json`,
-  );
-  writeFileSync(
-    identityPath,
-    `${JSON.stringify({ sha, tree, archiveSha256, toolingSha, installedAt: new Date().toISOString() }, null, 2)}\n`,
-    { flag: "wx", mode: 0o444 },
-  );
   if (
     realpathSync(releaseRoot) !== releaseRoot ||
     lstatSync(releaseRoot).isSymbolicLink()
