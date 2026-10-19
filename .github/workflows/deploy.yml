@@ -52,6 +52,8 @@ jobs:
           set -euo pipefail
           git show "$GITHUB_SHA:artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts" \
             > artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts
+          git show "$GITHUB_SHA:.github/workflows/deploy.yml" \
+            > .github/workflows/deploy.yml
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
