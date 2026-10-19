@@ -770,7 +770,7 @@ function createSnapshot(compose, backupRoot) {
   const tocInputFd = openSync(partial, "r");
   const toc = spawnSync(
     "docker",
-    [...compose.args, "exec", "-T", "db", "pg_restore", "--list", "-"],
+    [...compose.args, "exec", "-T", "db", "pg_restore", "--list"],
     {
       env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha },
       stdio: [tocInputFd, tocFd, "pipe"],
