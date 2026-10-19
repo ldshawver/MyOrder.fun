@@ -365,7 +365,7 @@ test("production rollback baseline is the current pre-release image set", () => 
   assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:e9362c335f4f7a8de8db03673d63afb4c8c1e46d7cc5bed9fe45afc5221765e6");
   assert.equal(PRODUCTION_BASELINE.platformRevision, "579cce225c0f9e7bee41a4c226d43e5ba5c86606");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.images).sort(), ["api", "migrate", "platform"]);
-  assert.equal(APPROVED_RELEASE.images.api, "sha256:d0c4853cb3c0c0f10a40cee30357b8436bed09570a8ddd1117f98bd091da2eea");
+  assert.equal(APPROVED_RELEASE.images.api, "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
   assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.platform, FROZEN_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.migrate, FROZEN_RELEASE.sha);
