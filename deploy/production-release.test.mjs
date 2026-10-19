@@ -16,6 +16,7 @@ import {
   assertReusableReleaseIdentity,
   assertKnownNonWriterService,
   assertNoEncryptedProductionPayPalSettings,
+  assertPublicCatalogSmokePayload,
   executeProductionSequence,
   mayRestoreRollbackApi,
   sameWriterInventory,
@@ -77,6 +78,21 @@ const expectedConfig = {
     external: { name: "deploy_external" },
   },
 };
+
+test("public catalogue smoke gate validates the API items response contract", () => {
+  assert.equal(
+    assertPublicCatalogSmokePayload({ items: [{ id: 1 }], total: 304 }),
+    1,
+  );
+  assert.throws(
+    () => assertPublicCatalogSmokePayload({ products: [{ id: 1 }], total: 1 }),
+    /returned no items/,
+  );
+  assert.throws(
+    () => assertPublicCatalogSmokePayload({ items: [], total: 0 }),
+    /returned no items/,
+  );
+});
 
 test("accepts only the approved frozen release identity and immutable release path", () => {
   assert.equal(

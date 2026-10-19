@@ -335,6 +335,18 @@ export function assertNoEncryptedProductionPayPalSettings(count) {
   return true;
 }
 
+export function assertPublicCatalogSmokePayload(payload) {
+  const items = payload?.items;
+  if (
+    !Array.isArray(items) ||
+    items.length === 0 ||
+    !Number.isSafeInteger(payload?.total) ||
+    payload.total < items.length
+  )
+    throw new Error("Production Lucifer public catalogue returned no items");
+  return items.length;
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: "utf8", ...options });
   if (result.error) throw result.error;
@@ -1450,13 +1462,7 @@ async function main() {
           "Production Lucifer public catalogue smoke test failed",
         );
       const luciferBody = await lucifer.json().catch(() => ({}));
-      if (
-        !Array.isArray(luciferBody.products) ||
-        luciferBody.products.length === 0
-      )
-        throw new Error(
-          "Production Lucifer public catalogue returned no products",
-        );
+      const luciferItems = assertPublicCatalogSmokePayload(luciferBody);
       const accessChecks = [
         ["authentication/orders", "/api/orders"],
         ["admin", "/api/admin/settings/paypal-status"],
@@ -1554,7 +1560,7 @@ async function main() {
         recentLogs.match(/\b(?:ERROR|FATAL|uncaught exception)\b/gi) ?? []
       ).length;
       console.log(
-        `production smoke health_sha=${api.sha} homepage=${home.status} lucifer_products=${luciferBody.products.length} unauthenticated=${accessResults.join(",")} paypal=disabled cash=not-mutated print_bridge=not-probed sanitized_log_errors=${errorLogCount} secret_like_log_entries=${secretLikeLogEntries} checks=health,homepage,public_catalog,auth,admin,inventory_read_gate,orders_read_gate,ledger,compose,restart,oom,log_review`,
+        `production smoke health_sha=${api.sha} homepage=${home.status} lucifer_items=${luciferItems} unauthenticated=${accessResults.join(",")} paypal=disabled cash=not-mutated print_bridge=not-probed sanitized_log_errors=${errorLogCount} secret_like_log_entries=${secretLikeLogEntries} checks=health,homepage,public_catalog,auth,admin,inventory_read_gate,orders_read_gate,ledger,compose,restart,oom,log_review`,
       );
     },
   };
