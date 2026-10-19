@@ -278,9 +278,11 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/apply
       const lockedCatalogIds = rows<{ catalogItemId: number }>(await tx.execute(sql`SELECT DISTINCT ii.catalog_item_id AS "catalogItemId"
         FROM inventory_items ii JOIN catalogue_options co ON co.tenant_id=ii.tenant_id AND co.inventory_item_id=ii.id
         WHERE co.tenant_id=${tenantId} AND co.product_id=${productId} ORDER BY ii.catalog_item_id`)).map(r => Number(r.catalogItemId));
-      for (const catalogItemId of lockedCatalogIds) await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${catalogItemId})`);
       if ("create" in body.target) await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, 740016)`);
       await tx.execute(sql`SELECT id FROM inventory_balances WHERE tenant_id=${tenantId} AND product_id=ANY(${intArray(lockedCatalogIds)}) ORDER BY product_id,location_id FOR UPDATE`);
+      // Match postInventoryMovement's balance-row then item-advisory lock order.
+      // Reversing this order can deadlock with an in-flight inventory movement.
+      for (const catalogItemId of lockedCatalogIds) await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${catalogItemId})`);
       await tx.execute(sql`SELECT id FROM inventory_valuation_states WHERE tenant_id=${tenantId} AND catalog_item_id=ANY(${intArray(lockedCatalogIds)}) ORDER BY catalog_item_id FOR UPDATE`);
       const pre = await snapshot(tx, tenantId, productId, body.target);
       if (pre.fingerprint !== body.previewFingerprint) throw Object.assign(new Error("Inventory changed after preview. Refresh and review the new preview."), { status: 409, code: "STALE_PREVIEW" });
