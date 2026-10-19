@@ -620,6 +620,10 @@ test("maintenance closes ingress during database work and checks the API private
       runner.indexOf('run("docker", ["stop", apiId])'),
   );
   assert.match(runner, /waitForApiContainer\(compose, sha\)/);
+  assert.match(
+    runner,
+    /\.\.\.compose\.args, "ps", "--all", "--quiet", "api"\],\s*\{ env: releaseComposeEnvironment\(\) \}/,
+  );
   assert.match(runner, /Production ingress proxy did not stop/);
   assert.ok(
     runner.indexOf('"verify-api": async () => waitForApiContainer') <
