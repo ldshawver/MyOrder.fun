@@ -479,6 +479,27 @@ function query(compose, sql, env = {}) {
   ).trim();
 }
 
+export function sameWriterInventory(left, right) {
+  if (!(left instanceof Map) || !(right instanceof Map) || left.size !== right.size)
+    return false;
+  const stableIdentity = (inventory) =>
+    [...inventory.entries()]
+      .map(([service, container]) => [
+        service,
+        container.id,
+        container.image,
+        container.imageId,
+        container.revision,
+      ])
+      .sort(([leftService], [rightService]) =>
+        leftService.localeCompare(rightService),
+      );
+  return (
+    JSON.stringify(stableIdentity(left)) ===
+    JSON.stringify(stableIdentity(right))
+  );
+}
+
 function verifyWriterSet(compose) {
   const rows = run("docker", [
     "ps",
@@ -1345,12 +1366,9 @@ async function main() {
     },
     "verify-writer-inventory": async () => {
       const current = verifyWriterSet(compose);
-      if (
-        JSON.stringify([...current.entries()].sort()) !==
-        JSON.stringify([...containerBaseline.entries()].sort())
-      )
+      if (!sameWriterInventory(current, containerBaseline))
         throw new Error(
-          "Production writer/container inventory changed during release preparation",
+          "Production writer/container identity changed during release preparation",
         );
     },
     "stop-writers": async () => {
