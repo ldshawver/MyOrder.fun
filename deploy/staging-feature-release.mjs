@@ -135,6 +135,7 @@ function verifyLiveRollback(prefix, permittedCurrentImages = null, allowUnhealth
     if (container.State?.Health?.Status !== "healthy" && !(allowUnhealthyApp && ["api", "platform"].includes(service) && container.State?.Health?.Status === "unhealthy")) throw new Error(`A running staging ${service} service is not healthy`);
   }
   const serviceImages = [[api, "api"], [platform, "platform"]];
+  const serviceBaselines = new Map(serviceImages.map(([container, service]) => [service, container.Image === STAGING_FEATURE.rollback[service]]));
   validateStagingRollbackAppState({
     apiImage: api.Image, platformImage: platform.Image,
     apiRevision: api.Config?.Labels?.["org.opencontainers.image.revision"],
