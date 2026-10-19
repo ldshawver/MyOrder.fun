@@ -1119,13 +1119,11 @@ async function waitFor(url, expectedSha, attempts = 45) {
 }
 
 async function waitForApiContainer(compose, expectedSha, attempts = 45) {
-  const apiId = run("docker", [
-    ...compose.args,
-    "ps",
-    "--all",
-    "--quiet",
-    "api",
-  ]).trim();
+  const apiId = run(
+    "docker",
+    [...compose.args, "ps", "--all", "--quiet", "api"],
+    { env: releaseComposeEnvironment() },
+  ).trim();
   if (!apiId) throw new Error("Production API container is missing");
   const probe = `fetch('http://127.0.0.1:8080/healthz').then(async r=>{const b=await r.json();if(!r.ok||b.sha!==${JSON.stringify(expectedSha)})process.exit(1)}).catch(()=>process.exit(1))`;
   for (let i = 0; i < attempts; i++) {
