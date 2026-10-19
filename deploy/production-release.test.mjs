@@ -536,7 +536,7 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.match(runner, /existing print asset differs/);
   assert.doesNotMatch(runner, /rsync|--delete/);
   assert.match(runner, /\/opt\/alavont\/shared\/print-assets/);
-  assert.match(workflow, /production-release\\.mjs/);
+  assert.match(workflow, /production-release\.mjs/);
   assert.ok(workflow.includes("name: Stage immutable replacement API and Platform images"));
   assert.ok(workflow.includes("REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf"));
   assert.ok(workflow.includes("docker pull '$REPLACEMENT_PLATFORM_REFERENCE'"));
