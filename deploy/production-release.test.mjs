@@ -517,10 +517,10 @@ test("production workflow uses versioned release archives and never deletes or s
   );
   assert.doesNotMatch(workflow, /rsync[^\n]*--delete|rsync\s+-[^\n]*delete/);
   assert.match(workflow, /git archive/);
-  assert.match(workflow, /test ! -L '\$DEPLOY_PATH'/);
+  assert.ok(workflow.includes("test ! -L '${DEPLOY_PATH}'"));
   assert.match(
     workflow,
-    /test ! -L '\$DEPLOY_PATH\/incoming\/\$RELEASE_ARCHIVE_NAME'/,
+    /test ! -L '\$\{DEPLOY_PATH\}\/incoming\/\$\{RELEASE_ARCHIVE_NAME\}'/,
   );
   assert.match(runner, /releases/);
   assert.match(runner, /"--extract"/);
@@ -539,9 +539,9 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.match(workflow, /production-release\.mjs/);
   assert.ok(workflow.includes("name: Stage immutable replacement API and Platform images"));
   assert.ok(workflow.includes("REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf"));
-  assert.ok(workflow.includes("docker pull '$REPLACEMENT_PLATFORM_REFERENCE'"));
+  assert.ok(workflow.includes("docker pull '${REPLACEMENT_PLATFORM_REFERENCE}'"));
   assert.ok(workflow.includes("sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf"));
-  assert.ok(workflow.includes("grep -Fx '$REPLACEMENT_PLATFORM_REFERENCE'"));
+  assert.ok(workflow.includes("grep -Fx '${REPLACEMENT_PLATFORM_REFERENCE}'"));
 });
 
 test("production SSH uses an ephemeral Tailscale route and pinned SSH host identity only", () => {
@@ -566,15 +566,15 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   assert.match(workflow, /oauth-secret: \$\{\{ secrets\.TS_OAUTH_SECRET \}\}/);
   assert.match(workflow, /tags: tag:github-actions/);
   assert.match(workflow, /VPS_TAILSCALE_HOST: 100\.85\.15\.43/);
-  assert.match(workflow, /nc -z -w 5 "\$VPS_TAILSCALE_HOST" "\$VPS_PORT"/);
+  assert.ok(workflow.includes('nc -z -w 5 "${VPS_TAILSCALE_HOST}" "${VPS_PORT}"'));
   assert.doesNotMatch(
     workflow,
     /VPS_HOST_FALLBACK|SELECTED_VPS_HOST=\$\{VPS_HOST\}/,
   );
   assert.doesNotMatch(workflow, /ssh-keyscan|StrictHostKeyChecking=accept-new/);
-  assert.match(workflow, /ssh-keygen \\\s*-F "\$VPS_SSH_HOST_KEY_ALIAS"/);
+  assert.ok(workflow.includes('ssh-keygen -F "${VPS_SSH_HOST_KEY_ALIAS}" -f ~/.ssh/known_hosts'));
   assert.match(workflow, /StrictHostKeyChecking=yes/);
-  assert.match(workflow, /HostKeyAlias=\$VPS_SSH_HOST_KEY_ALIAS/);
+  assert.ok(workflow.includes('HostKeyAlias=${VPS_SSH_HOST_KEY_ALIAS}'));
   assert.match(
     workflow,
     /VPS_PRIVATE_KEY: \$\{\{ secrets\.VPS_SSH_KEY \|\| secrets\.VPS_SECRET_KEY \}\}/,
@@ -588,15 +588,24 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
     /RELEASE_SHA: \$\{\{ inputs\.release_sha \}\}/,
   );
   assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
-  assert.match(workflow, /test "\$RELEASE_SHA" = "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb"/);
-  assert.match(workflow, /ref: \$\{\{ inputs\.release_sha \|\| '3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb' \}\}/);
+  const globalEnv = workflow.match(/^env:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
+  assert.equal(APPROVED_RELEASE.sha, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
+  assert.equal(APPROVED_RELEASE.tree, "c2851c74077f94e189867b574a3f1aef244f61cc");
+  for (const [key, value] of [["SHA", APPROVED_RELEASE.sha], ["TREE", APPROVED_RELEASE.tree]]) {
+    const pin = `PINNED_RELEASE_${key}`;
+    assert.deepEqual(globalEnv.match(new RegExp(`^  ${pin}: ([a-f0-9]{40})$`, "gm")), [`  ${pin}: ${value}`]);
+    assert.equal(workflow.match(new RegExp(`\\b${pin}\\s*[:=]`, "g"))?.length, 1);
+    assert.ok(workflow.includes(`          test "\${RELEASE_${key}}" = "\${${pin}}"\n`));
+    assert.ok(workflow.includes(`RELEASE_${key}: \${{ github.event_name == 'workflow_dispatch' && inputs.release_${key.toLowerCase()} || '${value}' }}`));
+  }
+  assert.ok(workflow.includes('ref: ${{ env.RELEASE_SHA }}'));
   assert.match(workflow, /name: Release controller tests/);
   assert.match(workflow, /needs: \[test, release-tooling\]/);
   assert.match(workflow, /branches:\n\s+- "release-tooling\/\*\*"/);
   assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
   assert.match(workflow, /RELEASE_BASE_TREE: 76bb2bc969450206f0be4754a6ef95434cd27b4a/);
-  assert.match(workflow, /git rev-parse "\$RELEASE_BASE_SHA\^\{tree\}"/);
-  assert.match(workflow, /git merge-base --is-ancestor "\$RELEASE_BASE_SHA" "\$RELEASE_SHA"/);
+  assert.ok(workflow.includes('git rev-parse "${RELEASE_BASE_SHA}^{tree}"'));
+  assert.ok(workflow.includes('git merge-base --is-ancestor "${RELEASE_BASE_SHA}" "${RELEASE_SHA}"'));
   assert.match(workflow, /MYORDER-RELEASE-IDENTITY\.json/);
   assert.match(readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8"), /assertReleaseIdentityManifest\(packagedIdentity, \{ sha, tree \}\)/);
 });
