@@ -63,3 +63,28 @@ test("unknown, missing, reordered and fabricated historical rows fail", () => {
   fabricatedId[37].id = 999;
   assert.throws(() => validateAppliedLineage(local, fabricatedId));
 });
+
+test("49-row staging permits only 0077 and recognizes its exact 50-row continuation", () => {
+  const before = [...staging];
+  for (const index of [39, 40, 41, 42, 46, 47, 48, 49, 50]) {
+    before.push({ id: before.length + 1, hash: local[index].hash, created_at: String(local[index].when) });
+  }
+  assert.equal(before.length, 49);
+  const verified = validateAppliedLineage(local, before);
+  const pending = local.map((_: unknown, index: number) => index)
+    .filter((index: number) => !verified.appliedJournalIndices.has(index));
+  assert.deepEqual(pending, [51]);
+  assert.equal(local[51].tag, "0077_catalogue_inventory_reconciliation");
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(before.length - 40), pending);
+
+  const next = { id: 50, hash: local[51].hash, created_at: String(local[51].when) };
+  const after = [...before, next];
+  assert.equal(after.length, 50);
+  assert.equal(validateAppliedLineage(local, after).appliedJournalIndices.size, local.length);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(after.length - 40), []);
+
+  assert.throws(() => validateAppliedLineage(local, [...before, { ...next, hash: "0".repeat(64) }]));
+  assert.throws(() => validateAppliedLineage(local, [...before, { ...next, created_at: String(local[51].when + 1) }]));
+  assert.throws(() => validateAppliedLineage(local, [...before.slice(0, -1), next]));
+  assert.throws(() => validateAppliedLineage(local, [...after, { ...next, id: 51 }]));
+});
