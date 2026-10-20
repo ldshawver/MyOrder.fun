@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import pg from "pg";
+import { assertHistoricalInventorySchema, assertReconciliationSchema } from "./reconciliation-schema.js";
 import {
   assertHistoricalStaging0047Schema,
   historicalStaging0047,
@@ -208,6 +209,7 @@ function loadJournal(): LocalMigration[] {
 }
 
 async function validateCandidateTailSchema(client: pg.Client, applied: Set<number>): Promise<void> {
+  if (applied.has(51)) await assertReconciliationSchema(client);
   if (applied.has(49)) {
     const result = await client.query<{ healthy: boolean }>(`
       SELECT
@@ -338,11 +340,7 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
             FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
             WHERE n.nspname='public' AND p.proname IN ('block_live_inventory_model_change','create_standard_option_for_catalogue_item')
         ) SELECT kind,key,md5(definition) AS digest FROM objects`, [legacyTables]);
-      const fingerprint = createHash("sha256").update(objects.rows
-        .map((row) => `${row.kind}|${row.key}|${row.digest}`).sort().join("\n")).digest("hex");
-      if (objects.rows.length !== 308 || fingerprint !== "6f869975ab4b5538f094c828524f32c3db5a6cfcc1987a29a362b044c055600f") {
-        fail("historical staging 0064-0066 resulting schema does not match the verified snapshot");
-      }
+      assertHistoricalInventorySchema(objects.rows, appliedJournalIndices.has(51));
       const validity = await client.query<{ healthy: boolean }>(`
         SELECT NOT EXISTS (
           SELECT 1 FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid

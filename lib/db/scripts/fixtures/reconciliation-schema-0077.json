@@ -1,0 +1,132 @@
+[
+  {
+    "kind": "table",
+    "key": "catalogue_inventory_reconciliation_events",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.id",
+    "digest": "31c6a1488006b529d60d55361ee88292"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.tenant_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.product_id",
+    "digest": "59b47b71dd8726af3077156f2bd00936"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.actor_user_id",
+    "digest": "2906009032a543c31b0e861affa581e8"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.idempotency_key",
+    "digest": "f6804842bd62bc5d398cb4f9368fffee"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.reverses_event_id",
+    "digest": "b985fdfe967387d26875752b0d138f44"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.preview_fingerprint",
+    "digest": "8f6970b053e2ab8c815343df58d36919"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.reason",
+    "digest": "b67414c968671890993a6a70cdd0a364"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.evidence",
+    "digest": "3313fb9a2248544753469958d4560a53"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.finalized_at",
+    "digest": "60bdc20073972fc4e67bf847fb6df552"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_inventory_reconciliation_events.created_at",
+    "digest": "e5eb11a17cf234bd0de105d2f57f6cee"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliation_events_pkey",
+    "digest": "8575827bd72cf82bc402dd2dbf786ee8"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliatio_tenant_id_idempotency_key_key",
+    "digest": "57221c55c3dd41116b38dbbae9204073"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliation_events_reverses_event_id_key",
+    "digest": "e0eba8d2353ae204b6e57765368f4493"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliation_events_tenant_id_fkey",
+    "digest": "e1088421f598a2a1834629de3c919dfb"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliation_events_actor_user_id_fkey",
+    "digest": "48f36f1b490de54c6951b615dec2258c"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliation_event_reverses_event_id_fkey",
+    "digest": "4167b446b4d9c9754add92e89e631277"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliation_ev_tenant_id_product_id_fkey",
+    "digest": "6d352d239e02c92221f4224273088c24"
+  },
+  {
+    "kind": "index",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliation_events_pkey",
+    "digest": "0245af7f04ec8ed2034f43f6f2d31c46"
+  },
+  {
+    "kind": "index",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliatio_tenant_id_idempotency_key_key",
+    "digest": "f91d2aaa4f61222f311672b6f91d1221"
+  },
+  {
+    "kind": "index",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliation_events_reverses_event_id_key",
+    "digest": "7ad9b7958ad2dfbf9f0f6fed120a63f2"
+  },
+  {
+    "kind": "trigger",
+    "key": "catalogue_inventory_reconciliation_events.catalogue_inventory_reconciliation_immutable",
+    "digest": "1d97faeb8c4cc202ede3287ea1df4394"
+  },
+  {
+    "kind": "trigger",
+    "key": "catalogue_products.catalogue_product_inventory_model_guard",
+    "digest": "473277930b64abef8b728d9cf8be9138"
+  },
+  {
+    "kind": "function",
+    "key": "block_live_inventory_model_change",
+    "digest": "9fdf8e5f455713a5c5a67da35b2d0cbe"
+  },
+  {
+    "kind": "function",
+    "key": "prevent_catalogue_reconciliation_mutation",
+    "digest": "bbc04c41deb9421b323149cf4f2d93c2"
+  }
+]

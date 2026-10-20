@@ -91,6 +91,8 @@ jobs:
       - run: pnpm lint:ratchet
       - run: pnpm --filter @workspace/scripts inventory:lockdown
       - run: pnpm test
+      - name: Validate migration lineage and 0077 schema fingerprints
+        run: pnpm --filter @workspace/db exec tsx --test scripts/migration-lineage.test.ts scripts/reconciliation-schema.test.ts
       - name: Run guarded production release orchestration tests
         run: node --test deploy/production-release.test.mjs
       - name: Run guarded staging feature release tests
