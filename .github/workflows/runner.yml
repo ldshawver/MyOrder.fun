@@ -1,0 +1,22 @@
+name: Check VPS Tailscale connectivity
+
+on:
+  workflow_dispatch:
+
+jobs:
+  connectivity-check:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
+
+      - name: Check VPS SSH port is reachable
+        run: nc -z -w 5 100.85.15.43 22

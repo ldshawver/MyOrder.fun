@@ -250,7 +250,7 @@ describe("receipts and deploy workflow", () => {
       "Verify Tailscale route to production SSH",
       "tags: tag:github-actions",
       "StrictHostKeyChecking=yes",
-      "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS",
+      "HostKeyAlias=${VPS_SSH_HOST_KEY_ALIAS}",
       "production_confirmation:",
       "environment: production",
       "production-release.mjs",
