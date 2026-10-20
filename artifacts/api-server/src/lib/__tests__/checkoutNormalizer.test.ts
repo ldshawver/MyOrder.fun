@@ -98,6 +98,21 @@ describe("checkoutNormalizer", () => {
   });
 
   describe("normalizeCheckoutCart", () => {
+    it.each([
+      ["archived", { metadata: { archived: true } }],
+      ["compliance hold", { metadata: { complianceHold: true } }],
+      ["not for sale", { isAvailable: false }],
+      ["safe duplicate", { metadata: { safeOnlyDuplicate: true } }],
+      ["merged", { metadata: { mergedIntoCatalogItemId: 99 } }],
+    ])("rejects %s products for local and Woo checkout even with stale availability flags", async (_state, patch) => {
+      for (const makeItem of [makeSampleLocalMappedItem, makeSampleWooItem]) {
+        const item = makeItem(patch);
+        makeDbMock(item);
+        await expect(normalizeCheckoutCart([{ catalogItemId: item.id, quantity: 1 }]))
+          .rejects.toMatchObject({ reason: "item_unavailable" });
+      }
+    });
+
     it("classifies a locally-mapped Alavont item as local_mapped", async () => {
       makeDbMock(makeSampleLocalMappedItem());
       const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 2 }]);

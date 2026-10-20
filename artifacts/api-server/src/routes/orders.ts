@@ -80,6 +80,7 @@ import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { allocateOrderLineRefundTax } from "../lib/refundAccounting";
 import { createCheckoutTaxQuoteToken, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError, verifyCheckoutTaxQuoteToken } from "../lib/checkoutConversionGate";
+import { requireOrderCatalogForSale, OrderCatalogUnavailableError } from "../lib/orderCatalogEligibility";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import {
   sendOrderStatusSmsEmailIfAllowed,
@@ -1913,6 +1914,12 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     if (Number((order.taxSnapshot as { schemaVersion?: unknown } | null)?.schemaVersion) >= 3
       && order.selectedPaymentMethod !== "cash") return { status: 409, error: "Order was not confirmed for Cash tender" } as const;
     if (order.paymentStatus !== "unpaid" || order.paymentIntentId) return { status: 409, error: "Another payment is pending or associated with this order" } as const;
+    try {
+      await requireOrderCatalogForSale(tx, order);
+    } catch (error) {
+      if (error instanceof OrderCatalogUnavailableError) return { status: 409, error: error.message } as const;
+      throw error;
+    }
     const dueCents = moneyToCents(order.remainingTenderAmount ?? order.total);
     const tenderedCents = moneyToCents(parsed.data.amountTendered);
     if (dueCents == null || tenderedCents == null) return { status: 422, error: "Invalid authoritative order balance or tender" } as const;

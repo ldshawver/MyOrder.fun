@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   released: vi.fn(),
 }));
 
+vi.mock("../../lib/orderCatalogEligibility", () => ({ requireOrderCatalogForSale: vi.fn(async () => {}) }));
 vi.mock("../inventory", () => ({ ensurePaidOrderInventoryReserved: state.reserved,
   PaymentInventoryError: class PaymentInventoryError extends Error {} }));
 vi.mock("../../lib/inventoryReservations", () => ({ releaseInventoryReservationsForOrder: state.released }));

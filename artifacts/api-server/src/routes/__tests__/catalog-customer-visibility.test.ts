@@ -3,7 +3,7 @@ import supertest from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const actor = vi.hoisted(() => ({ tenantId: 1, role: "customer" }));
-const rows = vi.hoisted(() => ({ catalog: [] as Record<string, unknown>[], showOutOfStock: false,
+const rows = vi.hoisted(() => ({ catalog: [] as Record<string, unknown>[], selectedIds: [] as number[], showOutOfStock: false,
   settingsPresent: true, settingsError: null as Error | null,
   products: [] as Record<string, unknown>[], options: [] as Record<string, unknown>[],
   sellableSchema: "available" as "available" | "absent" | "partial", executeError: null as Error | null,
@@ -24,21 +24,32 @@ vi.mock("drizzle-orm", () => ({
   asc: vi.fn((value: unknown) => value),
   eq: vi.fn((column: string, value: unknown) => ({ kind: "eq", column, value })),
   isNull: vi.fn((column: string) => ({ kind: "isNull", column })),
-  sql: Object.assign(vi.fn((strings: TemplateStringsArray) => ({ kind: "sql", text: [...strings].join("?") })), {
+  sql: Object.assign(vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ kind: "sql", text: [...strings].join("?"), values })), {
     raw: vi.fn((text: string) => ({ kind: "sql", text })),
     join: vi.fn((parts: Array<{ text?: string }>) => ({ kind: "sql", text: parts.map(part => part.text ?? "?").join(",") })),
   }),
 }));
 vi.mock("@workspace/db", () => {
-  const catalogItemsTable = { _name: "catalog", tenantId: "tenantId", name: "name", id: "id" };
+  const catalogItemsTable = { _name: "catalog", tenantId: "tenantId", name: "name", id: "id", isAvailable: "isAvailable", metadata: "metadata" };
   const adminSettingsTable = { _name: "settings", showOutOfStock: "showOutOfStock" };
   const inventoryBalancesTable = { _name: "balances", tenantId: "tenantId", productId: "productId", quantityOnHand: "quantityOnHand", locationId: "locationId", inventoryKind: "inventoryKind", isSellable: "isSellable", quarantinedAt: "quarantinedAt" };
   const inventoryLocationsTable = { _name: "locations", tenantId: "tenantId", id: "id", isActive: "isActive" };
   const inventoryTemplatesTable = { _name: "templates" };
   const orderItemsTable = { _name: "orderItems" };
-  const byTenant = (condition: unknown) => {
-    const candidate = condition as { kind?: string; column?: string; value?: unknown };
-    return candidate?.kind === "eq" && candidate.column === "tenantId" ? rows.catalog.filter(row => row.tenantId === candidate.value) : rows.catalog;
+  type Condition = { kind: string; args?: Condition[]; column?: string; value?: unknown; text?: string; values?: string[] };
+  // Evaluate the query predicates, so filtering only after SELECT cannot pass
+  // the database-query assertion below.
+  const matches = (row: Record<string, unknown>, condition?: Condition): boolean => {
+    if (!condition) return true;
+    if (condition.kind === "and") return condition.args!.every(part => matches(row, part));
+    if (condition.kind === "eq") return row[condition.column!] === condition.value;
+    if (condition.kind === "sql") {
+      const metadata = (row[condition.values![0]] ?? {}) as Record<string, unknown>;
+      const key = condition.text!.match(/->>'([^']+)'/)?.[1];
+      if (!key) throw new Error(`Unexpected SQL predicate: ${condition.text}`);
+      return condition.text!.includes("IS NULL") ? metadata[key] == null : String(metadata[key] ?? false) !== "true";
+    }
+    throw new Error(`Unexpected predicate: ${condition.kind}`);
   };
   const db = {
     execute: vi.fn(async (query: { text?: string }) => {
@@ -66,7 +77,11 @@ vi.mock("@workspace/db", () => {
       from: (table: { _name: string }) => {
         if (table._name === "catalog") {
           return {
-            where: (condition: unknown) => ({ orderBy: async () => byTenant(condition), limit: async () => byTenant(condition).slice(0, 1) }),
+            where: (condition: Condition) => {
+              const selected = rows.catalog.filter(row => matches(row, condition));
+              rows.selectedIds = selected.map(row => row.id as number);
+              return Object.assign(Promise.resolve(selected), { orderBy: async () => selected, limit: async () => selected.slice(0, 1) });
+            },
           };
         }
         if (table._name === "settings") return { where: () => ({ limit: async () => {
@@ -247,5 +262,55 @@ describe("customer catalogue visibility", () => {
     expect(second.status, second.text).toBe(200);
     expect(second.body).toMatchObject({ total: 25, page: 2, limit: 20 });
     expect(second.body.items.map((item: { id: number }) => item.id)).toEqual([5, 6, 7, 8, 9]);
+  });
+});
+
+const restrictedStates = [
+  { state: "archived", patch: { metadata: { archived: true } } },
+  { state: "compliance hold", patch: { metadata: { complianceHold: true } } },
+  { state: "not for sale", patch: { isAvailable: false } },
+  { state: "merged", patch: { metadata: { mergedIntoCatalogItemId: 99 } } },
+];
+
+describe.each(restrictedStates)("$state eligibility", ({ patch }) => {
+  it.each([false, true])("omits restricted rows in SQL with showOutOfStock=%s in both menus", async (showOutOfStock) => {
+    rows.showOutOfStock = showOutOfStock;
+    for (const mode of ["alavont", "lucifer"]) {
+      const source = mode === "lucifer" ? { isWooManaged: true, merchantProductSource: "woo", wooProductId: "100" } : {};
+      rows.catalog = [catalogRow(1, { ...source, ...patch }), catalogRow(2, source)];
+      for (const filter of ["", "&available=true", "&available=false", "&search=Item&category=Category"]) {
+        const response = await supertest(app).get(`/api/catalog?mode=${mode}&limit=1${filter}`);
+        expect(response.status, response.text).toBe(200);
+        expect(rows.selectedIds).toEqual([2]);
+        expect(response.body.total).toBe(1);
+        expect(response.body.items.map((item: { id: number }) => item.id)).toEqual([2]);
+      }
+    }
+  });
+
+  it("returns 404 for direct customer lookup but preserves admin access and inventory history", async () => {
+    rows.catalog = [catalogRow(1, patch), catalogRow(2)];
+    const hidden = await supertest(app).get("/api/catalog/1");
+    expect(hidden.status, hidden.text).toBe(404);
+    expect(hidden.body).toEqual({ error: "Not found" });
+    const active = await supertest(app).get("/api/catalog/2");
+    expect(active.status, active.text).toBe(200);
+    expect(active.body.id).toBe(2);
+    for (const role of ["admin", "global_admin"]) {
+      actor.role = role;
+      const list = await supertest(app).get("/api/catalog");
+      expect(list.status, list.text).toBe(200);
+      expect(list.body.items.map((item: { id: number }) => item.id)).toEqual([1, 2]);
+      const detail = await supertest(app).get("/api/catalog/1");
+      expect(detail.status, detail.text).toBe(200);
+      expect(detail.body.id).toBe(1);
+    }
+  });
+
+  it("omits categories belonging only to restricted products", async () => {
+    rows.catalog = [catalogRow(1, { ...patch, category: "Restricted" }), catalogRow(2, { category: "Active" })];
+    const response = await supertest(app).get("/api/catalog/categories");
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.categories).toEqual(["Active"]);
   });
 });

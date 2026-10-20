@@ -10,6 +10,7 @@ import { releaseInventoryReservationsForOrder } from "../lib/inventoryReservatio
 import { ensurePaidOrderInventoryReserved, PaymentInventoryError, type PaymentTransaction } from "./inventory";
 import { computeTenderTaxCents, centsToDollars, dollarsToCents } from "../lib/tenderTax";
 import { getCheckoutTaxSettings } from "../lib/checkoutNormalizer";
+import { requireOrderCatalogForSale } from "../lib/orderCatalogEligibility";
 
 const CURRENCY = "USD";
 const sameMoney = (a: string, b: string) => {
@@ -37,6 +38,7 @@ export class PaymentService {
       }
       if (["cancelled", "refunded", "voided", "archived", "completed"].includes(order.status)) throw new PaymentServiceError(409, "INVALID_ORDER_STATE", "Order cannot be paid in its current state");
       if (!order.checkoutConversionSnapshot || !order.legalDisclaimerAccepted || !order.finalConfirmationAt) throw new PaymentServiceError(422, "CHECKOUT_NOT_VERIFIED", "Checkout conversion and confirmation are required");
+      await requireOrderCatalogForSale(tx, order);
 
       const [existing] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.idempotencyKey, input.idempotencyKey))).limit(1);
       if (existing?.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt with a new idempotency key");
@@ -157,6 +159,7 @@ export class PaymentService {
       if (!order.financialFinalizedAt || !sameMoney(String(order.remainingTenderAmount), String(attempt.requestedAmount)) || attempt.requestedCurrency !== CURRENCY) {
         throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order and payment attempt require reconciliation");
       }
+      await requireOrderCatalogForSale(tx, order);
       await tx.update(paymentAttemptsTable).set({ state: "capturing" }).where(eq(paymentAttemptsTable.id, attempt.id));
       let capture;
       try { capture = await this.provider.captureOrder(attempt.providerOrderId, `capture-${attempt.id}`); }
