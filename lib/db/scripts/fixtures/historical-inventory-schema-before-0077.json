@@ -1,0 +1,1542 @@
+[
+  {
+    "kind": "table",
+    "key": "catalogue_options",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "catalog_items",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "catalogue_products",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "inventory_items",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "inventory_balances",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "inventory_reorder_policies",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "inventory_reservations",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "inventory_restorations",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "inventory_transaction_log",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "order_items",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "table",
+    "key": "payment_refunds",
+    "digest": "4b43b0aee35624cd95b910189b3dc231"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.id",
+    "digest": "ef622412868aa019f21294066688df94"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.tenant_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.product_id",
+    "digest": "59b47b71dd8726af3077156f2bd00936"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.catalog_item_id",
+    "digest": "2906009032a543c31b0e861affa581e8"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.inventory_item_id",
+    "digest": "4f7c590cc390af1b1916dc4139adfdf6"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.label",
+    "digest": "396c6f3c84d3be7676609f66e413f4f5"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.consumption_quantity",
+    "digest": "1ed64d0f79cfa5f422910b9a61129698"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.sort_order",
+    "digest": "3ea5bf6bfe803511ea97463edc1cba0c"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.active",
+    "digest": "7e4d2dad669523b55dc8f823391f1b80"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.created_at",
+    "digest": "8bd0ba41cc54f0d3bc8c33753be60cf8"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_options.updated_at",
+    "digest": "e5eb11a17cf234bd0de105d2f57f6cee"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.id",
+    "digest": "b59fa88751d10db5b807b7fed8b68875"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.tenant_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.name",
+    "digest": "fe64ee1e24c3f413fc8435d26beda9f2"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.description",
+    "digest": "e1dc7963eb82709a8a3b8b0f6f00cded"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.category",
+    "digest": "f6804842bd62bc5d398cb4f9368fffee"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.sku",
+    "digest": "80517c7ba5621cb7455c1ea2e9d70056"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.price",
+    "digest": "1b9f14b95b0d96e13c70621073c817ae"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.compare_at_price",
+    "digest": "f470cd71e7234cbd9a09dfec65dc6568"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.stock_quantity",
+    "digest": "3c9ab9b5e976dd6568528e5c9cd2f2f5"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.is_available",
+    "digest": "9c670a89b0cd05c0d9ae3f5f5ccf4639"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.image_url",
+    "digest": "2f5171d0b7de58b6ecba68ae9fbe3827"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.tags",
+    "digest": "f23859816a218cb6d5a6f55ebf57818e"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.metadata",
+    "digest": "0388c0033c84aad4a1224642eb40d6e7"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.regular_price",
+    "digest": "adb629ed545be76bfe9362f44ad8395d"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.homie_price",
+    "digest": "ffe546507c2022e6ac6f7c3463235384"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_name",
+    "digest": "162ca11b148b199b55e6731fe81ad493"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_description",
+    "digest": "e2a43a8a6371016d7a044f089239161c"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_category",
+    "digest": "beeb128f0cdc6c911d7904103640b415"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_image_url",
+    "digest": "b92a01a67f26383ab13a4e0b474ccc2c"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_in_stock",
+    "digest": "25af2a0a1b352bded9ba8791e92d95b3"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_is_upsell",
+    "digest": "b4655db499e88819af7862990f88b39b"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_is_sample",
+    "digest": "21d891a7c55b8850d22e77104b3c633e"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_id",
+    "digest": "bf504ca4c696ffafa15d14f326cee3be"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_created_date",
+    "digest": "18444f033b936330a7b28adafcc08dff"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_updated_date",
+    "digest": "3ee3e2d450b9092e22f802e508045634"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_created_by_id",
+    "digest": "8acba2a6796568ae4a3786699265dccb"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.alavont_created_by",
+    "digest": "69057f1ad21e079e57c96837f5169f21"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.lucifer_cruz_name",
+    "digest": "5d9285b868fde55fb8f111b837800ea1"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.lucifer_cruz_image_url",
+    "digest": "66a843ad312eed08b1e0684baac01c15"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.lucifer_cruz_description",
+    "digest": "cfed7ea293fa6d6f041eadbb58873c01"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.lucifer_cruz_category",
+    "digest": "310889e7a1671a616eb6e1de6b43f18a"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.merchant_processing_mode",
+    "digest": "08f46696f14b16ea65e50721379a394d"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.merchant_product_source",
+    "digest": "ef69a855da608b37305d23249ed2ddd6"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.is_woo_managed",
+    "digest": "690bfae3ade6d73a671d909710f34779"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.is_local_alavont",
+    "digest": "f7ba348deff34c1b6b8dcd597bf450be"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.woo_product_id",
+    "digest": "78361b5da22eeb5c6332c67ab849a862"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.woo_variation_id",
+    "digest": "39e97470948782fa14d8c7596fb27f23"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.receipt_name",
+    "digest": "66674c042f50ebe6d84b0fdb55f7517f"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.label_name",
+    "digest": "a579c29056ef23943d3817b548ffd9b6"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.lab_name",
+    "digest": "78827822abbcf468068866e1f3aa9605"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.stock_unit",
+    "digest": "c4205f419be7bc6b16cbcfe3a769d64c"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.par_level",
+    "digest": "25673910dc98fe589ad8b4c8a09f4a16"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.external_menu_id",
+    "digest": "bd05655b0c36b879eaee328b5f874751"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.inventory_amount",
+    "digest": "8073ddce98e333ca4dacfe5b1a21ad72"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.unit_measurement",
+    "digest": "850e429273c4c9c91ed8f459bf9faa23"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.merchant_name",
+    "digest": "f0979c8aea7221f06040b7579a535f41"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.merchant_image",
+    "digest": "be62910c8560af7d0b5dcb84ab810f90"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.merchant_description",
+    "digest": "5f0725eb4383c82cbdc63b1e005cfcd8"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.merchant_category",
+    "digest": "de7ff9e91beb4d34685b03c344ac021c"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.merchant_sku",
+    "digest": "98de53940d2506dc33fa70245cb70a9f"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.merchant_brand",
+    "digest": "ec3490958445512c67f56f5984a583a5"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.created_at",
+    "digest": "dfa49eb11bf8fe00721ecf6ab1067c24"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.updated_at",
+    "digest": "8e9e39250971775fb153758821e7e792"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.internal_name",
+    "digest": "82c59310b38893b84157a236d75f4676"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.internal_description",
+    "digest": "b943ddfd83aed50f80a0870ba90bb9d7"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.internal_category",
+    "digest": "47b8882c3029659349dec8788bef69c2"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.supplier_name",
+    "digest": "c786c64693a4830b1cc2e2c9798a8ad2"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.supplier_category",
+    "digest": "155b18c1fe98d3a1f72a6440edbf217d"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.backend_inventory_notes",
+    "digest": "d6a13d8c14c579648cb25f264f087f47"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.vendor_sku",
+    "digest": "790d3c129545aac8e40737f8ee4b5717"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.source_inventory_id",
+    "digest": "a815cf525f2a0c80fb7dc362bac3800c"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.cost_basis",
+    "digest": "30d0d2abb5caa9b0c3583ab55f870527"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.inventory_tracking_data",
+    "digest": "2bb5953d7b15b1d36e9cbdca80f7bec4"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.display_name",
+    "digest": "7562806081e72e0c90cf1200be88007f"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.display_description",
+    "digest": "690b9f8772097ede624c1b3d00c7c939"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.display_category",
+    "digest": "1fec631026e3f5a62266575ec1c77a4f"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.display_image",
+    "digest": "becece853112135b9c08ca7a50bf847d"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.merchant_brand_name",
+    "digest": "c9eb910649e4a24a4aa67432df77b1c0"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.marketing_copy",
+    "digest": "630fe84004e020ae70623f29daccfa33"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.customer_safe_name",
+    "digest": "892df86a2102248cae4c59b621a70fcb"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.customer_safe_description",
+    "digest": "a02764148194f1e4cff69260081c8f7f"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.upsell_copy",
+    "digest": "98c53e3f130eb9cd04049249a9c5529a"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.promo_badges",
+    "digest": "cc1f2967f770aa1725b6ffab75acb67e"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.media_gallery",
+    "digest": "2be2ba19970f31b378a49c3b21ecf696"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.is_featured",
+    "digest": "a48bffdede1efe8eb36be99082ae32c6"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.is_sale_featured",
+    "digest": "6cc5f75fb20d5a0770b98fdf31ff47d4"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.safe_name",
+    "digest": "1dbb4408c7868e06b8a6ff50d6ca0b75"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.safe_description",
+    "digest": "10e1e647e26585716b114b024bc852d1"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.safe_category",
+    "digest": "8494b2a30fa207f2febac7b5d73f44e3"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.safe_image_url",
+    "digest": "9a8142c4f96fb5c98f434a2bcd966dd0"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.is_taxable",
+    "digest": "6aa00df913313973840c073e750b9ab9"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.moq",
+    "digest": "cb89e8486ad0060c1f6c8191d7351a6a"
+  },
+  {
+    "kind": "column",
+    "key": "catalog_items.preferred_reorder_quantity",
+    "digest": "02f18d318f76fa673ebe44179107ba8c"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_products.id",
+    "digest": "6fbf6d55023a4fefd3c78260f172d25a"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_products.tenant_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_products.name",
+    "digest": "fe64ee1e24c3f413fc8435d26beda9f2"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_products.inventory_model",
+    "digest": "7e7792c495b6bb9bf134af2068958724"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_products.location_evaluation",
+    "digest": "45738af44633b7ce4b40ae472eb5019e"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_products.active",
+    "digest": "fa27f581aabaca3b5592daae56b4d48d"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_products.created_at",
+    "digest": "c8faf00e97366ec53ea00f7ca7c5663a"
+  },
+  {
+    "kind": "column",
+    "key": "catalogue_products.updated_at",
+    "digest": "d7a6c6dc46cd7bbeb6bed7770bf54b04"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_items.id",
+    "digest": "c042881d706fcc505e95874ccb52e908"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_items.tenant_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_items.catalog_item_id",
+    "digest": "59b47b71dd8726af3077156f2bd00936"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_items.base_unit",
+    "digest": "4a1e435ba7e6a6148074aac55ce89022"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_items.created_at",
+    "digest": "16ac4131e92b9f2f34e2fcea10873ae2"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.id",
+    "digest": "a4a812e1690d179e80233c66588f9cdd"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.tenant_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.product_id",
+    "digest": "59b47b71dd8726af3077156f2bd00936"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.location_id",
+    "digest": "2906009032a543c31b0e861affa581e8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.quantity_on_hand",
+    "digest": "0fd9f8d175217f04582f75d17698d9f6"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.par_level",
+    "digest": "0c22b941765ebce7ce418a4f7e9ec3e6"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.updated_at",
+    "digest": "c8faf00e97366ec53ea00f7ca7c5663a"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.inventory_kind",
+    "digest": "b6958ea8fa4205718f8cde0cbd2236e9"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.quarantine_status",
+    "digest": "3f2d96f4b4615fb432646c2a5b62911a"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.quarantine_reason",
+    "digest": "0ab0339a1642d4aae48ca6b282c9bfcc"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.is_sellable",
+    "digest": "fa1caadf59afaa39a4bc61c2b09851bf"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.quarantined_at",
+    "digest": "df5de6c15f36a01fb977ce9eee73c0a8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_balances.quarantined_by_user_id",
+    "digest": "419ffda6326e9504982d2ddc734feb3c"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reorder_policies.id",
+    "digest": "25997d2e177a6294c0b8e8e967beda13"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reorder_policies.tenant_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reorder_policies.inventory_item_id",
+    "digest": "59b47b71dd8726af3077156f2bd00936"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reorder_policies.location_id",
+    "digest": "2906009032a543c31b0e861affa581e8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reorder_policies.par",
+    "digest": "0fd9f8d175217f04582f75d17698d9f6"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reorder_policies.reorder_point",
+    "digest": "0c22b941765ebce7ce418a4f7e9ec3e6"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reorder_policies.preferred_reorder_quantity",
+    "digest": "e336eb66ca2ab14d608641aba72571a4"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reorder_policies.moq",
+    "digest": "31d1ed6650498b81e9c6737e53885827"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reorder_policies.updated_at",
+    "digest": "d3f938444ecc4acd132ff55fea9f9a06"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.id",
+    "digest": "4f51186c9b7f1d0783b5f4009348a6a5"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.order_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.catalog_item_id",
+    "digest": "59b47b71dd8726af3077156f2bd00936"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.location_id",
+    "digest": "2906009032a543c31b0e861affa581e8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.quantity",
+    "digest": "fbb8a1efec219b11c59cd03c05b35ca0"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.status",
+    "digest": "577b668eb61397cd8e50997685dafcf9"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.idempotency_key",
+    "digest": "a3857f5e0d8c1bc6fea4d9659b014c63"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.expires_at",
+    "digest": "dd2cd1922dbefff8c313060df378dcf4"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.created_at",
+    "digest": "d3f938444ecc4acd132ff55fea9f9a06"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.updated_at",
+    "digest": "8bd0ba41cc54f0d3bc8c33753be60cf8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_reservations.order_item_id",
+    "digest": "0359833de5db893e4dfeddd4ed078397"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_restorations.id",
+    "digest": "bb7f70bf4ec10ab5ad15d63ebe8fb5bf"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_restorations.tenant_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_restorations.product_id",
+    "digest": "59b47b71dd8726af3077156f2bd00936"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_restorations.location_id",
+    "digest": "2906009032a543c31b0e861affa581e8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_restorations.quantity",
+    "digest": "fbb8a1efec219b11c59cd03c05b35ca0"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_restorations.idempotency_key",
+    "digest": "b77371a77e521a0b3f1cf688d90f7c34"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_restorations.reason",
+    "digest": "8f6970b053e2ab8c815343df58d36919"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_restorations.created_at",
+    "digest": "d7a6c6dc46cd7bbeb6bed7770bf54b04"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.id",
+    "digest": "ce1adb89da488b085db80ae90af0be25"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.transaction_id",
+    "digest": "d91b8d2d94cfb928446585ffa2318700"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.type",
+    "digest": "fe64ee1e24c3f413fc8435d26beda9f2"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.catalog_item_id",
+    "digest": "ecf526faa4f72dae9154f1711b00b907"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.location_id",
+    "digest": "12ba4a5d2f0c3ce24d9116d07a0fda35"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.quantity_change",
+    "digest": "0c22b941765ebce7ce418a4f7e9ec3e6"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.before_state",
+    "digest": "a0bb903b8b5121577e84da5e021a35cf"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.after_state",
+    "digest": "cf4b2373259841cf5253537225f0b78d"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.order_id",
+    "digest": "4120395e0ccddd2c79fe15ffd7aeeb33"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.created_at",
+    "digest": "8bd0ba41cc54f0d3bc8c33753be60cf8"
+  },
+  {
+    "kind": "column",
+    "key": "inventory_transaction_log.tenant_id",
+    "digest": "0359833de5db893e4dfeddd4ed078397"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.id",
+    "digest": "6ba09127a5ff4f204b283b15f17906da"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.order_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.catalog_item_id",
+    "digest": "59b47b71dd8726af3077156f2bd00936"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.catalog_item_name",
+    "digest": "0e676a1c86192835ce1b5aaf724ceb10"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.quantity",
+    "digest": "4f7c590cc390af1b1916dc4139adfdf6"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.unit_price",
+    "digest": "6119963e8caaf49dae9d66e8bb87b085"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.total_price",
+    "digest": "1b9f14b95b0d96e13c70621073c817ae"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.alavont_name",
+    "digest": "09c7281d0ae4376e1e3900043f11b7f9"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.lucifer_cruz_name",
+    "digest": "6ca302854b1e1b931545797260d50dc9"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.receipt_name",
+    "digest": "0ab0339a1642d4aae48ca6b282c9bfcc"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.label_name",
+    "digest": "2f5171d0b7de58b6ecba68ae9fbe3827"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.lab_name",
+    "digest": "106dbc2c52a577dfd21deac8416dcfbf"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.woo_product_id",
+    "digest": "b486b33e0fb7327088d8c3cfbcf36698"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.woo_variation_id",
+    "digest": "4b72d0b0d7a28b47c66ed1e909d006d2"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.created_at",
+    "digest": "58160f1d405bcdb5a5ac03716840ae0a"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.inventory_deductions",
+    "digest": "400a464fbc8d956e1c76372d69677de2"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.option_id",
+    "digest": "3e99281142cb65e8977403bda7e9eba0"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.option_label_snapshot",
+    "digest": "beeb128f0cdc6c911d7904103640b415"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.sku_snapshot",
+    "digest": "b92a01a67f26383ab13a4e0b474ccc2c"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.inventory_item_id",
+    "digest": "71aff46d211429af400b5161bfc5934a"
+  },
+  {
+    "kind": "column",
+    "key": "order_items.inventory_quantity_snapshot",
+    "digest": "4bb16b454b0ac3ed4a7bcd7c3f875c61"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.id",
+    "digest": "d0cf6f62e30215bfbcdbba3968e3e1fb"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.tenant_id",
+    "digest": "c94e220e0cc55aa6264f7ec15db8f2b8"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.payment_capture_id",
+    "digest": "59b47b71dd8726af3077156f2bd00936"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.provider_refund_id",
+    "digest": "e1dc7963eb82709a8a3b8b0f6f00cded"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.idempotency_key",
+    "digest": "f6804842bd62bc5d398cb4f9368fffee"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.amount",
+    "digest": "6119963e8caaf49dae9d66e8bb87b085"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.currency",
+    "digest": "8f6970b053e2ab8c815343df58d36919"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.reason",
+    "digest": "b67414c968671890993a6a70cdd0a364"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.state",
+    "digest": "90900f75d55d60b2e5ac9ed5ffd6e86d"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.failure_class",
+    "digest": "0ab0339a1642d4aae48ca6b282c9bfcc"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.actor_user_id",
+    "digest": "6a05c2bf63194a9c42be7669833b80eb"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.created_at",
+    "digest": "bf2191822c8efe3981d304fd1ecd8927"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.updated_at",
+    "digest": "05e79da1d37e3fa3ea3f8cc8de551d84"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.provider_request_id",
+    "digest": "4b72d0b0d7a28b47c66ed1e909d006d2"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.provider_status",
+    "digest": "12d5a48c88e11694bb15ddaf535ce68d"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.provider_result_at",
+    "digest": "7c3a02fec03395f6f3cbe0ea5b871e77"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.requested_at",
+    "digest": "dbf73c06175861a7b4320c9e9da02c7b"
+  },
+  {
+    "kind": "column",
+    "key": "payment_refunds.locally_finalized_at",
+    "digest": "9475db199f381ffcb0e8347e088cf302"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_options.catalogue_options_consumption_quantity_check",
+    "digest": "aadeb57201459dbd3d542b1ae7fe0f23"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_options.catalogue_options_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_options.catalogue_options_tenant_id_catalog_item_id_f",
+    "digest": "c710e48b9da8135889f808682186f3ee"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_options.catalogue_options_tenant_id_catalog_item_id_k",
+    "digest": "12e9dc57607027625c3da2c3046e3555"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_options.catalogue_options_tenant_id_fkey",
+    "digest": "6640173aadc2390c2c2c19d76af2a4f2"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_options.catalogue_options_tenant_id_id_key",
+    "digest": "51ee2716dc1abea90609c31b3f3c041c"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_options.catalogue_options_tenant_id_inventory_item_id",
+    "digest": "62ab4ed543258c5b11808c9d87445a25"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_options.catalogue_options_tenant_id_product_id_fkey",
+    "digest": "beefb6d01f7c0544b49af157dceb3b64"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalog_items.catalog_items_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalog_items.catalog_items_tenant_id_id_unique",
+    "digest": "51ee2716dc1abea90609c31b3f3c041c"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalog_items.catalog_items_tenant_id_tenants_id_fk",
+    "digest": "6640173aadc2390c2c2c19d76af2a4f2"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_products.catalogue_products_inventory_model_check",
+    "digest": "1551c45b13e219ffac948ca7f49b1a9d"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_products.catalogue_products_location_evaluation_check",
+    "digest": "167765b789a0de9875d8acb8bac61fda"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_products.catalogue_products_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_products.catalogue_products_tenant_id_fkey",
+    "digest": "6640173aadc2390c2c2c19d76af2a4f2"
+  },
+  {
+    "kind": "constraint",
+    "key": "catalogue_products.catalogue_products_tenant_id_id_key",
+    "digest": "51ee2716dc1abea90609c31b3f3c041c"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_items.inventory_items_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_items.inventory_items_tenant_id_catalog_item_id_fkey",
+    "digest": "c710e48b9da8135889f808682186f3ee"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_items.inventory_items_tenant_id_catalog_item_id_key",
+    "digest": "12e9dc57607027625c3da2c3046e3555"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_items.inventory_items_tenant_id_fkey",
+    "digest": "6640173aadc2390c2c2c19d76af2a4f2"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_items.inventory_items_tenant_id_id_key",
+    "digest": "51ee2716dc1abea90609c31b3f3c041c"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_balances.inventory_balances_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_balances.inventory_balances_unique",
+    "digest": "23b4fe505d49d89052eb65e8b81f98d2"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_location_",
+    "digest": "9bcb24cbdea02baa939b00d222f99f15"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_moq_check",
+    "digest": "2ba655df02c74d506eb02a5ce41c1b14"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_par_check",
+    "digest": "e116ab2b26dcc4d26b0f6463198e8fb3"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_preferred",
+    "digest": "9893c770d7a17b01f194621c7d75ab02"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_reorder_p",
+    "digest": "f7cd8ba4014950b0fb603e82c117a834"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_tenant_id",
+    "digest": "6640173aadc2390c2c2c19d76af2a4f2"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_tenant_id",
+    "digest": "62ab4ed543258c5b11808c9d87445a25"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_tenant_id",
+    "digest": "cadbf2a5846cdd3ab098d53ef07d0a1c"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_tenant_id",
+    "digest": "acf0e935913ff4e6fa406b6a8a9ac5b6"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reservations.inventory_reservations_catalog_item_id_f",
+    "digest": "364d970599afce0ad68a578e2a864804"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reservations.inventory_reservations_location_id_fkey",
+    "digest": "9bcb24cbdea02baa939b00d222f99f15"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reservations.inventory_reservations_order_id_fkey",
+    "digest": "54ae164391bb93fa919bc132f0de7ce9"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reservations.inventory_reservations_order_item_id_fke",
+    "digest": "ef544595168efaa3b954380dfe817465"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_reservations.inventory_reservations_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_restorations.inventory_restorations_location_id_fkey",
+    "digest": "9bcb24cbdea02baa939b00d222f99f15"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_restorations.inventory_restorations_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_restorations.inventory_restorations_product_id_fkey",
+    "digest": "90285293ca63cad9e680ecbb8f9e0a10"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_restorations.inventory_restorations_quantity_check",
+    "digest": "19848feb749c16051d0376603f2b5093"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_restorations.inventory_restorations_tenant_id_fkey",
+    "digest": "6640173aadc2390c2c2c19d76af2a4f2"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_restorations.inventory_restorations_tenant_id_idempot",
+    "digest": "fb2d79b51f4913ba32f8153b6fe428c1"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_transaction_log.inventory_transaction_log_catalog_ite",
+    "digest": "364d970599afce0ad68a578e2a864804"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_transaction_log.inventory_transaction_log_location_id",
+    "digest": "9bcb24cbdea02baa939b00d222f99f15"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_transaction_log.inventory_transaction_log_order_id_fk",
+    "digest": "54ae164391bb93fa919bc132f0de7ce9"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_transaction_log.inventory_transaction_log_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "inventory_transaction_log.inventory_transaction_log_tenant_requ",
+    "digest": "3d5d0baf7623de08c695c2d3b4e5df66"
+  },
+  {
+    "kind": "constraint",
+    "key": "order_items.order_items_catalog_item_id_catalog_items_id_fk",
+    "digest": "364d970599afce0ad68a578e2a864804"
+  },
+  {
+    "kind": "constraint",
+    "key": "order_items.order_items_order_id_orders_id_fk",
+    "digest": "54ae164391bb93fa919bc132f0de7ce9"
+  },
+  {
+    "kind": "constraint",
+    "key": "order_items.order_items_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_amount_check",
+    "digest": "fd705b9b303538976b56c35414d5897a"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_currency_check",
+    "digest": "f0d8a806244ef088accc061b49313af2"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_pkey",
+    "digest": "4c6419b3704337bbfe50f018842a9ad3"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_provider_refund_id_key",
+    "digest": "84f53045c281f781aac08da63cc8e698"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_provider_request_unique",
+    "digest": "30a3660fe69e567501d58a02be27db56"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_state_check",
+    "digest": "a54c3ee83d17455fbf0e16d21980dab7"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_tenant_id_actor_user_id_fkey",
+    "digest": "1e834cb556c19de754f2424e4493478b"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_tenant_id_fkey",
+    "digest": "6640173aadc2390c2c2c19d76af2a4f2"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_tenant_id_id_key",
+    "digest": "51ee2716dc1abea90609c31b3f3c041c"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_tenant_id_payment_capture_id_fk",
+    "digest": "eaa6c14fdd2963182a7a223f451c6c91"
+  },
+  {
+    "kind": "constraint",
+    "key": "payment_refunds.payment_refunds_tenant_id_payment_capture_id_id",
+    "digest": "cafa5bb93f80dcf6bfe650b46ad1b8e2"
+  },
+  {
+    "kind": "index",
+    "key": "catalogue_options.catalogue_options_pkey",
+    "digest": "38f4e4ecac2d96216670c0367cc9c221"
+  },
+  {
+    "kind": "index",
+    "key": "catalogue_options.catalogue_options_tenant_id_catalog_item_id_k",
+    "digest": "b02dc5bc182ff4335ff1d1b3938d1ecf"
+  },
+  {
+    "kind": "index",
+    "key": "catalogue_options.catalogue_options_tenant_id_id_key",
+    "digest": "aaba4237ab4b6e627cd5614778e0a8db"
+  },
+  {
+    "kind": "index",
+    "key": "catalogue_options.catalogue_options_product_idx",
+    "digest": "233858f9f44ea545f6dd354dc46dc117"
+  },
+  {
+    "kind": "index",
+    "key": "catalog_items.catalog_items_pkey",
+    "digest": "caef14fc7769b0e9d076ff9d7648770d"
+  },
+  {
+    "kind": "index",
+    "key": "catalog_items.catalog_items_tenant_id_id_unique",
+    "digest": "f128b7580808c268266fd9d497df4604"
+  },
+  {
+    "kind": "index",
+    "key": "catalog_items.catalog_items_safe_category_idx",
+    "digest": "d23953c0607f7af8ca8c907343a6f2a8"
+  },
+  {
+    "kind": "index",
+    "key": "catalogue_products.catalogue_products_pkey",
+    "digest": "4fab6ae3e6859d6288be38252db39e31"
+  },
+  {
+    "kind": "index",
+    "key": "catalogue_products.catalogue_products_tenant_id_id_key",
+    "digest": "cea80fd431f48e5cf16e61d8775f53d1"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_items.inventory_items_pkey",
+    "digest": "d627fb92dfb1632007ab49a287ba5f52"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_items.inventory_items_tenant_id_catalog_item_id_key",
+    "digest": "3bf3c4c2630d01260e10870e3312e020"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_items.inventory_items_tenant_id_id_key",
+    "digest": "75d4cbfaee1cb73eefb27f844cd2be1c"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_balances.inventory_balances_pkey",
+    "digest": "4014070a3d2d96377ecaf0dc43dec16b"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_balances.inventory_balances_unique",
+    "digest": "acd24b33a9ffcd257851f568f40b2793"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_pkey",
+    "digest": "aaf4017f07eb888fe47e51d0706052f8"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_reorder_policies.inventory_reorder_policies_tenant_id",
+    "digest": "8e1fb93aba75fb2b81772450cb7b986b"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_reservations.inventory_reservations_pkey",
+    "digest": "a1be21777e6be5894e02ae4bbba9eb78"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_reservations.inventory_reservations_active_idx",
+    "digest": "a1126f799ccfee2b1e53de9a7a5ea637"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_reservations.inventory_reservations_idempotency_key_i",
+    "digest": "fc79d8d2076bf4bc18e2124bdede2109"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_reservations.inventory_reservations_order_idx",
+    "digest": "050b9c90cb45e4b46463226466195d1a"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_restorations.inventory_restorations_pkey",
+    "digest": "aad7c0fb0dad44788c6eda7a066fe373"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_restorations.inventory_restorations_tenant_id_idempot",
+    "digest": "7ec21a4654c6e31e6f0d225f9a5b2545"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_transaction_log.inventory_transaction_log_pkey",
+    "digest": "a5c07b5a8a130bb7ef0412afda838d86"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_transaction_log.inventory_transaction_log_catalog_loc",
+    "digest": "38a6415b0c4f847896de541234573719"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_transaction_log.inventory_transaction_log_order_idx",
+    "digest": "c6c4253e869d8d5858882393609c8034"
+  },
+  {
+    "kind": "index",
+    "key": "inventory_transaction_log.inventory_transaction_log_transaction",
+    "digest": "6008b963f335074d3040ae9acd315f81"
+  },
+  {
+    "kind": "index",
+    "key": "order_items.order_items_pkey",
+    "digest": "51a09886298025fcd36679c401c34777"
+  },
+  {
+    "kind": "index",
+    "key": "payment_refunds.payment_refunds_pkey",
+    "digest": "6ae40c84578784176cff6fb9a5c08320"
+  },
+  {
+    "kind": "index",
+    "key": "payment_refunds.payment_refunds_provider_refund_id_key",
+    "digest": "0f4f89dc8b6cd740655f4ae69514f315"
+  },
+  {
+    "kind": "index",
+    "key": "payment_refunds.payment_refunds_provider_request_unique",
+    "digest": "ab427901803c091f30b5f806354d561f"
+  },
+  {
+    "kind": "index",
+    "key": "payment_refunds.payment_refunds_tenant_id_id_key",
+    "digest": "9d6a33ea3af81c412af398efe6bb1b76"
+  },
+  {
+    "kind": "index",
+    "key": "payment_refunds.payment_refunds_tenant_id_payment_capture_id_id",
+    "digest": "28ddec894ef425c552b464fb9e1fd848"
+  },
+  {
+    "kind": "trigger",
+    "key": "catalog_items.catalog_item_standard_option",
+    "digest": "f494cd420e0b4b2c3cab37f8153fb432"
+  },
+  {
+    "kind": "trigger",
+    "key": "catalogue_products.catalogue_product_inventory_model_guard",
+    "digest": "f9e34bc5462424d788aec31d5abc0f4c"
+  },
+  {
+    "kind": "function",
+    "key": "block_live_inventory_model_change",
+    "digest": "bd4fa7783cc6ebfc77d5da85ae4f17fc"
+  },
+  {
+    "kind": "function",
+    "key": "create_standard_option_for_catalogue_item",
+    "digest": "4bb4999aa956c2f196e3d7a59ed95d63"
+  }
+]
