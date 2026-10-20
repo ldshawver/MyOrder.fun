@@ -35,9 +35,9 @@ function productionPinGuard(workflow: string): string {
     // Reject shadowed pins at job, step, or shell scope.
     expect(workflow.match(new RegExp(`\\b${key}\\s*[:=]`, "g"))).toHaveLength(1);
   }
-  const guard = workflow.match(/      - name: Verify frozen release identity\n        shell: bash\n        run: \|\n((?:          .*\n|\n)*)/)?.[1];
+  const guard = workflow.match(/ {6}- name: Verify frozen release identity\n {8}shell: bash\n {8}run: \|\n((?: {10}.*\n|\n)*)/)?.[1];
   expect(guard, "the actual release-identity enforcement step must exist").toBeTruthy();
-  const script = guard!.split("\n").map(line => line.replace(/^          /, "")).join("\n").trim();
+  const script = guard!.split("\n").map(line => line.replace(/^ {10}/, "")).join("\n").trim();
   expect(script).toBe([
     "set -euo pipefail",
     'test "$(git rev-parse HEAD)" = "${RELEASE_SHA}"',
