@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../../../..");
@@ -16,6 +17,35 @@ function platform(path: string): string {
 }
 function api(path: string): string {
   return readFileSync(resolve(apiRoot, path), "utf8");
+}
+
+// Production authorization is independent of the staging-only d69275f candidate.
+const approvedProduction = {
+  sha: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
+  tree: "c2851c74077f94e189867b574a3f1aef244f61cc",
+};
+
+function productionPinGuard(workflow: string): string {
+  const globalEnv = workflow.match(/^env:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
+  for (const [key, value] of [
+    ["PINNED_RELEASE_SHA", approvedProduction.sha],
+    ["PINNED_RELEASE_TREE", approvedProduction.tree],
+  ]) {
+    expect(globalEnv.match(new RegExp(`^  ${key}: ([a-f0-9]{40})$`, "gm"))).toEqual([`  ${key}: ${value}`]);
+    // Reject shadowed pins at job, step, or shell scope.
+    expect(workflow.match(new RegExp(`\\b${key}\\s*[:=]`, "g"))).toHaveLength(1);
+  }
+  const guard = workflow.match(/ {6}- name: Verify frozen release identity\n {8}shell: bash\n {8}run: \|\n((?: {10}.*\n|\n)*)/)?.[1];
+  expect(guard, "the actual release-identity enforcement step must exist").toBeTruthy();
+  const script = guard!.split("\n").map(line => line.replace(/^ {10}/, "")).join("\n").trim();
+  expect(script).toBe([
+    "set -euo pipefail",
+    'test "$(git rev-parse HEAD)" = "${RELEASE_SHA}"',
+    'test "$(git rev-parse HEAD^{tree})" = "${RELEASE_TREE}"',
+    'test "${RELEASE_SHA}" = "${PINNED_RELEASE_SHA}"',
+    'test "${RELEASE_TREE}" = "${PINNED_RELEASE_TREE}"',
+  ].join("\n"));
+  return script;
 }
 
 describe("MyOrder.fun navigation and editor consolidation", () => {
@@ -260,7 +290,6 @@ describe("receipts and deploy workflow", () => {
       "RELEASE_BASE_TREE: 76bb2bc969450206f0be4754a6ef95434cd27b4a",
       "RELEASE_SHA: ${{ inputs.release_sha }}",
       "RELEASE_TREE: ${{ inputs.release_tree }}",
-      "test \"$RELEASE_SHA\" = \"3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb\"",
       "git merge-base --is-ancestor",
       "MYORDER-RELEASE-IDENTITY.json",
     ]) {
@@ -269,8 +298,8 @@ describe("receipts and deploy workflow", () => {
     expect(deploy).toContain("uses: tailscale/github-action@v4");
     expect(deploy).toContain("oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}");
     expect(deploy).toContain("oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}");
-    expect(deploy).toContain("nc -z -w 5 \"$VPS_TAILSCALE_HOST\" \"$VPS_PORT\"");
-    expect(deploy).toMatch(/ssh-keygen\s*\\?\s*-F\s+"\$VPS_SSH_HOST_KEY_ALIAS"/);
+    expect(deploy).toContain('nc -z -w 5 "${VPS_TAILSCALE_HOST}" "${VPS_PORT}"');
+    expect(deploy).toContain('ssh-keygen -F "${VPS_SSH_HOST_KEY_ALIAS}" -f ~/.ssh/known_hosts');
     for (const forbidden of [
       "VPS_HOST_FALLBACK",
       "StrictHostKeyChecking=accept-new",
@@ -284,6 +313,60 @@ describe("receipts and deploy workflow", () => {
     expect(deploy).not.toMatch(/docker compose down/);
     expect(deploy).not.toContain("/root/lux-email-bot");
     expect(deploy).not.toContain("luxit.service");
+  });
+
+  it("resolves production pins to the exact approved controller identity and enforces both", () => {
+    const controller = src("deploy/production-release.mjs");
+    const identity = controller.match(/export const APPROVED_RELEASE = Object\.freeze\(\{\s*sha: "([a-f0-9]{40})",\s*tree: "([a-f0-9]{40})"/);
+    expect(identity?.slice(1)).toEqual([approvedProduction.sha, approvedProduction.tree]);
+    const script = productionPinGuard(src(".github/workflows/deploy.yml"));
+    // Execute the real workflow guard with only Git identity reads stubbed.
+    const gitStub = `git() {
+      case "$*" in
+        "rev-parse HEAD") printf '%s\\n' "$MOCK_HEAD" ;;
+        "rev-parse HEAD^{tree}") printf '%s\\n' "$MOCK_TREE" ;;
+        *) return 2 ;;
+      esac
+    }\n`;
+    const baseline = {
+      RELEASE_SHA: approvedProduction.sha, RELEASE_TREE: approvedProduction.tree,
+      PINNED_RELEASE_SHA: approvedProduction.sha, PINNED_RELEASE_TREE: approvedProduction.tree,
+      MOCK_HEAD: approvedProduction.sha, MOCK_TREE: approvedProduction.tree,
+    };
+    const run = (overrides: Partial<typeof baseline>) => {
+      const result = spawnSync("bash", ["-c", gitStub + script], {
+        env: { PATH: process.env.PATH, ...baseline, ...overrides }, encoding: "utf8", timeout: 5000,
+      });
+      expect(result.error).toBeUndefined();
+      return result.status;
+    };
+    expect(run({})).toBe(0);
+    for (const overrides of [
+      { RELEASE_SHA: "a".repeat(40) },
+      { RELEASE_TREE: "b".repeat(40) },
+      { MOCK_HEAD: "c".repeat(40) },
+      { MOCK_TREE: "d".repeat(40) },
+      { RELEASE_SHA: "a".repeat(40), MOCK_HEAD: "a".repeat(40) },
+      { RELEASE_TREE: "b".repeat(40), MOCK_TREE: "b".repeat(40) },
+      { PINNED_RELEASE_SHA: "" },
+      { PINNED_RELEASE_TREE: "" },
+    ]) expect(run(overrides)).not.toBe(0);
+  });
+
+  it("rejects changed, missing, shadowed, or unenforced production pins", () => {
+    const deploy = src(".github/workflows/deploy.yml");
+    for (const key of ["SHA", "TREE"]) {
+      const variable = `PINNED_RELEASE_${key}`;
+      const value = key === "SHA" ? approvedProduction.sha : approvedProduction.tree;
+      const check = `test "\${RELEASE_${key}}" = "\${${variable}}"`;
+      for (const changed of [
+        deploy.replace(`${variable}: ${value}`, `${variable}: ${"f".repeat(40)}`),
+        deploy.replace(`  ${variable}: ${value}\n`, ""),
+        deploy.replace("    env:\n", `    env:\n      ${variable}: ${value}\n`),
+        deploy.replace(check, "true"),
+        deploy.replace(check, check + " || true"),
+      ]) expect(() => productionPinGuard(changed)).toThrow();
+    }
   });
 
   it("repo audit delegates committed secret value detection to the script", () => {
