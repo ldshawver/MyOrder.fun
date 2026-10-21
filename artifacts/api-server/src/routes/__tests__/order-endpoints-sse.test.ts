@@ -196,7 +196,7 @@ vi.mock("@workspace/db", () => {
   const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId", enabledProcessors: "enabledProcessors", cashDiscountEnabled: "cashDiscountEnabled", cashDiscountType: "cashDiscountType", cashDiscountValue: "cashDiscountValue", shiftLocationOptions: "shiftLocationOptions" };
   const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
   const tenantsTable = { __t: "tenants", id: "id", name: "name", settings: "settings" };
-  const orderItemsTable = { __t: "order_items", orderId: "orderId" };
+  const orderItemsTable = { __t: "order_items", orderId: "orderId", catalogItemId: "catalogItemId" };
   const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId" };
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
   const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand", inventoryKind: "inventoryKind", isSellable: "isSellable", quarantinedAt: "quarantinedAt", quarantinedByUserId: "quarantinedByUserId", quarantineReason: "quarantineReason" };
@@ -274,10 +274,12 @@ vi.mock("@workspace/db", () => {
       // orderBy is chainable (e.g. .orderBy().limit()) but also awaitable
       const p = Promise.resolve(resolveRows()) as unknown as Record<string, unknown>;
       p.limit = vi.fn(() => Promise.resolve(resolveRows()));
+      p.for = vi.fn(() => Promise.resolve(resolveRows()));
       return p;
     });
     chain.limit = vi.fn(() => Promise.resolve(resolveRows()));
     chain.groupBy = vi.fn(() => Promise.resolve([]));
+    chain.for = vi.fn(() => chain);
     void cols;
     (chain as Record<string, unknown>).then = (resolve: (v: unknown) => unknown) =>
       resolve(resolveRows());
@@ -333,6 +335,7 @@ vi.mock("@workspace/db", () => {
     db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve({ rows: [{ id: "test-event" }] })) })) },
     ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
     orderNotesTable: { __t: "order_notes" },
+    cashLedgerEntriesTable: { __t: "cash_ledger", tenantId: "tenantId", idempotencyKey: "idempotencyKey" },
   };
 });
 
@@ -347,6 +350,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 import ordersRouter from "../orders";
+import { db, orderItemsTable } from "@workspace/db";
 import {
   publishOrderEvent as _pub,
   subscribe,
@@ -867,5 +871,30 @@ describe("default-queue Admin start and CSR claim", () => {
     expect((await supertest(app).post("/api/orders/48/prepare").send({})).status).toBe(200);
     expect((await supertest(app).post("/api/orders/48/ready").send({})).status).toBe(200);
     expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(409);
+  });
+});
+
+
+describe("cash closeout rechecks current catalog eligibility", () => {
+  it.each([
+    ["archived", { metadata: { archived: true } }],
+    ["compliance hold", { metadata: { complianceHold: true } }],
+    ["not for sale", { isAvailable: false }],
+    ["active", {}],
+  ])("checks %s products before accepting cash", async (state, patch) => {
+    mockActor = dbState.users[2]!;
+    const orderId = 9001;
+    dbState.orders = [{ id: orderId, tenantId: 1, customerId: 5, status: "pending", paymentStatus: "unpaid", total: "10.00", remainingTenderAmount: "10.00" }];
+    Object.assign(dbState.catalog[0]!, patch);
+    await db.insert(orderItemsTable).values({ orderId, catalogItemId: 1, quantity: 1 } as never).returning();
+    vi.mocked(db.update).mockClear();
+    const response = await supertest(buildApp()).post(`/api/orders/${orderId}/closeout`)
+      .send({ paymentMethod: "cash", amountTendered: 0, idempotencyKey: "catalog-cash-check" });
+    expect(response.status, response.text).toBe(state === "active" ? 422 : 409);
+    expect(response.body.error).toBe(state === "active"
+      ? "Amount tendered is insufficient"
+      : "One or more order items are no longer available for purchase");
+    expect(db.update).not.toHaveBeenCalled();
+    expect(dbState.orders[0]!.paymentStatus).toBe("unpaid");
   });
 });

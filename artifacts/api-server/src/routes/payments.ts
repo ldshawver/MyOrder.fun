@@ -7,6 +7,7 @@ import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDiscl
 import { reserveCustomerCredit, consumeCustomerCredit, CustomerCreditError } from "../payments/customerCredit";
 import { deductPaidOrderInventory } from "../payments/inventory";
 import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
+import { requireOrderCatalogForSale } from "../lib/orderCatalogEligibility";
 
 export { deductPaidOrderInventory } from "../payments/inventory";
 
@@ -36,6 +37,7 @@ router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerA
       const [attempt] = await tx.select({ id: paymentAttemptsTable.id }).from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, actor.tenantId!), eq(paymentAttemptsTable.orderId, orderId))).limit(1);
       if (attempt) throw new CustomerCreditError(409, "PAYMENT_ATTEMPT_EXISTS", "Customer Credit cannot change after a provider payment attempt");
       const previouslyAppliedCents = dollarsToCents(order.customerCreditApplied);
+      await requireOrderCatalogForSale(tx, order);
       const reserved = await reserveCustomerCredit(tx, { tenantId: actor.tenantId!, customerId: actor.id, actorUserId: actor.id, orderId, amountCents, idempotencyKey: `reserve:${idempotencyKey}` });
       if (reserved.idempotent) return { appliedCents: reserved.appliedCents, remainingCents: dollarsToCents(order.remainingTenderAmount ?? order.total), remainingCreditCents: dollarsToCents(reserved.account.balance) - dollarsToCents(reserved.account.reservedBalance), paid: false, replayed: true };
       const totalCreditCents = previouslyAppliedCents + reserved.appliedCents;

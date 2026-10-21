@@ -17,6 +17,7 @@ import {
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
 import { requireTenantContext } from "../lib/tenantContext";
 import { hasSellableProductSchema, loadSellableProducts } from "../lib/catalogueSellable";
+import { publicCatalogEligibility } from "../lib/catalogEligibility";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -365,14 +366,11 @@ router.get("/catalog", async (req, res): Promise<void> => {
 
   const tenantId = req.authorizedTenantId!;
   let rows = await db.select().from(catalogItemsTable)
-    .where(eq(catalogItemsTable.tenantId, tenantId))
+    .where(and(eq(catalogItemsTable.tenantId, tenantId), isAdminActor ? undefined : publicCatalogEligibility()))
     .orderBy(asc(catalogItemsTable.name));
 
-  // Customer catalogue calls must never receive archived or safe-duplicate
-  // products. Administrators need those same records to audit their
-  // restrictive lifecycle state, so do not discard them before mapping the
-  // server-derived lifecycleStatus.
-  if (!isAdminActor) rows = activeProductRows(rows);
+  // Eligibility is enforced in SQL before search, counts, and pagination.
+  // Admin inventory/history retains restricted records and lifecycleStatus.
   const totalBeforeFilters = rows.length;
 
   if (query.data.category) {
@@ -396,7 +394,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   if (query.data.available !== undefined) {
     rows = rows.filter(r => r.isAvailable === query.data.available);
   } else if (!isAdminActor && !showOutOfStock) {
-    rows = rows.filter(r => r.isAvailable === true && r.alavontInStock !== false);
+    rows = rows.filter(r => r.alavontInStock !== false);
   }
 
   const page = query.data.page ?? 1;
@@ -658,6 +656,8 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
 router.get("/catalog/categories", async (req, res): Promise<void> => {
   const mode = req.query.mode === "lucifer" ? "lucifer" : "alavont";
   const tenantId = req.authorizedTenantId!;
+  const role = normalizeRole(req.dbUser?.role);
+  const isAdminActor = role === "global_admin" || role === "admin";
   const rows = await db
     .select({
       alavontCategory: catalogItemsTable.alavontCategory,
@@ -670,7 +670,7 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
       metadata: catalogItemsTable.metadata,
     })
     .from(catalogItemsTable)
-    .where(eq(catalogItemsTable.tenantId, tenantId));
+    .where(and(eq(catalogItemsTable.tenantId, tenantId), isAdminActor ? undefined : publicCatalogEligibility()));
 
   const seen = new Set<string>();
   const categories: string[] = [];
@@ -745,16 +745,18 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
     return;
   }
   const tenantId = req.authorizedTenantId!;
-  const [row] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, params.data.id))).limit(1);
+  const actorRole = normalizeRole(req.dbUser?.role);
+  const alavontOnly = actorRole !== "global_admin" && actorRole !== "admin";
+  const [row] = await db.select().from(catalogItemsTable).where(and(
+    eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, params.data.id),
+    alavontOnly ? publicCatalogEligibility() : undefined,
+  )).limit(1);
   if (!row) {
     res.status(404).json({ error: "Not found" });
     return;
   }
-  const actorRole = normalizeRole(req.dbUser?.role);
-  const alavontOnly = actorRole !== "global_admin" && actorRole !== "admin";
   if (alavontOnly) {
-    const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
-    if (row.isAvailable !== true || row.alavontInStock === false || metadata.archived === true || metadata.complianceHold === true || metadata.safeOnlyDuplicate === true || row.isWooManaged === true || row.isLocalAlavont === false) {
+    if (row.alavontInStock === false || row.isWooManaged === true || row.isLocalAlavont === false) {
       res.status(404).json({ error: "Not found" });
       return;
     }
