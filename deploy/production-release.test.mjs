@@ -24,6 +24,7 @@ import {
   assertPlatformSmokeDocument,
   executeProductionSequence,
   mayRestoreRollbackApi,
+  preReleaseSchemaDiagnosticSql,
   sameWriterInventory,
   selectPreservedSnapshotMetadata,
 } from "./production-release.mjs";
@@ -202,6 +203,31 @@ test("isolated restore schema diagnostics name only safe expected and actual fac
     () => assertPreReleaseSchemaInvariantDiagnostics(passing.slice(1)),
     /result set is incomplete/,
   );
+});
+
+test("pre-release slug uniqueness requires the canonical valid and ready lower(slug) index", () => {
+  const passing = PRE_RELEASE_SCHEMA_INVARIANTS.map(({ id, expected }) => ({ id, actual: expected }));
+  assert.equal(assertPreReleaseSchemaInvariantDiagnostics(passing), true);
+  assert.ok(passing.some(({ id }) => id === "public.tenants_slug_ci_unique_idx"));
+  assert.ok(!passing.some(({ id }) => id === "public.tenants_slug_unique"));
+
+  const obsoleteOnly = passing.map((fact) =>
+    fact.id === "public.tenants_slug_ci_unique_idx"
+      ? { id: "public.tenants_slug_unique", actual: "matching unique index" }
+      : fact,
+  );
+  assert.throws(
+    () => assertPreReleaseSchemaInvariantDiagnostics(obsoleteOnly),
+    /unsafe or unknown value/,
+  );
+
+  const sql = preReleaseSchemaDiagnosticSql();
+  assert.match(sql, /index_class\.relname='tenants_slug_ci_unique_idx'/);
+  assert.match(sql, /i\.indisunique AND i\.indisvalid AND i\.indisready/);
+  assert.match(sql, /i\.indnatts=1 AND i\.indnkeyatts=1/);
+  assert.match(sql, /i\.indpred IS NULL/);
+  assert.match(sql, /pg_get_indexdef\(i\.indexrelid, 1, true\)='lower\(slug\)'/);
+  assert.doesNotMatch(sql, /tenants_slug_unique/);
 });
 
 test("preserved snapshot selection is exact and refuses absent or ambiguous candidates", () => {

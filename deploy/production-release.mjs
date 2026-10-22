@@ -112,7 +112,6 @@ export const PRE_RELEASE_SCHEMA_INVARIANTS = Object.freeze([
   ].map((id) => Object.freeze({ id, expected: "table", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ })),
   ...[
     "public.admin_settings_tenant_id_unique_idx",
-    "public.tenants_slug_ci_unique_idx",
   ].map((id) => Object.freeze({ id, expected: "index", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ })),
   Object.freeze({ id: "public.catalogue_inventory_reconciliation_events", expected: "missing", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ }),
   ...[
@@ -120,7 +119,7 @@ export const PRE_RELEASE_SCHEMA_INVARIANTS = Object.freeze([
     "public.inventory_locations_tenant_id_id_unique",
     "public.orders_tenant_id_id_unique",
     "public.users_tenant_id_id_unique",
-    "public.tenants_slug_unique",
+    "public.tenants_slug_ci_unique_idx",
   ].map((id) => Object.freeze({ id, expected: "matching unique index", allowed: /^(?:matching unique index|present with unexpected definition|missing)$/ })),
   Object.freeze({ id: "admin_settings_duplicate_tenant_groups", expected: "0", allowed: /^\d+$/ }),
   Object.freeze({ id: "tenants_duplicate_casefolded_slug_groups", expected: "0", allowed: /^\d+$/ }),
@@ -967,21 +966,19 @@ const PRE_RELEASE_TABLES = Object.freeze([
 ]);
 const PRE_RELEASE_NAMED_INDEXES = Object.freeze([
   "admin_settings_tenant_id_unique_idx",
-  "tenants_slug_ci_unique_idx",
 ]);
 const PRE_RELEASE_UNIQUE_INDEXES = Object.freeze([
   ["catalog_items_tenant_id_id_unique", "tenant_id, id"],
   ["inventory_locations_tenant_id_id_unique", "tenant_id, id"],
   ["orders_tenant_id_id_unique", "tenant_id, id"],
   ["users_tenant_id_id_unique", "tenant_id, id"],
-  ["tenants_slug_unique", "slug"],
 ]);
 
 function relationTypeExpression(name) {
   return `COALESCE((SELECT CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'partitioned table' WHEN 'i' THEN 'index' WHEN 'I' THEN 'partitioned index' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'S' THEN 'sequence' WHEN 'f' THEN 'foreign table' ELSE 'other' END FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='${name}'), 'missing')`;
 }
 
-function preReleaseSchemaDiagnosticSql() {
+export function preReleaseSchemaDiagnosticSql() {
   let ordinal = 0;
   const facts = [];
   const add = (id, actual) => facts.push(`SELECT ${++ordinal} AS ordinal, '${id}'::text AS id, ${actual}::text AS actual`);
@@ -997,6 +994,22 @@ function preReleaseSchemaDiagnosticSql() {
       `CASE WHEN EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='${name}' AND indexdef LIKE 'CREATE UNIQUE INDEX% (${columns})') THEN 'matching unique index' WHEN to_regclass('public.${name}') IS NOT NULL THEN 'present with unexpected definition' ELSE 'missing' END`,
     );
   }
+  add(
+    "public.tenants_slug_ci_unique_idx",
+    `CASE WHEN EXISTS (
+      SELECT 1
+      FROM pg_index i
+      JOIN pg_class index_class ON index_class.oid=i.indexrelid
+      JOIN pg_namespace index_schema ON index_schema.oid=index_class.relnamespace
+      WHERE i.indrelid='public.tenants'::regclass
+        AND index_schema.nspname='public'
+        AND index_class.relname='tenants_slug_ci_unique_idx'
+        AND i.indisunique AND i.indisvalid AND i.indisready
+        AND i.indnatts=1 AND i.indnkeyatts=1
+        AND i.indpred IS NULL
+        AND pg_get_indexdef(i.indexrelid, 1, true)='lower(slug)'
+    ) THEN 'matching unique index' WHEN to_regclass('public.tenants_slug_ci_unique_idx') IS NOT NULL THEN 'present with unexpected definition' ELSE 'missing' END`,
+  );
   add("admin_settings_duplicate_tenant_groups", "(SELECT count(*) FROM (SELECT tenant_id FROM admin_settings GROUP BY tenant_id HAVING count(*) > 1) duplicate_groups)");
   add("tenants_duplicate_casefolded_slug_groups", "(SELECT count(*) FROM (SELECT lower(slug) FROM tenants GROUP BY lower(slug) HAVING count(*) > 1) duplicate_groups)");
   return `SELECT COALESCE(json_agg(json_build_object('id', id, 'actual', actual) ORDER BY ordinal), '[]'::json)::text FROM (${facts.join(" UNION ALL ")}) schema_facts`;
