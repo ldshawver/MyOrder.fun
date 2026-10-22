@@ -1757,6 +1757,7 @@ function CustomerServiceRepQueueContent() {
   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
   const [queueData, setQueueData] = useState<{ orders: ExtendedOrder[]; total: number }>({ orders: [], total: 0 });
   const [isLoadingQueue, setIsLoadingQueue] = useState(false);
+  const [queueLoadError, setQueueLoadError] = useState<string | null>(null);
   const [showClockOutModal, setShowClockOutModal] = useState(false);
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
@@ -1766,6 +1767,7 @@ function CustomerServiceRepQueueContent() {
 
   const userRole = normalizeUiRole(user?.role);
   const isAdmin = userRole === "admin" || userRole === "global_admin";
+  const canManageGeneralSession = userRole === "supervisor" || userRole === "admin" || userRole === "global_admin";
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const [generalSession, setGeneralSession] = useState<GeneralQueueSessionState>({ session: null, participants: [] });
   const [sessionOptions, setSessionOptions] = useState<GeneralSessionOptions>({ locations: [], boxes: [], eligibleCsrs: [] });
@@ -1778,37 +1780,50 @@ function CustomerServiceRepQueueContent() {
   const [openIdempotencyKey, setOpenIdempotencyKey] = useState(() => crypto.randomUUID());
   const [closeIdempotencyKey, setCloseIdempotencyKey] = useState(() => crypto.randomUUID());
   const [sessionMessage, setSessionMessage] = useState<string | null>(null);
+  const [generalSessionLoadError, setGeneralSessionLoadError] = useState<string | null>(null);
 
   const fetchQueue = useCallback(async () => {
     setIsLoadingQueue(true);
     try {
       const token = await getToken();
       const res = await fetch("/api/shift-queue/orders", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-      if (!res.ok) { setQueueData({ orders: [], total: 0 }); return; }
+      if (!res.ok) throw new Error(res.status === 429 ? "Order list is temporarily rate-limited. Try again shortly." : "Could not load the order list.");
       const json = await res.json() as { orders?: ExtendedOrder[]; total?: number };
       const safeOrders = safeArray<ExtendedOrder>(json.orders);
       setQueueData({ orders: safeOrders, total: json.total ?? 0 });
+      setQueueLoadError(null);
+    } catch (error) {
+      setQueueLoadError(error instanceof Error ? error.message : "Could not load the order list.");
     } finally {
       setIsLoadingQueue(false);
     }
   }, [getToken]);
 
   const fetchGeneralSession = useCallback(async () => {
-    const token = await getToken();
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-    const [sessionResponse, optionsResponse] = await Promise.all([
-      fetch("/api/shift-queue/general/session", { headers }),
-      fetch("/api/shift-queue/general/session/options", { headers }),
-    ]);
-    if (sessionResponse.ok) setGeneralSession(await sessionResponse.json());
-    if (optionsResponse.ok) {
-      const data = await optionsResponse.json() as Partial<GeneralSessionOptions>;
-      const options = { locations: safeArray(data.locations), boxes: safeArray(data.boxes), eligibleCsrs: safeArray(data.eligibleCsrs) };
-      setSessionOptions(options);
-      setSelectedLocationId(current => current || String(options.locations[0]?.locationId ?? ""));
-      setSelectedParticipantId(current => current || String(options.eligibleCsrs[0]?.id ?? ""));
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      const [sessionResponse, optionsResponse] = await Promise.all([
+        fetch("/api/shift-queue/general/session", { headers }),
+        canManageGeneralSession ? fetch("/api/shift-queue/general/session/options", { headers }) : Promise.resolve(null),
+      ]);
+      if (!sessionResponse.ok || (optionsResponse != null && !optionsResponse.ok)) {
+        const rateLimited = sessionResponse.status === 429 || optionsResponse?.status === 429;
+        throw new Error(rateLimited ? "General Queue is temporarily rate-limited. Try again shortly." : "Could not refresh General Queue settings.");
+      }
+      setGeneralSession(await sessionResponse.json());
+      if (optionsResponse) {
+        const data = await optionsResponse.json() as Partial<GeneralSessionOptions>;
+        const options = { locations: safeArray(data.locations), boxes: safeArray(data.boxes), eligibleCsrs: safeArray(data.eligibleCsrs) };
+        setSessionOptions(options);
+        setSelectedLocationId(current => current || String(options.locations[0]?.locationId ?? ""));
+        setSelectedParticipantId(current => current || String(options.eligibleCsrs[0]?.id ?? ""));
+      }
+      setGeneralSessionLoadError(null);
+    } catch (error) {
+      setGeneralSessionLoadError(error instanceof Error ? error.message : "Could not refresh General Queue settings.");
     }
-  }, [getToken]);
+  }, [canManageGeneralSession, getToken]);
 
   const safeOrders = safeArray<ExtendedOrder>(queueData.orders);
   const visibleOrders = safeOrders.filter(order => {
@@ -1927,8 +1942,6 @@ function CustomerServiceRepQueueContent() {
   // Spec: CSR alert banner + Accept controls are CSR-only. Supervisors/admins
   // get the supervisor surfaces (delayed list, reassign panel) instead.
   const isCsrOnly = userRole === "csr";
-  const canManageGeneralSession = userRole === "supervisor" || userRole === "admin" || userRole === "global_admin";
-
   async function openGeneralQueueSession() {
     const locationId = Number(selectedLocationId);
     const registerBoxId = selectedRegisterBoxId ? Number(selectedRegisterBoxId) : null;
@@ -2062,6 +2075,7 @@ function CustomerServiceRepQueueContent() {
           <p className="text-xs text-amber-300">A supervisor or manager must open a General Queue cash session before cash can be accepted.</p>
         )}
         {sessionMessage && <p className="text-xs text-muted-foreground">{sessionMessage}</p>}
+        {generalSessionLoadError && <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs"><span>{generalSessionLoadError}</span><Button size="sm" variant="outline" onClick={() => void fetchGeneralSession()}>Retry</Button></div>}
       </section>
 
       {/* Shift panel */}
@@ -2098,7 +2112,9 @@ function CustomerServiceRepQueueContent() {
           ))}
         </div>
 
-        {isLoadingQueue ? (
+        {queueLoadError && <div role="alert" data-testid="queue-load-error" className="flex items-center justify-between gap-3 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm"><span>{queueLoadError}</span><Button size="sm" variant="outline" onClick={() => void fetchQueue()}>Retry</Button></div>}
+
+        {isLoadingQueue && safeOrders.length === 0 ? (
           <div className="space-y-3">
             {[1, 2, 3].map((i) => (
               <div key={i} className="h-24 animate-pulse bg-muted/20 rounded-2xl" />

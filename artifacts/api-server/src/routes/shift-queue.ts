@@ -10,6 +10,7 @@ import {
 import { isShiftOrderRoutable } from "../lib/orderRouting";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, normalizeRole } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
+import { buildOrderResponse } from "../lib/orderResponse";
 
 const router: IRouter = Router();
 const QUEUE_ORDER_STATUSES = ["submitted", "in_progress", "preparing", "ready", "pending", "processing"];
@@ -158,24 +159,20 @@ router.get("/shift-queue/orders", requirePermission("queue.view"), async (req, r
       ? sql`(${ordersTable.assignedShiftId} = ${shift.id} OR (${ordersTable.assignedShiftId} IS NULL AND (${ordersTable.assignedCsrUserId} IS NULL OR ${ordersTable.assignedCsrUserId} = ${actor.id})))`
       : sql`(${ordersTable.assignedShiftId} IS NULL AND (${ordersTable.assignedCsrUserId} IS NULL OR ${ordersTable.assignedCsrUserId} = ${actor.id}))`;
     const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder, scope)).orderBy(desc(ordersTable.createdAt));
-    res.json({ orders, total: orders.length });
+    res.json({ orders: await Promise.all(orders.map(buildOrderResponse)), total: orders.length });
     return;
   }
   const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder)).orderBy(desc(ordersTable.createdAt));
-  res.json({ orders, total: orders.length });
+  res.json({ orders: await Promise.all(orders.map(buildOrderResponse)), total: orders.length });
 });
 
 router.get("/shift-queue/general", requirePermission("queue.view"), async (req, res): Promise<void> => {
   const tenantId = req.authorizedTenantId!;
-  const orders = await db.select({
-    id: ordersTable.id, status: ordersTable.status, fulfillmentStatus: ordersTable.fulfillmentStatus,
-    assignedCsrUserId: ordersTable.assignedCsrUserId, acceptedAt: ordersTable.acceptedAt,
-    routeSource: ordersTable.routeSource, total: ordersTable.total, createdAt: ordersTable.createdAt,
-  }).from(ordersTable).where(and(
+  const orders = await db.select().from(ordersTable).where(and(
     eq(ordersTable.tenantId, tenantId), isNull(ordersTable.assignedShiftId),
     activeQueueOrder,
   )).orderBy(desc(ordersTable.createdAt));
-  res.json({ orders, total: orders.length });
+  res.json({ orders: await Promise.all(orders.map(buildOrderResponse)), total: orders.length });
 });
 
 router.get("/shift-queue/general/session", requirePermission("cash_sessions.view"), async (req, res): Promise<void> => {

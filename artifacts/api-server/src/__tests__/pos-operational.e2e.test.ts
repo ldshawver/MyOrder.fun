@@ -12,6 +12,9 @@ const identities = vi.hoisted(() => ({
   outsider: { clerkId: "e2e_outsider", email: "outsider@pos-e2e.test", role: "admin" },
 }));
 
+process.env.MYORDER_OWNER_CLERK_ID = identities.admin.clerkId;
+process.env.MYORDER_SIGNUP_TENANT_SLUG = "pos-e2e-house";
+
 vi.mock("@clerk/express", () => ({
   clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   getAuth: (req: { header(name: string): string | undefined }) => {
@@ -61,6 +64,7 @@ import {
   cashLedgerEntriesTable,
   auditLogsTable,
   ordersTable,
+  orderItemsTable,
   pool,
   printSettingsTable,
   printBridgeProfilesTable,
@@ -136,6 +140,8 @@ operationalDescribe("POS opening-manager operational flow", () => {
         status: "approved",
         identityStatus: "verified",
         provisioningStatus: "active",
+        approvedByClerkId: identities.admin.clerkId,
+        approvedAt: new Date(),
       },
       {
         clerkId: identities.csr2.clerkId,
@@ -148,6 +154,8 @@ operationalDescribe("POS opening-manager operational flow", () => {
         status: "approved",
         identityStatus: "verified",
         provisioningStatus: "active",
+        approvedByClerkId: identities.admin.clerkId,
+        approvedAt: new Date(),
       },
       {
         clerkId: identities.supervisor.clerkId,
@@ -160,6 +168,8 @@ operationalDescribe("POS opening-manager operational flow", () => {
         status: "approved",
         identityStatus: "verified",
         provisioningStatus: "active",
+        approvedByClerkId: identities.admin.clerkId,
+        approvedAt: new Date(),
       },
       {
         clerkId: identities.admin.clerkId,
@@ -186,6 +196,8 @@ operationalDescribe("POS opening-manager operational flow", () => {
       status: "approved",
       identityStatus: "verified",
       provisioningStatus: "active",
+      approvedByClerkId: identities.admin.clerkId,
+      approvedAt: new Date(),
     });
 
     const [item] = await db.insert(catalogItemsTable).values({
@@ -270,6 +282,58 @@ operationalDescribe("POS opening-manager operational flow", () => {
       await new Promise<void>((resolve, reject) => server?.close(error => error ? reject(error) : resolve()));
     }
     await pool.end();
+  });
+
+  it("keeps stale legacy queue rows consistent with authorized detail while preserving tenant isolation", async () => {
+    const [tenant] = await db.select().from(tenantsTable).where(sql`${tenantsTable.slug} = 'pos-e2e-house'`).limit(1);
+    const [customer] = await db.select().from(usersTable).where(sql`${usersTable.clerkId} = ${identities.csr.clerkId}`).limit(1);
+    const staleEta = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const [order] = await db.insert(ordersTable).values({
+      tenantId: tenant.id,
+      customerId: customer.id,
+      status: "ready",
+      fulfillmentStatus: "ready",
+      paymentStatus: "unpaid",
+      paymentMethod: "cash",
+      subtotal: "20.00",
+      tax: "1.60",
+      total: "21.60",
+      assignedCsrUserId: null,
+      assignedShiftId: null,
+      routeSource: "supervisor_override",
+      routedTo: "csr_shift",
+      estimatedReadyAt: staleEta,
+    }).returning();
+    await db.insert(orderItemsTable).values({
+      orderId: order.id,
+      catalogItemId,
+      catalogItemName: "E2E Customer Item",
+      quantity: 2,
+      unitPrice: "10.00",
+      totalPrice: "20.00",
+    });
+
+    const list = await as("admin").get("/api/shift-queue/orders");
+    expect(list.status, list.text).toBe(200);
+    const listed = list.body.orders.find((candidate: { id: number }) => candidate.id === order.id);
+    expect(listed).toMatchObject({
+      id: order.id,
+      assignedCsrUserId: null,
+      assignedShiftId: null,
+      customerName: "Casey E2E",
+      paymentStatus: "unpaid",
+      items: [expect.objectContaining({ catalogItemId, quantity: 2 })],
+    });
+    expect(new Date(listed.estimatedReadyAt).getTime()).toBe(staleEta.getTime());
+
+    const detail = await as("admin").get(`/api/orders/${order.id}`);
+    expect(detail.status, detail.text).toBe(200);
+    expect(listed).toMatchObject({
+      customerName: detail.body.customerName,
+      paymentStatus: detail.body.paymentStatus,
+      items: detail.body.items,
+    });
+    expect((await as("outsider").get(`/api/orders/${order.id}`)).status).toBe(404);
   });
 
   it("processes customer provisioning through supervisor shift close", async () => {
@@ -422,8 +486,22 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const queue = await as("csr").get("/api/shift-queue/orders");
     expect(queue.status, queue.text).toBe(200);
     expect(queue.body.orders).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: orderId, assignedShiftId: shiftId }),
+      expect.objectContaining({
+        id: orderId,
+        assignedShiftId: shiftId,
+        customerName: expect.any(String),
+        items: [expect.objectContaining({ catalogItemId, quantity: 1 })],
+      }),
     ]));
+    const queueOrder = queue.body.orders.find((candidate: { id: number }) => candidate.id === orderId);
+    const authorizedDetail = await as("csr").get(`/api/orders/${orderId}`);
+    expect(authorizedDetail.status, authorizedDetail.text).toBe(200);
+    expect(queueOrder).toMatchObject({
+      customerName: authorizedDetail.body.customerName,
+      items: authorizedDetail.body.items,
+      paymentStatus: authorizedDetail.body.paymentStatus,
+    });
+    expect((await as("outsider").get(`/api/orders/${orderId}`)).status).toBe(404);
 
     const claimed = await as("csr").post(`/api/orders/${orderId}/claim`).send({});
     expect(claimed.status, claimed.text).toBe(200);
@@ -436,7 +514,16 @@ operationalDescribe("POS opening-manager operational flow", () => {
 
     // The checked-out box is authoritative even if a legacy/stale order row
     // is missing its shift link. The browser never selects a ledger context.
-    await db.update(ordersTable).set({ assignedShiftId: null }).where(sql`${ordersTable.id} = ${orderId}`);
+    const staleEta = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    await db.update(ordersTable).set({ assignedShiftId: null, estimatedReadyAt: staleEta }).where(sql`${ordersTable.id} = ${orderId}`);
+    const legacyQueue = await as("csr").get("/api/shift-queue/orders");
+    const legacyQueueOrder = legacyQueue.body.orders.find((candidate: { id: number }) => candidate.id === orderId);
+    expect(legacyQueueOrder).toMatchObject({
+      id: orderId,
+      assignedShiftId: null,
+      items: [expect.objectContaining({ catalogItemId, quantity: 1 })],
+    });
+    expect(new Date(legacyQueueOrder.estimatedReadyAt).getTime()).toBe(staleEta.getTime());
     const [checkedOutBox] = await db.select().from(csrBoxesTable).where(sql`${csrBoxesTable.slug} = 'sales-box-1' AND ${csrBoxesTable.tenantId} = ${tenantId}`).limit(1);
     await db.update(csrBoxesTable).set({ isActive: false }).where(sql`${csrBoxesTable.slug} = ${checkedOutBox.slug} AND ${csrBoxesTable.tenantId} = ${tenantId}`);
     const failedCloseout = await as("csr").post(`/api/orders/${orderId}/closeout`).send({

@@ -28,6 +28,7 @@ import { CatalogNotice } from "@/components/CatalogNotice";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
 import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
 import { customerTracker } from "@/lib/orderTracker";
+import { isOrderAccessFailure } from "@/lib/orderLoadState";
 
 type OrderWithTracking = Order & {
   serverNow?: string;
@@ -462,7 +463,7 @@ export default function OrderDetail() {
     role: userRole,
   });
 
-  const { data: order, isLoading: isOrderLoading } = useGetOrder(
+  const { data: order, isLoading: isOrderLoading, isError: isOrderError, error: orderError, refetch: refetchOrder, isFetching: isOrderFetching } = useGetOrder(
     id,
     { query: { enabled: !!id, queryKey: getGetOrderQueryKey(id) } }
   );
@@ -627,6 +628,19 @@ export default function OrderDetail() {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh]">
         <AnimatedHourglass size={160} message="Loading order details..." />
+      </div>
+    );
+  }
+
+  if (isOrderError) {
+    const deniedOrMissing = isOrderAccessFailure(orderError);
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
+        <Package size={32} className="text-muted-foreground mb-4" />
+        <p className="text-muted-foreground" role="alert" data-testid="order-load-error">{deniedOrMissing ? "This order could not be found or you do not have access to it." : "The order could not be loaded. Your access has not been denied; this may be a temporary service error."}</p>
+        {deniedOrMissing
+          ? <Link href="/orders" className="text-primary hover:underline text-sm mt-2">Back to orders</Link>
+          : <Button className="mt-3" variant="outline" disabled={isOrderFetching} onClick={() => void refetchOrder()}>{isOrderFetching ? "Retrying…" : "Retry"}</Button>}
       </div>
     );
   }

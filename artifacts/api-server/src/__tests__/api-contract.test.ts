@@ -184,6 +184,15 @@ describe("API contract — /api/* always returns JSON (real assembled app)", () 
     expect(res.body).toMatchObject({ error: "Not found", path: target });
   });
 
+  it("does not exhaust the interactive read budget at the former 300-request threshold", async () => {
+    const responses = [];
+    for (let index = 0; index < 301; index += 1) {
+      responses.push(await supertest(app).get(`/api/read-budget-${index}`));
+    }
+    expect(responses.every(response => response.status === 404)).toBe(true);
+    expect(responses.some(response => response.status === 429)).toBe(false);
+  });
+
   it("malformed JSON body → JSON 400, never HTML", async () => {
     const res = await supertest(app)
       .post("/api/__contract/sync-throw")
