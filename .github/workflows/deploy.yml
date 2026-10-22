@@ -299,16 +299,22 @@ jobs:
              trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT; \
              docker pull '${REPLACEMENT_API_REFERENCE}'; \
              api_id=\"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_API_REFERENCE}')\"; \
-             printf 'Pulled API config identity: %s\\n' \"\$api_id\"; \
-             test \"\$api_id\" = 'sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f'; \
+             api_config=\"\$(docker manifest inspect '${REPLACEMENT_API_REFERENCE}' | node -p 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).config.digest')\"; \
+             printf 'Pulled API manifest identity: %s; config identity: %s\\n' \"\$api_id\" \"\$api_config\"; \
+             test \"\$api_id\" = 'sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1'; \
+             test \"\$api_config\" = 'sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f'; \
              docker pull '${REPLACEMENT_MIGRATE_REFERENCE}'; \
              migrate_id=\"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_MIGRATE_REFERENCE}')\"; \
-             printf 'Pulled migrator config identity: %s\\n' \"\$migrate_id\"; \
-             test \"\$migrate_id\" = 'sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001'; \
+             migrate_config=\"\$(docker manifest inspect '${REPLACEMENT_MIGRATE_REFERENCE}' | node -p 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).config.digest')\"; \
+             printf 'Pulled migrator manifest identity: %s; config identity: %s\\n' \"\$migrate_id\" \"\$migrate_config\"; \
+             test \"\$migrate_id\" = 'sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6'; \
+             test \"\$migrate_config\" = 'sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001'; \
              docker pull '${REPLACEMENT_PLATFORM_REFERENCE}'; \
              platform_id=\"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_PLATFORM_REFERENCE}')\"; \
-             printf 'Pulled Platform config identity: %s\\n' \"\$platform_id\"; \
-             test \"\$platform_id\" = 'sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88'; \
+             platform_config=\"\$(docker manifest inspect '${REPLACEMENT_PLATFORM_REFERENCE}' | node -p 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).config.digest')\"; \
+             printf 'Pulled Platform manifest identity: %s; config identity: %s\\n' \"\$platform_id\" \"\$platform_config\"; \
+             test \"\$platform_id\" = 'sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861'; \
+             test \"\$platform_config\" = 'sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88'; \
              for ref in '${REPLACEMENT_API_REFERENCE}' '${REPLACEMENT_MIGRATE_REFERENCE}' '${REPLACEMENT_PLATFORM_REFERENCE}'; do \
                test \"\$(docker image inspect --format '{{.Os}}/{{.Architecture}}' \"\$ref\")\" = 'linux/amd64'; \
                docker image inspect --format '{{.Config.Labels}}' \"\$ref\" | grep -Fq 'org.opencontainers.image.revision:5dd5b258f0b932e9a9ea4888af00a857d7d10146'; \
