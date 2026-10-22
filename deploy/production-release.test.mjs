@@ -567,6 +567,10 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.ok(workflow.includes("REPLACEMENT_MIGRATE_REFERENCE: ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6"));
   assert.ok(workflow.includes("REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861"));
   assert.ok(workflow.includes("docker pull '${REPLACEMENT_PLATFORM_REFERENCE}'"));
+  assert.ok(workflow.includes("Pulled API config identity: %s"));
+  assert.ok(workflow.includes("Pulled migrator config identity: %s"));
+  assert.ok(workflow.includes("Pulled Platform config identity: %s"));
+  assert.ok(workflow.includes('test \\"\\$api_id\\" = \'sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f\''));
   assert.ok(workflow.includes("sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88"));
   assert.ok(workflow.includes("{{range .RepoDigests}}{{println .}}{{end}}"));
   assert.ok(workflow.includes("grep -Fx"));
