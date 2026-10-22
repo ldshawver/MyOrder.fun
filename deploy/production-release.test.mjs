@@ -11,6 +11,7 @@ import {
   PRODUCTION_BASELINE,
   PRODUCTION,
   PRODUCTION_STEPS,
+  assertApprovedImageMetadata,
   assertProductionConfig,
   assertRelease,
   assertReleaseIdentityManifest,
@@ -255,6 +256,7 @@ test("release deploys only digest-pinned approved artifacts with external Woo di
   assert.match(overlay, /ORDER_NOTIFICATION_WORKER_ENABLED: "0"/);
   const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
   assert.match(controller, /docker", \["image", "inspect", reference\]/);
+  assert.match(controller, /docker", \["manifest", "inspect", reference\]/);
   assert.match(controller, /"--pull", "never", "--no-build"/);
   assert.doesNotMatch(controller, /compose\.args, "build"/);
 });
@@ -460,10 +462,14 @@ test("production rollback baseline is the current pre-release image set", () => 
   assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf");
   assert.equal(PRODUCTION_BASELINE.platformRevision, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
   assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf");
-  assert.deepEqual(Object.keys(APPROVED_RELEASE.images).sort(), ["api", "migrate", "platform"]);
-  assert.equal(APPROVED_RELEASE.images.api, "sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f");
-  assert.equal(APPROVED_RELEASE.images.migrate, "sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001");
-  assert.equal(APPROVED_RELEASE.images.platform, "sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88");
+  assert.deepEqual(Object.keys(APPROVED_RELEASE.manifests).sort(), ["api", "migrate", "platform"]);
+  assert.deepEqual(Object.keys(APPROVED_RELEASE.configs).sort(), ["api", "migrate", "platform"]);
+  assert.equal(APPROVED_RELEASE.manifests.api, "sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1");
+  assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6");
+  assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861");
+  assert.equal(APPROVED_RELEASE.configs.api, "sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f");
+  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001");
+  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88");
   assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.platform, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.migrate, APPROVED_RELEASE.sha);
@@ -484,6 +490,49 @@ test("production rollback baseline is the current pre-release image set", () => 
   assert.equal(
     mayRestoreRollbackApi({ apiStopAttempted: false, migrationStarted: false }),
     false,
+  );
+});
+
+test("approved image gate keeps manifest, repository, config and metadata identities separate", () => {
+  const reference = APPROVED_RELEASE.references.api;
+  const image = {
+    Id: APPROVED_RELEASE.manifests.api,
+    RepoDigests: [reference],
+    Os: "linux",
+    Architecture: "amd64",
+    Config: {
+      Labels: {
+        "org.opencontainers.image.revision": APPROVED_RELEASE.sha,
+        "com.myorder.deploy-sha": APPROVED_RELEASE.sha,
+      },
+    },
+  };
+  const manifest = { config: { digest: APPROVED_RELEASE.configs.api } };
+
+  assert.equal(assertApprovedImageMetadata({ service: "api", reference, image, manifest }), true);
+  assert.throws(
+    () => assertApprovedImageMetadata({ service: "api", reference: reference.replace("myorder-api", "other"), image, manifest }),
+    /repository manifest reference/,
+  );
+  assert.throws(
+    () => assertApprovedImageMetadata({ service: "api", reference, image: { ...image, RepoDigests: [] }, manifest }),
+    /immutable digest reference/,
+  );
+  assert.throws(
+    () => assertApprovedImageMetadata({ service: "api", reference, image: { ...image, Id: "sha256:wrong" }, manifest }),
+    /local image identity/,
+  );
+  assert.throws(
+    () => assertApprovedImageMetadata({ service: "api", reference, image, manifest: { config: { digest: "sha256:wrong" } } }),
+    /config digest/,
+  );
+  assert.throws(
+    () => assertApprovedImageMetadata({ service: "api", reference, image: { ...image, Architecture: "arm64" }, manifest }),
+    /image metadata/,
+  );
+  assert.throws(
+    () => assertApprovedImageMetadata({ service: "api", reference, image: { ...image, Config: { Labels: {} } }, manifest }),
+    /image metadata/,
   );
 });
 
@@ -567,11 +616,12 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.ok(workflow.includes("REPLACEMENT_MIGRATE_REFERENCE: ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6"));
   assert.ok(workflow.includes("REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861"));
   assert.ok(workflow.includes("docker pull '${REPLACEMENT_PLATFORM_REFERENCE}'"));
-  assert.ok(workflow.includes("Pulled API config identity: %s"));
-  assert.ok(workflow.includes("Pulled migrator config identity: %s"));
-  assert.ok(workflow.includes("Pulled Platform config identity: %s"));
-  assert.ok(workflow.includes('test \\"\\$api_id\\" = \'sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f\''));
-  assert.ok(workflow.includes("sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88"));
+  assert.ok(workflow.includes("Pulled API manifest identity: %s; config identity: %s"));
+  assert.ok(workflow.includes("Pulled migrator manifest identity: %s; config identity: %s"));
+  assert.ok(workflow.includes("Pulled Platform manifest identity: %s; config identity: %s"));
+  assert.ok(workflow.includes('test \\"\\$api_id\\" = \'sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1\''));
+  assert.ok(workflow.includes('test \\"\\$api_config\\" = \'sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f\''));
+  assert.ok(workflow.includes("sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861"));
   assert.ok(workflow.includes("{{range .RepoDigests}}{{println .}}{{end}}"));
   assert.ok(workflow.includes("grep -Fx"));
 });

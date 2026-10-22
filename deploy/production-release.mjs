@@ -28,7 +28,15 @@ export const FROZEN_RELEASE = Object.freeze({
 export const APPROVED_RELEASE = Object.freeze({
   sha: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
   tree: "bd96df1c597e64d17c1aaa47f0d0201115a89173",
-  images: Object.freeze({
+  // Production's containerd-backed Docker image store reports the immutable
+  // manifest digest as image.Id. Keep registry manifests and their referenced
+  // image-config digests separate so neither identity can stand in for the other.
+  manifests: Object.freeze({
+    api: "sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1",
+    platform: "sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861",
+    migrate: "sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6",
+  }),
+  configs: Object.freeze({
     api: "sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f",
     platform: "sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88",
     migrate: "sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001",
@@ -283,25 +291,38 @@ function releaseComposeEnvironment() {
   };
 }
 
+export function assertApprovedImageMetadata({ service, reference, image, manifest }) {
+  const expectedReference = `ghcr.io/ldshawver/myorder-${service}@${APPROVED_RELEASE.manifests[service]}`;
+  if (reference !== expectedReference)
+    throw new Error(`Approved ${service} repository manifest reference does not match the frozen release`);
+  if (!Array.isArray(image?.RepoDigests) || !image.RepoDigests.includes(reference))
+    throw new Error(`Approved ${service} immutable digest reference is unavailable`);
+  if (image.Id !== APPROVED_RELEASE.manifests[service])
+    throw new Error(`Approved ${service} local image identity does not match the manifest digest`);
+  if (manifest?.config?.digest !== APPROVED_RELEASE.configs[service])
+    throw new Error(`Approved ${service} image config digest does not match the frozen release`);
+  if (
+    image.Os !== "linux" ||
+    image.Architecture !== "amd64" ||
+    image.Config?.Labels?.["org.opencontainers.image.revision"] !== APPROVED_RELEASE.revisions[service] ||
+    image.Config?.Labels?.["com.myorder.deploy-sha"] !== APPROVED_RELEASE.revisions[service]
+  )
+    throw new Error(`Approved ${service} image metadata does not match the frozen release`);
+  return true;
+}
+
 function verifyApprovedReleaseImages() {
   for (const service of ["api", "platform", "migrate"]) {
     const reference = approvedImageReference(service);
     let image;
+    let manifest;
     try {
       image = JSON.parse(run("docker", ["image", "inspect", reference]))[0];
+      manifest = JSON.parse(run("docker", ["manifest", "inspect", reference]));
     } catch {
       throw new Error(`Approved ${service} image is unavailable by immutable digest`);
     }
-    if (
-      image.Id !== APPROVED_RELEASE.images[service] ||
-      image.Os !== "linux" ||
-      image.Architecture !== "amd64" ||
-      image.Config?.Labels?.["org.opencontainers.image.revision"] !== APPROVED_RELEASE.revisions[service] ||
-      image.Config?.Labels?.["com.myorder.deploy-sha"] !== APPROVED_RELEASE.revisions[service]
-    )
-      throw new Error(`Approved ${service} image metadata does not match the frozen release`);
-    if (!Array.isArray(image.RepoDigests) || !image.RepoDigests.includes(reference))
-      throw new Error(`Approved ${service} immutable digest reference is unavailable`);
+    assertApprovedImageMetadata({ service, reference, image, manifest });
   }
   return true;
 }
@@ -556,7 +577,7 @@ function verifyWriterSet(compose) {
     api?.revision === PRODUCTION_BASELINE.apiRevision &&
     api?.image === PRODUCTION_BASELINE.apiReference;
   const apiIsApproved =
-    api?.imageId === APPROVED_RELEASE.images.api &&
+    api?.imageId === APPROVED_RELEASE.manifests.api &&
     api?.revision === APPROVED_RELEASE.revisions.api &&
     api?.image === approvedImageReference("api");
   if (!apiIsBaseline && !apiIsApproved)
@@ -567,7 +588,7 @@ function verifyWriterSet(compose) {
     platform?.revision === PRODUCTION_BASELINE.platformRevision &&
     platform?.image === PRODUCTION_BASELINE.platformReference;
   const platformIsApproved =
-    platform?.imageId === APPROVED_RELEASE.images.platform &&
+    platform?.imageId === APPROVED_RELEASE.manifests.platform &&
     platform?.revision === APPROVED_RELEASE.revisions.platform &&
     platform?.image === approvedImageReference("platform");
   if (!platformIsBaseline && !platformIsApproved)
@@ -1440,7 +1461,7 @@ async function main() {
       const runtimeAlreadyAdvanced = ["api", "platform"].some((service) => {
         const current = containerBaseline.get(service);
         return (
-          (current?.imageId === APPROVED_RELEASE.images[service] &&
+          (current?.imageId === APPROVED_RELEASE.manifests[service] &&
             current?.revision === APPROVED_RELEASE.revisions[service] &&
             current?.image === approvedImageReference(service))
         );
@@ -1626,8 +1647,8 @@ async function main() {
             `Production ${service} container is missing after rollout`,
           );
       if (
-        afterByService.get("api").Image !== APPROVED_RELEASE.images.api ||
-        afterByService.get("platform").Image !== APPROVED_RELEASE.images.platform ||
+        afterByService.get("api").Image !== APPROVED_RELEASE.manifests.api ||
+        afterByService.get("platform").Image !== APPROVED_RELEASE.manifests.platform ||
         afterByService.get("api").Config.Image !== approvedImageReference("api") ||
         afterByService.get("platform").Config.Image !== approvedImageReference("platform")
       )
