@@ -616,8 +616,16 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.ok(workflow.includes('git show "${TOOLING_SHA}:deploy/production-runtime-overlay.yml"'));
   assert.ok(workflow.includes('"${TOOLING_ROOT}/production-release.mjs"'));
   assert.ok(workflow.includes('"${TOOLING_ROOT}/production-runtime-overlay.yml"'));
-  assert.ok(workflow.includes("test ! -e '${DEPLOY_PATH}/control/${TOOLING_SHA}/production-release.mjs'"));
-  assert.ok(workflow.includes("test ! -e '${DEPLOY_PATH}/control/${TOOLING_SHA}/production-runtime-overlay.yml'"));
+  assert.ok(workflow.includes('TOOLING_CONTROLLER_SHA256="$(sha256sum'));
+  assert.ok(workflow.includes('TOOLING_OVERLAY_SHA256="$(sha256sum'));
+  assert.ok(workflow.includes('test -f \\"\\$controller\\" && test ! -L \\"\\$controller\\"'));
+  assert.ok(workflow.includes('test -f \\"\\$overlay\\" && test ! -L \\"\\$overlay\\"'));
+  assert.ok(workflow.includes("= '${TOOLING_CONTROLLER_SHA256}'"));
+  assert.ok(workflow.includes("= '${TOOLING_OVERLAY_SHA256}'"));
+  assert.ok(workflow.includes('case "${TOOLING_TRANSFER_MODE}" in'));
+  assert.ok(workflow.includes('*) echo "Refusing unknown tooling transfer mode" >&2; exit 1 ;;'));
+  assert.ok(workflow.includes('if [[ "${TOOLING_TRANSFER_MODE}" == "install" ]]'));
+  assert.ok(workflow.includes("Reusing hash-verified immutable deployment tooling"));
   assert.ok(workflow.includes("name: Stage immutable replacement API, migrator and Platform images"));
   assert.ok(workflow.includes("REPLACEMENT_API_REFERENCE: ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1"));
   assert.ok(workflow.includes("REPLACEMENT_MIGRATE_REFERENCE: ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6"));
