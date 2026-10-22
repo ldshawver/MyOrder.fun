@@ -117,4 +117,4 @@ jobs:
              done | sort
              db_id="$(docker ps --all --quiet --filter label=com.docker.compose.project=deploy --filter label=com.docker.compose.service=db)"
              test -n "$db_id"
-             docker exec "$db_id" sh -eu -c '\''psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "SELECT count(*),max(created_at),count(*) FILTER (WHERE id=51) FROM drizzle.__drizzle_migrations"'\'''
+             docker exec "$db_id" sh -eu -c '\''psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "SELECT count(*),max(created_at),count(*) FILTER (WHERE created_at=1792440000000) FROM drizzle.__drizzle_migrations"'\'''

@@ -96,8 +96,8 @@ jobs:
           set -euo pipefail
           for image in "$API_IMAGE_TAG" "$MIGRATE_IMAGE_TAG" "$PLATFORM_IMAGE_TAG"; do
             test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "linux/amd64"
-            test "$(docker image inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' "$image")" = "$SOURCE_SHA"
-            test "$(docker image inspect --format '{{index .Config.Labels \"com.myorder.deploy-sha\"}}' "$image")" = "$SOURCE_SHA"
+            test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$SOURCE_SHA"
+            test "$(docker image inspect --format '{{index .Config.Labels "com.myorder.deploy-sha"}}' "$image")" = "$SOURCE_SHA"
           done
 
       - name: Publish images and report immutable digests
@@ -116,5 +116,6 @@ jobs:
             digest="$(sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' "$RUNNER_TEMP/$service-push.log" | tail -n 1)"
             test -n "$digest"
             echo "${service}_image=ghcr.io/ldshawver/myorder-${service}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+            echo "${service}_config_id=$(docker image inspect --format '{{.Id}}' "$image")" >> "$GITHUB_STEP_SUMMARY"
           done
           echo "These digests are inputs for a separate guarded release-tooling approval. This workflow does not connect to or modify production." >> "$GITHUB_STEP_SUMMARY"
