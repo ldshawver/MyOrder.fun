@@ -322,6 +322,26 @@ jobs:
                docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \"\$ref\" | grep -Fx \"\$ref\" >/dev/null; \
              done"
 
+      - name: Materialize reviewed deployment tooling
+        env:
+          TOOLING_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e "${TOOLING_SHA}^{commit}"
+          git merge-base --is-ancestor "${RELEASE_SHA}" "${TOOLING_SHA}"
+
+          TOOLING_ROOT="${RUNNER_TEMP}/production-tooling-${TOOLING_SHA}"
+          test ! -e "${TOOLING_ROOT}"
+          mkdir -m 700 "${TOOLING_ROOT}"
+          git show "${TOOLING_SHA}:deploy/production-release.mjs" > "${TOOLING_ROOT}/production-release.mjs"
+          git show "${TOOLING_SHA}:deploy/production-runtime-overlay.yml" > "${TOOLING_ROOT}/production-runtime-overlay.yml"
+          test -s "${TOOLING_ROOT}/production-release.mjs"
+          test -s "${TOOLING_ROOT}/production-runtime-overlay.yml"
+          chmod 600 "${TOOLING_ROOT}/production-release.mjs" "${TOOLING_ROOT}/production-runtime-overlay.yml"
+          echo "TOOLING_ROOT=${TOOLING_ROOT}" >> "$GITHUB_ENV"
+
       - name: Package the frozen application release
         shell: bash
         run: |
@@ -388,7 +408,9 @@ jobs:
                test -d \"\$p\" && test ! -L \"\$p\"; \
              done; \
              test ! -e '${DEPLOY_PATH}/incoming/${RELEASE_ARCHIVE_NAME}' && \
-             test ! -L '${DEPLOY_PATH}/incoming/${RELEASE_ARCHIVE_NAME}'"
+             test ! -L '${DEPLOY_PATH}/incoming/${RELEASE_ARCHIVE_NAME}' && \
+             test ! -e '${DEPLOY_PATH}/control/${TOOLING_SHA}/production-release.mjs' && \
+             test ! -e '${DEPLOY_PATH}/control/${TOOLING_SHA}/production-runtime-overlay.yml'"
 
           scp \
             -i "$SSH_KEY_PATH" \
@@ -407,8 +429,8 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o "HostKeyAlias=${VPS_SSH_HOST_KEY_ALIAS}" \
             -P "${SELECTED_VPS_PORT}" \
-            deploy/production-release.mjs \
-            deploy/production-runtime-overlay.yml \
+            "${TOOLING_ROOT}/production-release.mjs" \
+            "${TOOLING_ROOT}/production-runtime-overlay.yml" \
             "${VPS_USER}@${SELECTED_VPS_HOST}:${DEPLOY_PATH}/control/${TOOLING_SHA}/"
 
       - name: Execute guarded production release controller
