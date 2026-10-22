@@ -340,7 +340,11 @@ jobs:
           test -s "${TOOLING_ROOT}/production-release.mjs"
           test -s "${TOOLING_ROOT}/production-runtime-overlay.yml"
           chmod 600 "${TOOLING_ROOT}/production-release.mjs" "${TOOLING_ROOT}/production-runtime-overlay.yml"
+          TOOLING_CONTROLLER_SHA256="$(sha256sum "${TOOLING_ROOT}/production-release.mjs" | awk '{print $1}')"
+          TOOLING_OVERLAY_SHA256="$(sha256sum "${TOOLING_ROOT}/production-runtime-overlay.yml" | awk '{print $1}')"
           echo "TOOLING_ROOT=${TOOLING_ROOT}" >> "$GITHUB_ENV"
+          echo "TOOLING_CONTROLLER_SHA256=${TOOLING_CONTROLLER_SHA256}" >> "$GITHUB_ENV"
+          echo "TOOLING_OVERLAY_SHA256=${TOOLING_OVERLAY_SHA256}" >> "$GITHUB_ENV"
 
       - name: Package the frozen application release
         shell: bash
@@ -382,7 +386,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          ssh \
+          TOOLING_TRANSFER_MODE="$(ssh \
             -i "$SSH_KEY_PATH" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
@@ -408,9 +412,24 @@ jobs:
                test -d \"\$p\" && test ! -L \"\$p\"; \
              done; \
              test ! -e '${DEPLOY_PATH}/incoming/${RELEASE_ARCHIVE_NAME}' && \
-             test ! -L '${DEPLOY_PATH}/incoming/${RELEASE_ARCHIVE_NAME}' && \
-             test ! -e '${DEPLOY_PATH}/control/${TOOLING_SHA}/production-release.mjs' && \
-             test ! -e '${DEPLOY_PATH}/control/${TOOLING_SHA}/production-runtime-overlay.yml'"
+             test ! -L '${DEPLOY_PATH}/incoming/${RELEASE_ARCHIVE_NAME}'; \
+             controller='${DEPLOY_PATH}/control/${TOOLING_SHA}/production-release.mjs'; \
+             overlay='${DEPLOY_PATH}/control/${TOOLING_SHA}/production-runtime-overlay.yml'; \
+             if test -e \"\$controller\" || test -L \"\$controller\" || \
+                test -e \"\$overlay\" || test -L \"\$overlay\"; then \
+               test -f \"\$controller\" && test ! -L \"\$controller\"; \
+               test -f \"\$overlay\" && test ! -L \"\$overlay\"; \
+               test \"\$(sha256sum \"\$controller\" | awk '{print \$1}')\" = '${TOOLING_CONTROLLER_SHA256}'; \
+               test \"\$(sha256sum \"\$overlay\" | awk '{print \$1}')\" = '${TOOLING_OVERLAY_SHA256}'; \
+               printf reuse; \
+             else \
+               printf install; \
+             fi")"
+
+          case "${TOOLING_TRANSFER_MODE}" in
+            install|reuse) ;;
+            *) echo "Refusing unknown tooling transfer mode" >&2; exit 1 ;;
+          esac
 
           scp \
             -i "$SSH_KEY_PATH" \
@@ -422,16 +441,20 @@ jobs:
             "${RELEASE_ARCHIVE}" \
             "${VPS_USER}@${SELECTED_VPS_HOST}:${DEPLOY_PATH}/incoming/${RELEASE_ARCHIVE_NAME}"
 
-          scp \
-            -i "$SSH_KEY_PATH" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o "HostKeyAlias=${VPS_SSH_HOST_KEY_ALIAS}" \
-            -P "${SELECTED_VPS_PORT}" \
-            "${TOOLING_ROOT}/production-release.mjs" \
-            "${TOOLING_ROOT}/production-runtime-overlay.yml" \
-            "${VPS_USER}@${SELECTED_VPS_HOST}:${DEPLOY_PATH}/control/${TOOLING_SHA}/"
+          if [[ "${TOOLING_TRANSFER_MODE}" == "install" ]]; then
+            scp \
+              -i "$SSH_KEY_PATH" \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              -o "HostKeyAlias=${VPS_SSH_HOST_KEY_ALIAS}" \
+              -P "${SELECTED_VPS_PORT}" \
+              "${TOOLING_ROOT}/production-release.mjs" \
+              "${TOOLING_ROOT}/production-runtime-overlay.yml" \
+              "${VPS_USER}@${SELECTED_VPS_HOST}:${DEPLOY_PATH}/control/${TOOLING_SHA}/"
+          else
+            echo "Reusing hash-verified immutable deployment tooling for ${TOOLING_SHA}"
+          fi
 
       - name: Execute guarded production release controller
         env:
