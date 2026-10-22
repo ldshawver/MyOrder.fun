@@ -6,8 +6,15 @@ on:
       - "release-tooling/**"
   workflow_dispatch:
     inputs:
+      release_action:
+        description: Run the guarded preflight without changing runtime/database state, or deploy
+        required: true
+        type: choice
+        options:
+          - preflight
+          - deploy
       production_confirmation:
-        description: Type I_AUTHORIZE_PRODUCTION_DEPLOYMENT to enable the production job
+        description: Type I_AUTHORIZE_PRODUCTION_PREFLIGHT or I_AUTHORIZE_PRODUCTION_DEPLOYMENT for the selected action
         required: true
         type: string
       release_sha:
@@ -24,8 +31,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PINNED_RELEASE_SHA: 3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb
-  PINNED_RELEASE_TREE: c2851c74077f94e189867b574a3f1aef244f61cc
+  PINNED_RELEASE_SHA: 5dd5b258f0b932e9a9ea4888af00a857d7d10146
+  PINNED_RELEASE_TREE: bd96df1c597e64d17c1aaa47f0d0201115a89173
 
 jobs:
   test:
@@ -34,8 +41,8 @@ jobs:
     timeout-minutes: 15
 
     env:
-      RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || '3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb' }}
-      RELEASE_TREE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tree || 'c2851c74077f94e189867b574a3f1aef244f61cc' }}
+      RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || '5dd5b258f0b932e9a9ea4888af00a857d7d10146' }}
+      RELEASE_TREE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tree || 'bd96df1c597e64d17c1aaa47f0d0201115a89173' }}
 
     steps:
       - name: Checkout code
@@ -113,7 +120,7 @@ jobs:
     timeout-minutes: 30
     needs: [test, release-tooling]
     environment: production
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_DEPLOYMENT' && inputs.release_sha != '' && inputs.release_tree != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha != '' && inputs.release_tree != '' && ((inputs.release_action == 'preflight' && inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_PREFLIGHT') || (inputs.release_action == 'deploy' && inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_DEPLOYMENT')) }}
 
     permissions:
       contents: read
@@ -132,18 +139,20 @@ jobs:
 
       DEPLOY_PATH: /opt/alavont
 
-      RELEASE_BASE_SHA: 40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833
-      RELEASE_BASE_TREE: 76bb2bc969450206f0be4754a6ef95434cd27b4a
+      RELEASE_BASE_SHA: 3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb
+      RELEASE_BASE_TREE: c2851c74077f94e189867b574a3f1aef244f61cc
       RELEASE_SHA: ${{ inputs.release_sha }}
       RELEASE_TREE: ${{ inputs.release_tree }}
+      RELEASE_ACTION: ${{ inputs.release_action }}
 
       # The production database and current application containers belong to
       # the `deploy` project. Never create a second `alavont` stack: it has a
       # separate, empty database volume and would collide with the live nginx
       # loopback port.
       COMPOSE_PROJECT_NAME: deploy
-      REPLACEMENT_API_REFERENCE: ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154
-      REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf
+      REPLACEMENT_API_REFERENCE: ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1
+      REPLACEMENT_MIGRATE_REFERENCE: ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6
+      REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861
 
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
 
@@ -269,7 +278,7 @@ jobs:
             "${VPS_USER}@${SELECTED_VPS_HOST}" \
             'echo "SSH OK:" $(whoami)@$(hostname)'
 
-      - name: Stage immutable replacement API and Platform images
+      - name: Stage immutable replacement API, migrator and Platform images
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
@@ -289,13 +298,17 @@ jobs:
              docker login ghcr.io --username '${GHCR_USER}' --password-stdin >/dev/null; \
              trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT; \
              docker pull '${REPLACEMENT_API_REFERENCE}'; \
-             test \"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_API_REFERENCE}')\" = 'sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154'; \
+             test \"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_API_REFERENCE}')\" = 'sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f'; \
+             docker pull '${REPLACEMENT_MIGRATE_REFERENCE}'; \
+             test \"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_MIGRATE_REFERENCE}')\" = 'sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001'; \
              docker pull '${REPLACEMENT_PLATFORM_REFERENCE}'; \
-             test \"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_PLATFORM_REFERENCE}')\" = 'sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf'; \
-             test \"\$(docker image inspect --format '{{.Os}}/{{.Architecture}}' '${REPLACEMENT_PLATFORM_REFERENCE}')\" = 'linux/amd64'; \
-             docker image inspect --format '{{.Config.Labels}}' '${REPLACEMENT_PLATFORM_REFERENCE}' | grep -Fq 'org.opencontainers.image.revision:3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb'; \
-             docker image inspect --format '{{.Config.Labels}}' '${REPLACEMENT_PLATFORM_REFERENCE}' | grep -Fq 'com.myorder.deploy-sha:3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb'; \
-             docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' '${REPLACEMENT_PLATFORM_REFERENCE}' | grep -Fx '${REPLACEMENT_PLATFORM_REFERENCE}' >/dev/null"
+             test \"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_PLATFORM_REFERENCE}')\" = 'sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88'; \
+             for ref in '${REPLACEMENT_API_REFERENCE}' '${REPLACEMENT_MIGRATE_REFERENCE}' '${REPLACEMENT_PLATFORM_REFERENCE}'; do \
+               test \"\$(docker image inspect --format '{{.Os}}/{{.Architecture}}' \"\$ref\")\" = 'linux/amd64'; \
+               docker image inspect --format '{{.Config.Labels}}' \"\$ref\" | grep -Fq 'org.opencontainers.image.revision:5dd5b258f0b932e9a9ea4888af00a857d7d10146'; \
+               docker image inspect --format '{{.Config.Labels}}' \"\$ref\" | grep -Fq 'com.myorder.deploy-sha:5dd5b258f0b932e9a9ea4888af00a857d7d10146'; \
+               docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \"\$ref\" | grep -Fx \"\$ref\" >/dev/null; \
+             done"
 
       - name: Package the frozen application release
         shell: bash
@@ -386,12 +399,17 @@ jobs:
             deploy/production-runtime-overlay.yml \
             "${VPS_USER}@${SELECTED_VPS_HOST}:${DEPLOY_PATH}/control/${TOOLING_SHA}/"
 
-      - name: Execute guarded production release sequence
+      - name: Execute guarded production release controller
         env:
           TOOLING_SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
+          case "${RELEASE_ACTION}" in
+            preflight) CONTROLLER_CONFIRMATION=PREFLIGHT-PRODUCTION ;;
+            deploy) CONTROLLER_CONFIRMATION=DEPLOY-PRODUCTION ;;
+            *) exit 1 ;;
+          esac
 
           ssh \
             -i "$SSH_KEY_PATH" \
@@ -402,9 +420,9 @@ jobs:
             -p "${SELECTED_VPS_PORT}" \
             "${VPS_USER}@${SELECTED_VPS_HOST}" \
             "flock -n '${DEPLOY_PATH}/control/.production-deploy.lock' \
-             env PRODUCTION_DEPLOY_CONFIRMATION=DEPLOY-PRODUCTION \
+             env PRODUCTION_DEPLOY_CONFIRMATION='${CONTROLLER_CONFIRMATION}' \
              node '${DEPLOY_PATH}/control/${TOOLING_SHA}/production-release.mjs' \
-             deploy \
+             '${RELEASE_ACTION}' \
              --authorized \
              --base-sha '${RELEASE_BASE_SHA}' \
              --base-tree '${RELEASE_BASE_TREE}' \
@@ -415,6 +433,7 @@ jobs:
              --tooling-sha '${TOOLING_SHA}'"
 
       - name: Verify public site
+        if: ${{ inputs.release_action == 'deploy' }}
         shell: bash
         run: |
           set -euo pipefail

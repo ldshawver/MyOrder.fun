@@ -7,6 +7,7 @@ import {
   APPROVED_RELEASE,
   EXPECTED_PRODUCTION_MIGRATIONS,
   FROZEN_RELEASE,
+  MIGRATION_0077,
   PRODUCTION_BASELINE,
   PRODUCTION,
   PRODUCTION_STEPS,
@@ -17,6 +18,7 @@ import {
   assertKnownNonWriterService,
   assertNoEncryptedProductionPayPalSettings,
   assertPublicCatalogSmokePayload,
+  assertPlatformSmokeDocument,
   executeProductionSequence,
   mayRestoreRollbackApi,
   sameWriterInventory,
@@ -81,8 +83,12 @@ const expectedConfig = {
 
 test("public catalogue smoke gate validates the API items response contract", () => {
   assert.equal(
-    assertPublicCatalogSmokePayload({ items: [{ id: 1 }], total: 304 }),
+    assertPublicCatalogSmokePayload({ items: [{ id: 1 }], total: 304 }, 304),
     1,
+  );
+  assert.throws(
+    () => assertPublicCatalogSmokePayload({ items: [{ id: 1 }], total: 304 }, 303),
+    /eligibility projection/,
   );
   assert.throws(
     () => assertPublicCatalogSmokePayload({ products: [{ id: 1 }], total: 1 }),
@@ -92,6 +98,13 @@ test("public catalogue smoke gate validates the API items response contract", ()
     () => assertPublicCatalogSmokePayload({ items: [], total: 0 }),
     /returned no items/,
   );
+});
+
+test("sign-in and POS shell smoke gates require the production HTML application", () => {
+  const response = { ok: true, status: 200, headers: { get: () => "text/html; charset=utf-8" } };
+  assert.equal(assertPlatformSmokeDocument(response, '<main id="root"></main>', "sign-in"), 200);
+  assert.throws(() => assertPlatformSmokeDocument({ ...response, ok: false }, '<main id="root"></main>', "POS shell"), /POS shell/);
+  assert.throws(() => assertPlatformSmokeDocument(response, "not the app", "sign-in"), /sign-in/);
 });
 
 test("accepts only the approved frozen release identity and immutable release path", () => {
@@ -138,7 +151,7 @@ test("accepts only the approved frozen release identity and immutable release pa
   assert.throws(
     () =>
       assertRelease({
-        sha: "b".repeat(40),
+        sha: FROZEN_RELEASE.sha,
         tree: APPROVED_RELEASE.tree,
         releaseRoot,
         archivePath,
@@ -146,6 +159,22 @@ test("accepts only the approved frozen release identity and immutable release pa
       }),
     /approved immutable candidate/,
   );
+});
+
+test("production preflight is separately authorized and cannot reach mutation steps", () => {
+  const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const start = controller.indexOf('if (command === "preflight")');
+  const end = controller.indexOf("  try {", start);
+  const preflight = controller.slice(start, end);
+  assert.ok(start > 0 && end > start);
+  for (const step of ["validate", "verify-release-images", "validate-lineage", "verify-writer-inventory"])
+    assert.ok(preflight.includes(step));
+  assert.doesNotMatch(preflight, /stop-writers|snapshot|restore-rehearsal|migrate|start-api|start-platform-proxy/);
+  assert.match(workflow, /I_AUTHORIZE_PRODUCTION_PREFLIGHT/);
+  assert.match(workflow, /inputs\.release_action == 'preflight'/);
+  assert.match(workflow, /inputs\.release_action == 'deploy'/);
+  assert.match(workflow, /if: \$\{\{ inputs\.release_action == 'deploy' \}\}/);
 });
 
 test("production Compose is pinned to the production database, release images, volume and loopback proxy", () => {
@@ -419,7 +448,7 @@ test("missing production authorization is rejected by the executable entrypoint"
   );
   assert.match(
     source,
-    /PRODUCTION_DEPLOY_CONFIRMATION !== "DEPLOY-PRODUCTION"/,
+    /command === "preflight" \? "PREFLIGHT-PRODUCTION" : "DEPLOY-PRODUCTION"/,
   );
   assert.match(source, /--authorized/);
 });
@@ -427,32 +456,23 @@ test("missing production authorization is rejected by the executable entrypoint"
 test("production rollback baseline is the current pre-release image set", () => {
   assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
   assert.equal(PRODUCTION_BASELINE.apiRevision, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
-  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13");
-  assert.equal(PRODUCTION_BASELINE.platformRevision, "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833");
+  assert.equal(PRODUCTION_BASELINE.apiReference, "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
+  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf");
+  assert.equal(PRODUCTION_BASELINE.platformRevision, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
+  assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.images).sort(), ["api", "migrate", "platform"]);
-  assert.equal(APPROVED_RELEASE.images.api, "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
-  assert.equal(APPROVED_RELEASE.images.platform, "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf");
+  assert.equal(APPROVED_RELEASE.images.api, "sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f");
+  assert.equal(APPROVED_RELEASE.images.migrate, "sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001");
+  assert.equal(APPROVED_RELEASE.images.platform, "sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88");
   assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.platform, APPROVED_RELEASE.sha);
-  assert.equal(APPROVED_RELEASE.revisions.migrate, FROZEN_RELEASE.sha);
-  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
-  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf");
-  assert.equal(EXPECTED_PRODUCTION_MIGRATIONS.length, 9);
-  assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, [
-    "0068_print_jobs_document_job_types",
-    "0069_inventory_tenant_quantity_foundation",
-    "0070_catalogue_products_options_reorder",
-    "0071_refund_state_constraint_reconciliation",
-    "0072_order_created_notifications",
-    "0073_admin_settings_tenant_uniqueness",
-    "0074_tenant_slug_case_insensitive_unique",
-    "0075_catalogue_variant_attributes",
-    "0076_tenant_woo_store_url_no_default",
-  ]);
-  assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS.slice(-2), [
-    "0075_catalogue_variant_attributes",
-    "0076_tenant_woo_store_url_no_default",
-  ]);
+  assert.equal(APPROVED_RELEASE.revisions.migrate, APPROVED_RELEASE.sha);
+  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1");
+  assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6");
+  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861");
+  assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, ["0077_catalogue_inventory_reconciliation"]);
+  assert.equal(MIGRATION_0077.timestamp, "1792440000000");
+  assert.equal(MIGRATION_0077.sha256, "29b98289bd97b1c4781495a93d3d034f03a0daa503a96adfda035d2a3aeecd6b");
   assert.equal(
     mayRestoreRollbackApi({ apiStopAttempted: true, migrationStarted: false }),
     true,
@@ -486,18 +506,23 @@ test("approved P0 patch identity and rerun semantics are verified without changi
   assert.doesNotMatch(sql, /drizzle\.__drizzle_migrations/);
 });
 
-test("migration verifier checks physical 0075/0076 effects and release gates bind P0 state", () => {
+test("migration verifier checks physical 0077 effects and release gates bind the exact lineage", () => {
   const validator = readFileSync(new URL("../lib/db/scripts/validate-migration-ledger.ts", import.meta.url), "utf8");
   const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
   const guard = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
   assert.match(validator, /applied\.has\(49\)/);
   assert.match(validator, /applied\.has\(50\)/);
+  assert.match(validator, /applied\.has\(51\)/);
   assert.match(validator, /0075 catalogue variant physical effects/);
   assert.match(validator, /0076 WooCommerce webhook physical effects/);
   assert.match(validator, /woocommerce_webhook_events_pkey/);
   assert.match(controller, /verifyP0Schema\(compose\)/);
-  assert.match(controller, /recognized lineage preserved: 42\/51/);
-  assert.match(controller, /recognized lineage preserved: 51\/51/);
+  assert.match(controller, /recognized lineage preserved: 51\/52/);
+  assert.match(controller, /recognized lineage preserved: 52\/52/);
+  assert.match(controller, /Migration 0077 reconciliation schema/);
+  assert.match(controller, /Isolated migration 0077 rehearsal failed/);
+  assert.match(controller, /--single-transaction/);
+  assert.match(controller, /Migration 0077 rehearsal changed representative production data counts/);
   assert.match(guard, /recognized lineage preserved: 49\/51/);
   assert.match(guard, /appliedMigrations\.length === 51/);
   assert.match(guard, /hasPendingMigrations/);
@@ -537,11 +562,14 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.doesNotMatch(runner, /rsync|--delete/);
   assert.match(runner, /\/opt\/alavont\/shared\/print-assets/);
   assert.match(workflow, /production-release\.mjs/);
-  assert.ok(workflow.includes("name: Stage immutable replacement API and Platform images"));
-  assert.ok(workflow.includes("REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf"));
+  assert.ok(workflow.includes("name: Stage immutable replacement API, migrator and Platform images"));
+  assert.ok(workflow.includes("REPLACEMENT_API_REFERENCE: ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1"));
+  assert.ok(workflow.includes("REPLACEMENT_MIGRATE_REFERENCE: ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6"));
+  assert.ok(workflow.includes("REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861"));
   assert.ok(workflow.includes("docker pull '${REPLACEMENT_PLATFORM_REFERENCE}'"));
-  assert.ok(workflow.includes("sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf"));
-  assert.ok(workflow.includes("grep -Fx '${REPLACEMENT_PLATFORM_REFERENCE}'"));
+  assert.ok(workflow.includes("sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88"));
+  assert.ok(workflow.includes("{{range .RepoDigests}}{{println .}}{{end}}"));
+  assert.ok(workflow.includes("grep -Fx"));
 });
 
 test("production SSH uses an ephemeral Tailscale route and pinned SSH host identity only", () => {
@@ -581,7 +609,7 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(
     workflow,
-    /RELEASE_BASE_SHA: 40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833/,
+    /RELEASE_BASE_SHA: 3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb/,
   );
   assert.match(
     workflow,
@@ -589,8 +617,8 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
   const globalEnv = workflow.match(/^env:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
-  assert.equal(APPROVED_RELEASE.sha, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
-  assert.equal(APPROVED_RELEASE.tree, "c2851c74077f94e189867b574a3f1aef244f61cc");
+  assert.equal(APPROVED_RELEASE.sha, "5dd5b258f0b932e9a9ea4888af00a857d7d10146");
+  assert.equal(APPROVED_RELEASE.tree, "bd96df1c597e64d17c1aaa47f0d0201115a89173");
   for (const [key, value] of [["SHA", APPROVED_RELEASE.sha], ["TREE", APPROVED_RELEASE.tree]]) {
     const pin = `PINNED_RELEASE_${key}`;
     assert.deepEqual(globalEnv.match(new RegExp(`^  ${pin}: ([a-f0-9]{40})$`, "gm")), [`  ${pin}: ${value}`]);
@@ -603,7 +631,7 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   assert.match(workflow, /needs: \[test, release-tooling\]/);
   assert.match(workflow, /branches:\n\s+- "release-tooling\/\*\*"/);
   assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
-  assert.match(workflow, /RELEASE_BASE_TREE: 76bb2bc969450206f0be4754a6ef95434cd27b4a/);
+  assert.match(workflow, /RELEASE_BASE_TREE: c2851c74077f94e189867b574a3f1aef244f61cc/);
   assert.ok(workflow.includes('git rev-parse "${RELEASE_BASE_SHA}^{tree}"'));
   assert.ok(workflow.includes('git merge-base --is-ancestor "${RELEASE_BASE_SHA}" "${RELEASE_SHA}"'));
   assert.match(workflow, /MYORDER-RELEASE-IDENTITY\.json/);
@@ -754,5 +782,5 @@ test("post-migration resume accepts only exact approved runtime identities", () 
     controller,
     /runtimeAlreadyAdvanced && migrationState !== "applied"/,
   );
-  assert.match(controller, /exact 51-row migration lineage is applied/);
+  assert.match(controller, /exact 52-row migration lineage is applied/);
 });

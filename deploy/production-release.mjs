@@ -22,38 +22,40 @@ import { fileURLToPath } from "node:url";
 export const FROZEN_RELEASE = Object.freeze({
   // The replacement candidate must descend from the previously approved
   // application candidate; deployment-only successors cannot change it.
-  sha: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
-  tree: "76bb2bc969450206f0be4754a6ef95434cd27b4a",
-});
-export const APPROVED_RELEASE = Object.freeze({
   sha: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
   tree: "c2851c74077f94e189867b574a3f1aef244f61cc",
+});
+export const APPROVED_RELEASE = Object.freeze({
+  sha: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
+  tree: "bd96df1c597e64d17c1aaa47f0d0201115a89173",
   images: Object.freeze({
-    api: "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
-    platform: "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
-    migrate: "sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
+    api: "sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f",
+    platform: "sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88",
+    migrate: "sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001",
   }),
   revisions: Object.freeze({
-    api: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
-    platform: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
-    migrate: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+    api: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
+    platform: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
+    migrate: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
   }),
   references: Object.freeze({
-    api: "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
-    platform: "ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
-    migrate: "myorder-migrate@sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
+    api: "ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1",
+    platform: "ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861",
+    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6",
   }),
-});
-export const MIGRATED_RUNTIME_BASELINE = Object.freeze({
-  apiImage: "sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
-  apiRevision: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
-  apiReference: "myorder-api@sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
 });
 export const PRODUCTION_BASELINE = Object.freeze({
   apiImage: "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
   apiRevision: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
-  platformImage: "sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13",
-  platformRevision: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
+  platformImage: "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
+  platformRevision: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
+  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
+});
+export const MIGRATION_0077 = Object.freeze({
+  tag: "0077_catalogue_inventory_reconciliation",
+  timestamp: "1792440000000",
+  sha256: "29b98289bd97b1c4781495a93d3d034f03a0daa503a96adfda035d2a3aeecd6b",
 });
 let releaseIdentity = APPROVED_RELEASE;
 export const PRODUCTION = Object.freeze({
@@ -84,15 +86,7 @@ export const PRODUCTION_STEPS = Object.freeze([
 ]);
 
 export const EXPECTED_PRODUCTION_MIGRATIONS = Object.freeze([
-  "0068_print_jobs_document_job_types",
-  "0069_inventory_tenant_quantity_foundation",
-  "0070_catalogue_products_options_reorder",
-  "0071_refund_state_constraint_reconciliation",
-  "0072_order_created_notifications",
-  "0073_admin_settings_tenant_uniqueness",
-  "0074_tenant_slug_case_insensitive_unique",
-  "0075_catalogue_variant_attributes",
-  "0076_tenant_woo_store_url_no_default",
+  MIGRATION_0077.tag,
 ]);
 
 export function assertRelease({
@@ -335,7 +329,7 @@ export function assertNoEncryptedProductionPayPalSettings(count) {
   return true;
 }
 
-export function assertPublicCatalogSmokePayload(payload) {
+export function assertPublicCatalogSmokePayload(payload, expectedTotal) {
   const items = payload?.items;
   if (
     !Array.isArray(items) ||
@@ -344,7 +338,16 @@ export function assertPublicCatalogSmokePayload(payload) {
     payload.total < items.length
   )
     throw new Error("Production Lucifer public catalogue returned no items");
+  if (expectedTotal !== undefined && payload.total !== expectedTotal)
+    throw new Error("Production public catalogue total differs from the database sale-eligibility projection");
   return items.length;
+}
+
+export function assertPlatformSmokeDocument(response, body, label) {
+  if (!response?.ok || !String(response.headers?.get?.("content-type") ?? "").includes("text/html") ||
+      !body.includes('id="root"'))
+    throw new Error(`Production ${label} page smoke test failed`);
+  return response.status;
 }
 
 function run(command, args, options = {}) {
@@ -550,21 +553,19 @@ function verifyWriterSet(compose) {
   const api = idsByService.get("api");
   const apiIsBaseline =
     api?.imageId === PRODUCTION_BASELINE.apiImage &&
-    api?.revision === PRODUCTION_BASELINE.apiRevision;
-  const apiIsMigratedBaseline =
-    api?.imageId === MIGRATED_RUNTIME_BASELINE.apiImage &&
-    api?.revision === MIGRATED_RUNTIME_BASELINE.apiRevision &&
-    api?.image === MIGRATED_RUNTIME_BASELINE.apiReference;
+    api?.revision === PRODUCTION_BASELINE.apiRevision &&
+    api?.image === PRODUCTION_BASELINE.apiReference;
   const apiIsApproved =
     api?.imageId === APPROVED_RELEASE.images.api &&
     api?.revision === APPROVED_RELEASE.revisions.api &&
     api?.image === approvedImageReference("api");
-  if (!apiIsBaseline && !apiIsMigratedBaseline && !apiIsApproved)
-    throw new Error("Current production API is not an exact recognized rollback, migrated, or approved image");
+  if (!apiIsBaseline && !apiIsApproved)
+    throw new Error("Current production API is not the exact recorded rollback or approved image");
   const platform = idsByService.get("platform");
   const platformIsBaseline =
     platform?.imageId === PRODUCTION_BASELINE.platformImage &&
-    platform?.revision === PRODUCTION_BASELINE.platformRevision;
+    platform?.revision === PRODUCTION_BASELINE.platformRevision &&
+    platform?.image === PRODUCTION_BASELINE.platformReference;
   const platformIsApproved =
     platform?.imageId === APPROVED_RELEASE.images.platform &&
     platform?.revision === APPROVED_RELEASE.revisions.platform &&
@@ -786,9 +787,9 @@ function createSnapshot(compose, backupRoot) {
     compose,
     "SELECT id || '|' || hash || '|' || created_at::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (ledger.split("\n").length !== 42)
+  if (ledger.split("\n").length !== 51)
     throw new Error(
-      "Expected the recognized 42-row pre-release production ledger",
+      "Expected the recognized 51-row pre-0077 production ledger",
     );
   const counts = query(
     compose,
@@ -851,7 +852,7 @@ function createSnapshot(compose, backupRoot) {
   });
   writeFileSync(
     `${archive}.metadata.json`,
-    `${JSON.stringify({ sourceApiRevision: PRODUCTION_BASELINE.apiRevision, sourceApiImage: PRODUCTION_BASELINE.apiImage, sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision, sourcePlatformImage: PRODUCTION_BASELINE.platformImage, targetSha: releaseIdentity.sha, targetTree: releaseIdentity.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 42, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({ sourceApiRevision: PRODUCTION_BASELINE.apiRevision, sourceApiImage: PRODUCTION_BASELINE.apiImage, sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision, sourcePlatformImage: PRODUCTION_BASELINE.platformImage, targetSha: releaseIdentity.sha, targetTree: releaseIdentity.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 51, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
     { flag: "wx", mode: 0o600 },
   );
   chmodSync(partial, 0o600);
@@ -946,7 +947,7 @@ function restoreSnapshotInIsolation(snapshot) {
         "Isolated restore migration ledger differs from snapshot source",
       );
     const invariantSql = `SELECT
-      (SELECT count(*) FROM drizzle.__drizzle_migrations)=42
+      (SELECT count(*) FROM drizzle.__drizzle_migrations)=51
       AND to_regclass('public.orders') IS NOT NULL
       AND to_regclass('public.inventory_transaction_log') IS NOT NULL
       AND to_regclass('public.inventory_reservations') IS NOT NULL
@@ -954,8 +955,10 @@ function restoreSnapshotInIsolation(snapshot) {
       AND to_regclass('public.admin_settings') IS NOT NULL
       AND to_regclass('public.tenants') IS NOT NULL
       AND to_regclass('public.print_jobs') IS NOT NULL
-      AND to_regclass('public.admin_settings_tenant_id_unique_idx') IS NULL
-      AND to_regclass('public.tenants_slug_ci_unique_idx') IS NULL
+      AND to_regclass('public.admin_settings_tenant_id_unique_idx') IS NOT NULL
+      AND to_regclass('public.tenants_slug_ci_unique_idx') IS NOT NULL
+      AND to_regclass('public.woocommerce_webhook_events') IS NOT NULL
+      AND to_regclass('public.catalogue_inventory_reconciliation_events') IS NULL
       AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='catalog_items_tenant_id_id_unique' AND indexdef LIKE 'CREATE UNIQUE INDEX% (tenant_id, id)')
       AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='inventory_locations_tenant_id_id_unique' AND indexdef LIKE 'CREATE UNIQUE INDEX% (tenant_id, id)')
       AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='orders_tenant_id_id_unique' AND indexdef LIKE 'CREATE UNIQUE INDEX% (tenant_id, id)')
@@ -997,6 +1000,66 @@ function restoreSnapshotInIsolation(snapshot) {
       throw new Error(
         "Restored representative table counts differ from snapshot metadata",
       );
+    const migrationPath = path.join(
+      PRODUCTION.root,
+      "releases",
+      releaseIdentity.sha,
+      "lib/db/drizzle/0077_catalogue_inventory_reconciliation.sql",
+    );
+    assertRealFilesystemPath(migrationPath, "file");
+    const migrationSource = readFileSync(migrationPath);
+    if (createHash("sha256").update(migrationSource).digest("hex") !== MIGRATION_0077.sha256)
+      throw new Error("Migration 0077 source checksum differs from the reviewed candidate");
+    const migrationFd = openSync(migrationPath, "r");
+    const rehearsal = spawnSync(
+      "docker",
+      [
+        "exec",
+        "-i",
+        name,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "alavont_recovery",
+        "-X",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "--single-transaction",
+      ],
+      { stdio: [migrationFd, "pipe", "pipe"] },
+    );
+    closeSync(migrationFd);
+    if (rehearsal.error || rehearsal.status !== 0)
+      throw new Error("Isolated migration 0077 rehearsal failed");
+    const rehearsalVerified = run("docker", [
+      "exec",
+      name,
+      "psql",
+      "-U",
+      "postgres",
+      "-d",
+      "alavont_recovery",
+      "-X",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-Atc",
+      `SELECT
+        to_regclass('public.catalogue_inventory_reconciliation_events') IS NOT NULL
+        AND to_regprocedure('public.prevent_catalogue_reconciliation_mutation()') IS NOT NULL
+        AND to_regprocedure('public.block_live_inventory_model_change()') IS NOT NULL
+        AND (SELECT count(*) FROM pg_trigger WHERE tgname IN ('catalogue_inventory_reconciliation_immutable','catalogue_product_inventory_model_guard') AND NOT tgisinternal)=2
+        AND (SELECT count(*) FROM drizzle.__drizzle_migrations)=51`,
+    ]).trim();
+    if (rehearsalVerified !== "t")
+      throw new Error("Isolated migration 0077 rehearsal schema verification failed");
+    const countsAfterRehearsal = run("docker", [
+      "exec", name, "psql", "-U", "postgres", "-d", "alavont_recovery",
+      "-X", "-v", "ON_ERROR_STOP=1", "-Atc",
+      "SELECT 'orders='||(SELECT count(*) FROM orders)||';inventory_transaction_log='||(SELECT count(*) FROM inventory_transaction_log)||';inventory_reservations='||(SELECT count(*) FROM inventory_reservations)||';inventory_balances='||(SELECT count(*) FROM inventory_balances)||';catalog_items='||(SELECT count(*) FROM catalog_items)||';order_items='||(SELECT count(*) FROM order_items)",
+    ]).trim();
+    if (countsAfterRehearsal !== snapshot.counts.trim())
+      throw new Error("Migration 0077 rehearsal changed representative production data counts");
     const isolation = JSON.parse(run("docker", ["inspect", name]))[0];
     if (
       isolation.HostConfig.NetworkMode !== "none" ||
@@ -1007,7 +1070,7 @@ function restoreSnapshotInIsolation(snapshot) {
       throw new Error(
         "Recovery database isolation label/network/volume mismatch",
       );
-    return { counts: counts.trim(), ledgerRows: 42, isolated: true };
+    return { counts: counts.trim(), ledgerRows: 51, isolated: true, migration0077: true };
   } finally {
     if (started) {
       const inspected = spawnSync("docker", ["inspect", name], {
@@ -1034,20 +1097,23 @@ function verifyMigration(compose) {
     compose,
     "SELECT substring(hash from 1 for 0) || id::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (actual.split("\n").length !== 51)
-    throw new Error("Production migration ledger count is not 51");
+  if (actual.split("\n").length !== 52)
+    throw new Error("Production migration ledger count is not 52");
   const journal = JSON.parse(
     readFileSync(
       path.join(compose.releaseRoot, "lib/db/drizzle/meta/_journal.json"),
       "utf8",
     ),
   );
-  if (journal.entries.length !== 51)
-    throw new Error("Candidate migration journal must contain all 51 canonical entries through 0076");
+  if (journal.entries.length !== 52)
+    throw new Error("Candidate migration journal must contain all 52 canonical entries through 0077");
   if (
     expected.some((tag) => !journal.entries.some((entry) => entry.tag === tag))
   )
-    throw new Error("Expected Release 1 migration missing from journal");
+    throw new Error("Approved migration 0077 is missing from the candidate journal");
+  const migrationPath = path.join(compose.releaseRoot, "lib/db/drizzle/0077_catalogue_inventory_reconciliation.sql");
+  if (createHash("sha256").update(readFileSync(migrationPath)).digest("hex") !== MIGRATION_0077.sha256)
+    throw new Error("Migration 0077 source checksum differs from the reviewed candidate");
   const validator = run(
     "docker",
     [
@@ -1067,7 +1133,7 @@ function verifyMigration(compose) {
   for (const tag of expected)
     if (!validator.includes(`APPLIED ${tag} `))
       throw new Error(`Post-migration validator did not confirm ${tag}`);
-  if (!validator.includes("recognized lineage preserved: 51/51"))
+  if (!validator.includes("recognized lineage preserved: 52/52"))
     throw new Error(
       "Post-migration validator did not confirm the complete candidate migration lineage",
     );
@@ -1100,6 +1166,16 @@ function verifyMigration(compose) {
       AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.woocommerce_webhook_events'::regclass AND conname='woocommerce_webhook_events_status_check' AND contype='c' AND convalidated)
   `);
   if (candidateSchema !== "t") throw new Error("Candidate 0075/0076 physical schema verification failed");
+  const reconciliationSchema = query(compose, `
+    SELECT
+      to_regclass('public.catalogue_inventory_reconciliation_events') IS NOT NULL
+      AND to_regprocedure('public.prevent_catalogue_reconciliation_mutation()') IS NOT NULL
+      AND to_regprocedure('public.block_live_inventory_model_change()') IS NOT NULL
+      AND (SELECT count(*) FROM pg_trigger WHERE tgname IN ('catalogue_inventory_reconciliation_immutable','catalogue_product_inventory_model_guard') AND NOT tgisinternal)=2
+      AND (SELECT count(*) FROM drizzle.__drizzle_migrations WHERE created_at=${MIGRATION_0077.timestamp})=1
+  `);
+  if (reconciliationSchema !== "t")
+    throw new Error("Migration 0077 reconciliation schema is absent or structurally invalid");
   verifyP0Schema(compose);
   const checks = query(
     compose,
@@ -1152,17 +1228,17 @@ function validatePendingLineage(compose) {
   ].map((match) => match[1]);
   if (
     JSON.stringify(pending) === JSON.stringify(expected) &&
-    output.includes("recognized lineage preserved: 42/51")
+    output.includes("recognized lineage preserved: 51/52")
   )
     return "pending";
   if (
     pending.length === 0 &&
     expected.every((tag) => output.includes(`APPLIED ${tag} `)) &&
-    output.includes("recognized lineage preserved: 51/51")
+    output.includes("recognized lineage preserved: 52/52")
   )
     return "applied";
   throw new Error(
-    `Production migration state is neither the exact 42-row pending path nor the verified 51-row applied lineage: ${pending.join(",")}`,
+    `Production migration state is neither the exact 51-row pre-0077 path nor the verified 52-row applied lineage: ${pending.join(",")}`,
   );
 }
 
@@ -1202,9 +1278,9 @@ async function waitForApiContainer(compose, expectedSha, attempts = 45) {
 
 async function main() {
   const [, , command, ...args] = process.argv;
-  if (command !== "deploy")
+  if (!new Set(["preflight", "deploy"]).has(command))
     throw new Error(
-      "Usage: production-release.mjs deploy --base-sha SHA --base-tree TREE --release-sha SHA --release-tree TREE --archive PATH --archive-sha SHA256 --tooling-sha SHA --authorized",
+      "Usage: production-release.mjs <preflight|deploy> --base-sha SHA --base-tree TREE --release-sha SHA --release-tree TREE --archive PATH --archive-sha SHA256 --tooling-sha SHA --authorized",
     );
   const get = (name) => {
     const i = args.indexOf(name);
@@ -1212,7 +1288,8 @@ async function main() {
   };
   if (
     !args.includes("--authorized") ||
-    process.env.PRODUCTION_DEPLOY_CONFIRMATION !== "DEPLOY-PRODUCTION"
+    process.env.PRODUCTION_DEPLOY_CONFIRMATION !==
+      (command === "preflight" ? "PREFLIGHT-PRODUCTION" : "DEPLOY-PRODUCTION")
   )
     throw new Error(
       "Production requires explicit protected-workflow authorization",
@@ -1365,15 +1442,11 @@ async function main() {
         return (
           (current?.imageId === APPROVED_RELEASE.images[service] &&
             current?.revision === APPROVED_RELEASE.revisions[service] &&
-            current?.image === approvedImageReference(service)) ||
-          (service === "api" &&
-            current?.imageId === MIGRATED_RUNTIME_BASELINE.apiImage &&
-            current?.revision === MIGRATED_RUNTIME_BASELINE.apiRevision &&
-            current?.image === MIGRATED_RUNTIME_BASELINE.apiReference)
+            current?.image === approvedImageReference(service))
         );
       });
       if (runtimeAlreadyAdvanced && migrationState !== "applied")
-        throw new Error("Approved runtime image cannot be resumed before the exact 51-row migration lineage is applied");
+        throw new Error("Approved runtime image cannot be resumed before the exact 52-row migration lineage is applied");
       if (migrationState === "applied") migrationStarted = true;
     },
     "verify-writer-inventory": async () => {
@@ -1429,7 +1502,7 @@ async function main() {
     },
     migrate: async () => {
       if (migrationState === "applied") {
-        console.log("production resume: exact 51-row migration lineage is already applied");
+        console.log("production resume: exact 52-row migration lineage is already applied");
         return;
       }
       migrationStarted = true;
@@ -1462,7 +1535,31 @@ async function main() {
           "Production Lucifer public catalogue smoke test failed",
         );
       const luciferBody = await lucifer.json().catch(() => ({}));
-      const luciferItems = assertPublicCatalogSmokePayload(luciferBody);
+      const activeTenants = Number(query(compose, "SELECT count(*) FROM tenants WHERE status='active'"));
+      if (activeTenants !== 1)
+        throw new Error("Production public catalog tenant mapping is ambiguous");
+      const eligiblePublicTotal = Number(query(compose, `
+        SELECT count(*) FROM catalog_items ci
+        JOIN tenants t ON t.id=ci.tenant_id
+        WHERE t.status='active'
+          AND ci.is_woo_managed=true
+          AND ci.merchant_product_source='woo'
+          AND ci.is_available=true
+          AND ci.woo_product_id IS NOT NULL
+          AND ci.woo_product_id<>''
+          AND NOT coalesce(ci.metadata,'{}'::jsonb) @> '{"isVisible":false}'::jsonb
+          AND NOT coalesce(ci.metadata,'{}'::jsonb) @> '{"archived":true}'::jsonb
+          AND NOT coalesce(ci.metadata,'{}'::jsonb) @> '{"safeOnlyDuplicate":true}'::jsonb
+          AND NOT coalesce(ci.metadata,'{}'::jsonb) @> '{"complianceHold":true}'::jsonb
+          AND ci.metadata->>'mergedIntoCatalogItemId' IS NULL
+      `));
+      if (!Number.isSafeInteger(eligiblePublicTotal) || eligiblePublicTotal <= 0)
+        throw new Error("Production public catalog database eligibility projection is empty or invalid");
+      const luciferItems = assertPublicCatalogSmokePayload(luciferBody, eligiblePublicTotal);
+      const signIn = await fetch("http://127.0.0.1:8081/sign-in");
+      const signInStatus = assertPlatformSmokeDocument(signIn, await signIn.text(), "sign-in");
+      const pos = await fetch("http://127.0.0.1:8081/orders");
+      const posStatus = assertPlatformSmokeDocument(pos, await pos.text(), "POS shell");
       const accessChecks = [
         ["authentication/orders", "/api/orders"],
         ["admin", "/api/admin/settings/paypal-status"],
@@ -1560,10 +1657,19 @@ async function main() {
         recentLogs.match(/\b(?:ERROR|FATAL|uncaught exception)\b/gi) ?? []
       ).length;
       console.log(
-        `production smoke health_sha=${api.sha} homepage=${home.status} lucifer_items=${luciferItems} unauthenticated=${accessResults.join(",")} paypal=disabled cash=not-mutated print_bridge=not-probed sanitized_log_errors=${errorLogCount} secret_like_log_entries=${secretLikeLogEntries} checks=health,homepage,public_catalog,auth,admin,inventory_read_gate,orders_read_gate,ledger,compose,restart,oom,log_review`,
+        `production smoke health_sha=${api.sha} homepage=${home.status} sign_in=${signInStatus} pos_shell=${posStatus} lucifer_items=${luciferItems} lucifer_total=${eligiblePublicTotal} unauthenticated=${accessResults.join(",")} paypal=disabled cash=not-mutated print_bridge=not-probed sanitized_log_errors=${errorLogCount} secret_like_log_entries=${secretLikeLogEntries} checks=health,homepage,sign_in,pos_shell,public_catalog_filter,auth,admin,inventory_read_gate,orders_read_gate,ledger,compose,restart,oom,log_review`,
       );
     },
   };
+  if (command === "preflight") {
+    for (const name of ["validate", "verify-release-images", "validate-lineage", "verify-writer-inventory"]) {
+      console.log(`production preflight step start=${name}`);
+      await actions[name]();
+      console.log(`production preflight step complete=${name}`);
+    }
+    console.log(`production preflight result=passed release_sha=${sha} migration_state=${migrationState}`);
+    return;
+  }
   try {
     await executeProductionSequence(actions);
   } catch (error) {
@@ -1575,6 +1681,7 @@ async function main() {
       const inspected = JSON.parse(run("docker", ["inspect", priorApiId]))[0];
       if (
         inspected.Image !== PRODUCTION_BASELINE.apiImage ||
+        inspected.Config.Image !== PRODUCTION_BASELINE.apiReference ||
         inspected.Config.Labels?.["org.opencontainers.image.revision"] !== PRODUCTION_BASELINE.apiRevision ||
         inspected.Config.Labels?.["com.docker.compose.project"] !==
           PRODUCTION.project
