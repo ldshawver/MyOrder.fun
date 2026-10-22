@@ -629,12 +629,14 @@ test("SSH connectivity diagnostic is pinned, secret-backed, and read-only", () =
     "Validate pinned SSH host identity and install key",
   );
   const readOnlySsh = workflow.indexOf("Run read-only SSH connectivity check");
+  const baselineInspection = workflow.indexOf("Inspect production runtime and migration baseline read-only");
   assert.ok(
     joinTailscale >= 0 &&
       identityCheck > joinTailscale &&
       routeCheck > identityCheck &&
       hostCheck > routeCheck &&
-      readOnlySsh > hostCheck,
+      readOnlySsh > hostCheck &&
+      baselineInspection > readOnlySsh,
   );
   assert.match(workflow, /tags: tag:github-actions/);
   assert.match(workflow, /VPS_TAILSCALE_HOST: 100\.85\.15\.43/);
@@ -658,8 +660,10 @@ test("SSH connectivity diagnostic is pinned, secret-backed, and read-only", () =
   );
   assert.doesNotMatch(
     workflow,
-    /docker compose|migrate|pg_dump|psql|curl .*api/,
+    /docker compose|migrate|pg_dump|curl .*api/,
   );
+  assert.match(workflow, /SELECT count\(\*\).*drizzle\.__drizzle_migrations/);
+  assert.doesNotMatch(workflow, /\b(?:INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|TRUNCATE)\b/i);
   assert.match(workflow, /environment: production/);
 });
 

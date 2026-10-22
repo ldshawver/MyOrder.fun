@@ -1,4 +1,4 @@
-name: Build production Platform image
+name: Build production candidate images
 
 on:
   workflow_dispatch:
@@ -8,21 +8,23 @@ permissions:
   packages: write
 
 jobs:
-  build-platform:
-    name: Build and verify production Platform image
+  build-candidate:
+    name: Build and verify immutable production images
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     environment: production
     env:
-      SOURCE_SHA: 3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb
-      SOURCE_TREE: c2851c74077f94e189867b574a3f1aef244f61cc
+      SOURCE_SHA: 5dd5b258f0b932e9a9ea4888af00a857d7d10146
+      SOURCE_TREE: bd96df1c597e64d17c1aaa47f0d0201115a89173
       CLERK_PROXY_URL: https://myorder.fun/api/__clerk
-      IMAGE_TAG: ghcr.io/ldshawver/myorder-platform:clerk-prod-3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb-${{ github.run_id }}-${{ github.run_attempt }}
+      API_IMAGE_TAG: ghcr.io/ldshawver/myorder-api:production-5dd5b258f0b932e9a9ea4888af00a857d7d10146-${{ github.run_id }}-${{ github.run_attempt }}
+      MIGRATE_IMAGE_TAG: ghcr.io/ldshawver/myorder-migrate:production-5dd5b258f0b932e9a9ea4888af00a857d7d10146-${{ github.run_id }}-${{ github.run_attempt }}
+      PLATFORM_IMAGE_TAG: ghcr.io/ldshawver/myorder-platform:production-5dd5b258f0b932e9a9ea4888af00a857d7d10146-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Checkout frozen Platform source
+      - name: Checkout frozen candidate source
         uses: actions/checkout@v4
         with:
-          ref: 3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb
+          ref: 5dd5b258f0b932e9a9ea4888af00a857d7d10146
           fetch-depth: 1
 
       - name: Verify frozen source identity and production key
@@ -43,33 +45,76 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build immutable candidate image
+      - name: Build immutable candidate images
         env:
           PRODUCTION_CLERK_PUBLISHABLE_KEY: ${{ secrets.PRODUCTION_CLERK_PUBLISHABLE_KEY }}
         run: |
           set -euo pipefail
-          docker buildx build             --platform linux/amd64             --load             --build-arg "DEPLOY_SHA=$SOURCE_SHA"             --secret id=clerk_publishable_key,env=PRODUCTION_CLERK_PUBLISHABLE_KEY             --secret id=clerk_proxy_url,env=CLERK_PROXY_URL             --tag "$IMAGE_TAG"             --file deploy/Dockerfile.platform             .
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            --build-arg "DEPLOY_SHA=$SOURCE_SHA" \
+            --tag "$API_IMAGE_TAG" \
+            --file deploy/Dockerfile.api \
+            .
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+            --label "com.myorder.deploy-sha=$SOURCE_SHA" \
+            --tag "$MIGRATE_IMAGE_TAG" \
+            --file deploy/Dockerfile.migrate \
+            .
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            --build-arg "DEPLOY_SHA=$SOURCE_SHA" \
+            --secret id=clerk_publishable_key,env=PRODUCTION_CLERK_PUBLISHABLE_KEY \
+            --secret id=clerk_proxy_url,env=CLERK_PROXY_URL \
+            --tag "$PLATFORM_IMAGE_TAG" \
+            --file deploy/Dockerfile.platform \
+            .
 
       - name: Verify built browser bundle without revealing the key
         env:
           PRODUCTION_CLERK_PUBLISHABLE_KEY: ${{ secrets.PRODUCTION_CLERK_PUBLISHABLE_KEY }}
         run: |
           set -euo pipefail
-          docker run --rm             --env PRODUCTION_CLERK_PUBLISHABLE_KEY             --entrypoint sh             "$IMAGE_TAG"             -eu -c '
+          docker run --rm \
+            --env PRODUCTION_CLERK_PUBLISHABLE_KEY \
+            --entrypoint sh \
+            "$PLATFORM_IMAGE_TAG" \
+            -eu -c '
               grep -RFl -- "$PRODUCTION_CLERK_PUBLISHABLE_KEY" /usr/share/nginx/html >/dev/null
               ! grep -Rqs "pk_test_" /usr/share/nginx/html
               grep -Rqs "https://myorder.fun/api/__clerk" /usr/share/nginx/html
             '
           echo "Verified: production publishable key is embedded, test keys are absent, and the expected Clerk proxy is embedded."
 
-      - name: Publish image and report immutable digest
+      - name: Verify image metadata
+        run: |
+          set -euo pipefail
+          for image in "$API_IMAGE_TAG" "$MIGRATE_IMAGE_TAG" "$PLATFORM_IMAGE_TAG"; do
+            test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "linux/amd64"
+            test "$(docker image inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' "$image")" = "$SOURCE_SHA"
+            test "$(docker image inspect --format '{{index .Config.Labels \"com.myorder.deploy-sha\"}}' "$image")" = "$SOURCE_SHA"
+          done
+
+      - name: Publish images and report immutable digests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          docker push "$IMAGE_TAG" 2>&1 | tee "$RUNNER_TEMP/platform-push.log"
-          DIGEST="$(sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' "$RUNNER_TEMP/platform-push.log" | tail -n 1)"
-          test -n "$DIGEST"
-          echo "Published image: ghcr.io/ldshawver/myorder-platform@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
-          echo "Image digest is an input for a separate guarded release-tooling change. This workflow does not connect to or modify production."
+          for service in api migrate platform; do
+            case "$service" in
+              api) image="$API_IMAGE_TAG" ;;
+              migrate) image="$MIGRATE_IMAGE_TAG" ;;
+              platform) image="$PLATFORM_IMAGE_TAG" ;;
+            esac
+            docker push "$image" 2>&1 | tee "$RUNNER_TEMP/$service-push.log"
+            digest="$(sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' "$RUNNER_TEMP/$service-push.log" | tail -n 1)"
+            test -n "$digest"
+            echo "${service}_image=ghcr.io/ldshawver/myorder-${service}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "These digests are inputs for a separate guarded release-tooling approval. This workflow does not connect to or modify production." >> "$GITHUB_STEP_SUMMARY"
