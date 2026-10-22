@@ -11,7 +11,9 @@ import {
   PRODUCTION_BASELINE,
   PRODUCTION,
   PRODUCTION_STEPS,
+  PRE_RELEASE_SCHEMA_INVARIANTS,
   assertApprovedImageMetadata,
+  assertPreReleaseSchemaInvariantDiagnostics,
   assertProductionConfig,
   assertRelease,
   assertReleaseIdentityManifest,
@@ -23,6 +25,7 @@ import {
   executeProductionSequence,
   mayRestoreRollbackApi,
   sameWriterInventory,
+  selectPreservedSnapshotMetadata,
 } from "./production-release.mjs";
 
 const releaseRoot = path.join(PRODUCTION.root, "releases", APPROVED_RELEASE.sha);
@@ -175,6 +178,68 @@ test("production preflight is separately authorized and cannot reach mutation st
   assert.match(workflow, /I_AUTHORIZE_PRODUCTION_PREFLIGHT/);
   assert.match(workflow, /inputs\.release_action == 'preflight'/);
   assert.match(workflow, /inputs\.release_action == 'deploy'/);
+  assert.match(workflow, /if: \$\{\{ inputs\.release_action == 'deploy' \}\}/);
+});
+
+test("isolated restore schema diagnostics name only safe expected and actual facts", () => {
+  const passing = PRE_RELEASE_SCHEMA_INVARIANTS.map(({ id, expected }) => ({ id, actual: expected }));
+  assert.equal(assertPreReleaseSchemaInvariantDiagnostics(passing), true);
+
+  const missingIndex = structuredClone(passing);
+  missingIndex.find(({ id }) => id === "public.orders_tenant_id_id_unique").actual = "missing";
+  assert.throws(
+    () => assertPreReleaseSchemaInvariantDiagnostics(missingIndex),
+    /public\.orders_tenant_id_id_unique expected=matching unique index actual=missing/,
+  );
+
+  const unsafe = structuredClone(passing);
+  unsafe[0].actual = "customer@example.test";
+  assert.throws(
+    () => assertPreReleaseSchemaInvariantDiagnostics(unsafe),
+    (error) => /unsafe or unknown value/.test(error.message) && !error.message.includes("customer@example.test"),
+  );
+  assert.throws(
+    () => assertPreReleaseSchemaInvariantDiagnostics(passing.slice(1)),
+    /result set is incomplete/,
+  );
+});
+
+test("preserved snapshot selection is exact and refuses absent or ambiguous candidates", () => {
+  const metadata = {
+    sourceApiRevision: PRODUCTION_BASELINE.apiRevision,
+    sourceApiImage: PRODUCTION_BASELINE.apiImage,
+    sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision,
+    sourcePlatformImage: PRODUCTION_BASELINE.platformImage,
+    targetSha: APPROVED_RELEASE.sha,
+    targetTree: APPROVED_RELEASE.tree,
+    productionProject: PRODUCTION.project,
+    database: PRODUCTION.database,
+    ledgerRows: 51,
+    ledger: Array.from({ length: 51 }, (_, index) => `${index + 1}|hash|${index + 1}`).join("\n"),
+    representativeCounts: "orders=1;inventory_transaction_log=2;inventory_reservations=3;inventory_balances=4;catalog_items=5;order_items=6",
+    archiveSha256: "a".repeat(64),
+  };
+  const candidate = { metadataPath: "/safe/snapshot.dump.metadata.json", metadata };
+  assert.equal(selectPreservedSnapshotMetadata([candidate]), candidate);
+  assert.throws(() => selectPreservedSnapshotMetadata([]), /found 0/);
+  assert.throws(() => selectPreservedSnapshotMetadata([candidate, structuredClone(candidate)]), /found 2/);
+  const wrongBaseline = structuredClone(candidate);
+  wrongBaseline.metadata.sourceApiImage = "sha256:" + "b".repeat(64);
+  assert.throws(() => selectPreservedSnapshotMetadata([wrongBaseline]), /found 0/);
+});
+
+test("rehearsal command uses only the preserved snapshot and isolated restore path", () => {
+  const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const start = controller.indexOf('if (command === "rehearsal")');
+  const end = controller.indexOf('if (command === "preflight")', start);
+  const rehearsal = controller.slice(start, end);
+  assert.ok(start > 0 && end > start);
+  assert.match(rehearsal, /loadPreservedSnapshot\(backupRoot\)/);
+  assert.match(rehearsal, /restoreSnapshotInIsolation\(preservedSnapshot\)/);
+  assert.doesNotMatch(rehearsal, /executeProductionSequence|createSnapshot|stop-writers|start-api|start-platform-proxy/);
+  assert.match(workflow, /I_AUTHORIZE_PRODUCTION_RESTORE_REHEARSAL/);
+  assert.match(workflow, /rehearsal\) CONTROLLER_CONFIRMATION=REHEARSE-PRODUCTION-SNAPSHOT/);
   assert.match(workflow, /if: \$\{\{ inputs\.release_action == 'deploy' \}\}/);
 });
 
@@ -450,7 +515,7 @@ test("missing production authorization is rejected by the executable entrypoint"
   );
   assert.match(
     source,
-    /command === "preflight" \? "PREFLIGHT-PRODUCTION" : "DEPLOY-PRODUCTION"/,
+    /rehearsal: "REHEARSE-PRODUCTION-SNAPSHOT"/,
   );
   assert.match(source, /--authorized/);
 });

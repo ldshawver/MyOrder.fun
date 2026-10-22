@@ -7,14 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       release_action:
-        description: Run the guarded preflight without changing runtime/database state, or deploy
+        description: Run the guarded preflight, rerun only the isolated preserved-snapshot rehearsal, or deploy
         required: true
         type: choice
         options:
           - preflight
+          - rehearsal
           - deploy
       production_confirmation:
-        description: Type I_AUTHORIZE_PRODUCTION_PREFLIGHT or I_AUTHORIZE_PRODUCTION_DEPLOYMENT for the selected action
+        description: Type the exact protected confirmation for preflight, rehearsal, or deployment
         required: true
         type: string
       release_sha:
@@ -120,7 +121,7 @@ jobs:
     timeout-minutes: 30
     needs: [test, release-tooling]
     environment: production
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha != '' && inputs.release_tree != '' && ((inputs.release_action == 'preflight' && inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_PREFLIGHT') || (inputs.release_action == 'deploy' && inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_DEPLOYMENT')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha != '' && inputs.release_tree != '' && ((inputs.release_action == 'preflight' && inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_PREFLIGHT') || (inputs.release_action == 'rehearsal' && inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_RESTORE_REHEARSAL') || (inputs.release_action == 'deploy' && inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_DEPLOYMENT')) }}
 
     permissions:
       contents: read
@@ -464,6 +465,7 @@ jobs:
           set -euo pipefail
           case "${RELEASE_ACTION}" in
             preflight) CONTROLLER_CONFIRMATION=PREFLIGHT-PRODUCTION ;;
+            rehearsal) CONTROLLER_CONFIRMATION=REHEARSE-PRODUCTION-SNAPSHOT ;;
             deploy) CONTROLLER_CONFIRMATION=DEPLOY-PRODUCTION ;;
             *) exit 1 ;;
           esac
