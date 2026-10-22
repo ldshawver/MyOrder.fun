@@ -611,6 +611,13 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.doesNotMatch(runner, /rsync|--delete/);
   assert.match(runner, /\/opt\/alavont\/shared\/print-assets/);
   assert.match(workflow, /production-release\.mjs/);
+  assert.ok(workflow.includes('git merge-base --is-ancestor "${RELEASE_SHA}" "${TOOLING_SHA}"'));
+  assert.ok(workflow.includes('git show "${TOOLING_SHA}:deploy/production-release.mjs"'));
+  assert.ok(workflow.includes('git show "${TOOLING_SHA}:deploy/production-runtime-overlay.yml"'));
+  assert.ok(workflow.includes('"${TOOLING_ROOT}/production-release.mjs"'));
+  assert.ok(workflow.includes('"${TOOLING_ROOT}/production-runtime-overlay.yml"'));
+  assert.ok(workflow.includes("test ! -e '${DEPLOY_PATH}/control/${TOOLING_SHA}/production-release.mjs'"));
+  assert.ok(workflow.includes("test ! -e '${DEPLOY_PATH}/control/${TOOLING_SHA}/production-runtime-overlay.yml'"));
   assert.ok(workflow.includes("name: Stage immutable replacement API, migrator and Platform images"));
   assert.ok(workflow.includes("REPLACEMENT_API_REFERENCE: ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1"));
   assert.ok(workflow.includes("REPLACEMENT_MIGRATE_REFERENCE: ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6"));
