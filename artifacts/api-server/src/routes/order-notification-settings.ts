@@ -17,7 +17,8 @@ const body = z.object({
 function rows<T>(value: unknown): T[] {
   return Array.isArray(value) ? value as T[] : ((value as { rows?: T[] } | undefined)?.rows ?? []);
 }
-const lightConfigured = (tenantId: number) => Number(process.env.TUYA_TENANT_ID) === tenantId &&
+const lightConfigured = (tenantId: number) => process.env.ORDER_NOTIFICATION_WORKER_ENABLED === "1" &&
+  Number(process.env.TUYA_TENANT_ID) === tenantId &&
   !!process.env.TUYA_CLIENT_ID && !!process.env.TUYA_CLIENT_SECRET && !!process.env.TUYA_API_BASE_URL && !!process.env.TUYA_DEVICE_ID;
 const smsConfigured = () => !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_AUTH_TOKEN && !!process.env.TWILIO_PHONE_NUMBER;
 

@@ -77,8 +77,8 @@ async function createProduct(identity: keyof typeof identities, name: string, in
     const tenants = await client.query("INSERT INTO tenants(name,slug,status) VALUES($1,$2,'active'),($3,$4,'active') RETURNING id,slug",
       [`Catalogue Guard A ${suffix}`, `catalogue-guard-a-${suffix}`, `Catalogue Guard B ${suffix}`, `catalogue-guard-b-${suffix}`]);
     tenantA = tenants.rows[0].id; tenantB = tenants.rows[1].id;
-    await client.query("INSERT INTO users(clerk_id,email,normalized_email,role,tenant_id,status,is_active,identity_status,provisioning_status) VALUES($1,$2,$2,'admin',$3,'approved',true,'verified','active'),($4,$5,$5,'admin',$6,'approved',true,'verified','active')",
-      [identities.a, `${identities.a}@example.test`, tenantA, identities.b, `${identities.b}@example.test`, tenantB]);
+    await client.query("INSERT INTO users(clerk_id,email,normalized_email,role,tenant_id,status,approved_by_clerk_id,approved_at,is_active,identity_status,provisioning_status) VALUES($1,$2,$2,'admin',$3,'approved',$7,now(),true,'verified','active'),($4,$5,$5,'admin',$6,'approved',$7,now(),true,'verified','active')",
+      [identities.a, `${identities.a}@example.test`, tenantA, identities.b, `${identities.b}@example.test`, tenantB, process.env.MYORDER_OWNER_CLERK_ID]);
     const location = await client.query("INSERT INTO inventory_locations(tenant_id,type,name,is_active) VALUES($1,'backstock',$2,true) RETURNING id", [tenantA, `Catalogue Guard ${suffix}`]);
     locationA = location.rows[0].id;
     separateA = await createProduct("a", `Separate A ${suffix}`, "SEPARATE_VARIANTS");
@@ -161,29 +161,53 @@ async function createProduct(identity: keyof typeof identities, name: string, in
     expect(relations.rows.filter(row => row.product_id === separateA.productId)).toHaveLength(2);
   });
 
+  it("safely switches an unused multi-variant product to SHARED and persists variant values after reload", async () => {
+    const before = await as("a").get("/api/admin/catalogue/products");
+    const original = before.body.products.find((candidate: { id: number }) => candidate.id === separateA.productId);
+    expect(original.options).toHaveLength(2);
+    const secondOption = original.options.find((option: { id: number }) => option.id !== separateA.optionId);
+    const edited = await as("a").patch(`/api/admin/catalogue/options/${secondOption.id}`)
+      .send({ price: "17.50", consumptionQuantity: "2.500000" });
+    expect(edited.status, edited.text).toBe(200);
+    const switched = await as("a").patch(`/api/admin/catalogue/products/${separateA.productId}`)
+      .send({ inventoryModel: "SHARED" });
+    expect(switched.status, switched.text).toBe(200);
+    expect(switched.body.product.inventoryModel).toBe("SHARED");
+    const reloaded = await as("a").get("/api/admin/catalogue/products");
+    const product = reloaded.body.products.find((candidate: { id: number }) => candidate.id === separateA.productId);
+    expect(product.inventoryModel).toBe("SHARED");
+    expect(new Set(product.options.map((option: { inventoryItemId: number }) => option.inventoryItemId)).size).toBe(1);
+    expect(product.options.find((option: { id: number }) => option.id === secondOption.id)).toMatchObject({
+      price: "17.50", consumptionQuantity: "2.500000",
+    });
+    expect(2n * BigInt(String(edited.body.option.consumptionQuantity).replace(".", ""))).toBe(5000000n);
+  });
+
   it("creates Color/Size variants with independent SKU, price, and inventory identities and prevents duplicate combinations", async () => {
-    const product = await createProduct("a", "Variant axes " + suffix, "SEPARATE_VARIANTS");
-    const first = await as("a").post("/api/admin/catalogue/products/" + product.productId + "/options")
-      .send({ label: "Red / Small", optionValues: { Color: "Red", Size: "S" }, sku: "V-RS-" + suffix, price: "12.00", compareAtPrice: "15.00", consumptionQuantity: "1" });
-    const second = await as("a").post("/api/admin/catalogue/products/" + product.productId + "/options")
-      .send({ label: "Blue / Large", optionValues: { Color: "Blue", Size: "L" }, sku: "V-BL-" + suffix, price: "14.00", consumptionQuantity: "1" });
-    expect(first.status, first.text).toBe(201);
-    expect(second.status, second.text).toBe(201);
-    expect(second.body.inventoryItemId).not.toBe(first.body.inventoryItemId);
-    const duplicate = await rejectedWithoutMutation(as("a").post("/api/admin/catalogue/products/" + product.productId + "/options")
+    const created = await as("a").post("/api/admin/catalogue/products").send({
+      name: "Variant axes " + suffix, category: "Acceptance", inventoryModel: "SEPARATE_VARIANTS", baseUnit: "each",
+      variants: [
+        { label: "Red / Small", optionValues: { Color: "Red", Size: "S" }, sku: "V-RS-" + suffix, price: "12.00", compareAtPrice: "15.00", consumptionQuantity: "1" },
+        { label: "Blue / Large", optionValues: { Color: "Blue", Size: "L" }, sku: "V-BL-" + suffix, price: "14.00", consumptionQuantity: "1" },
+      ],
+    });
+    expect(created.status, created.text).toBe(201);
+    const [first, second] = created.body.options;
+    expect(second.inventoryItemId).not.toBe(first.inventoryItemId);
+    const duplicate = await rejectedWithoutMutation(as("a").post("/api/admin/catalogue/products/" + created.body.productId + "/options")
       .send({ label: "Red Small duplicate", optionValues: { Color: "Red", Size: "S" }, sku: "V-DUP-" + suffix, price: "99.00", consumptionQuantity: "1" }), 409);
     expect(duplicate.status).toBe(409);
     const stored = await client.query("SELECT co.id AS option_id,co.option_values,co.active,ci.sku,ci.price::text,ci.compare_at_price::text,co.inventory_item_id FROM catalogue_options co JOIN catalog_items ci ON ci.tenant_id=co.tenant_id AND ci.id=co.catalog_item_id WHERE co.tenant_id=$1 AND co.product_id=$2 AND co.id=ANY($3::int[]) ORDER BY co.id",
-      [tenantA, product.productId, [first.body.optionId, second.body.optionId]]);
+      [tenantA, created.body.productId, [first.optionId, second.optionId]]);
     expect(stored.rows).toEqual([
-      { option_id: first.body.optionId, option_values: { Color: "Red", Size: "S" }, active: true,
-        sku: "V-RS-" + suffix, price: "12.00", compare_at_price: "15.00", inventory_item_id: first.body.inventoryItemId },
-      { option_id: second.body.optionId, option_values: { Color: "Blue", Size: "L" }, active: true,
-        sku: "V-BL-" + suffix, price: "14.00", compare_at_price: null, inventory_item_id: second.body.inventoryItemId },
+      { option_id: first.optionId, option_values: { Color: "Red", Size: "S" }, active: true,
+        sku: "V-RS-" + suffix, price: "12.00", compare_at_price: "15.00", inventory_item_id: first.inventoryItemId },
+      { option_id: second.optionId, option_values: { Color: "Blue", Size: "L" }, active: true,
+        sku: "V-BL-" + suffix, price: "14.00", compare_at_price: null, inventory_item_id: second.inventoryItemId },
     ]);
-    const disabled = await as("a").patch("/api/admin/catalogue/options/" + second.body.optionId).send({ active: false, isAvailable: false });
+    const disabled = await as("a").patch("/api/admin/catalogue/options/" + second.optionId).send({ active: false, isAvailable: false });
     expect(disabled.status, disabled.text).toBe(200);
-    const disabledRow = await client.query("SELECT co.active,ci.is_available FROM catalogue_options co JOIN catalog_items ci ON ci.id=co.catalog_item_id WHERE co.tenant_id=$1 AND co.id=$2", [tenantA, second.body.optionId]);
+    const disabledRow = await client.query("SELECT co.active,ci.is_available FROM catalogue_options co JOIN catalog_items ci ON ci.id=co.catalog_item_id WHERE co.tenant_id=$1 AND co.id=$2", [tenantA, second.optionId]);
     expect(disabledRow.rows[0]).toEqual({ active: false, is_available: false });
   });
 
@@ -200,6 +224,7 @@ async function createProduct(identity: keyof typeof identities, name: string, in
     const response = await rejectedWithoutMutation(as("a").patch(`/api/admin/catalogue/products/${active.productId}`)
       .send({ inventoryModel: "SHARED" }), 409);
     expect(response.body.code).toBe("CONTROLLED_RECONCILIATION_REQUIRED");
+    expect(response.body.error).toMatch(/inventory.*history|controlled reconciliation/i);
     const model = await client.query("SELECT inventory_model FROM catalogue_products WHERE id=$1", [active.productId]);
     expect(model.rows[0].inventory_model).toBe("SEPARATE_VARIANTS");
   });

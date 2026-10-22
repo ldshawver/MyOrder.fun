@@ -64,10 +64,13 @@ function rows<T>(result: unknown): T[] {
 function textArray(values: string[]) {
   return sql`ARRAY[${sql.join(values.map(value => sql`${value}`), sql`, `)}]::text[]`;
 }
+function intArray(values: number[]) {
+  return sql`ARRAY[${sql.join(values.map(value => sql`${value}`), sql`, `)}]::int[]`;
+}
 type ProductRow = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
 type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string; active: boolean; isAvailable: boolean; complianceHold: boolean; complianceReason: string | null };
 
-type InventoryRelationship = { inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number };
+type InventoryRelationship = { optionId?: number; inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number; baseUnit?: string; active?: boolean };
 function trustedInventoryItem(model: ProductRow["inventoryModel"], options: InventoryRelationship[]): number {
   if (!options.length) throw new Error("A product needs an active inventory-consuming option");
   const identities = options.map(option => option.inventoryItemId);
@@ -82,6 +85,72 @@ function trustedInventoryItem(model: ProductRow["inventoryModel"], options: Inve
     throw new Error("Each separate variant must use its own catalogue inventory item; controlled reconciliation is required");
   }
   return identities[0];
+}
+
+async function safelyShareUnusedVariantInventory(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  tenantId: number,
+  productId: number,
+): Promise<number> {
+  const options = rows<Required<InventoryRelationship>>(await tx.execute(sql`
+    SELECT co.id AS "optionId", co.inventory_item_id AS "inventoryItemId",
+      co.catalog_item_id AS "catalogItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
+      ii.base_unit AS "baseUnit", co.active
+    FROM catalogue_options co
+    JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
+    WHERE co.tenant_id = ${tenantId} AND co.product_id = ${productId}
+    ORDER BY co.active DESC, co.id
+    FOR UPDATE OF co, ii
+  `));
+  if (!options.length || !options.some(option => option.active)) {
+    throw new Error("A product needs an active inventory-consuming option");
+  }
+  const inventoryItemIds = options.map(option => Number(option.inventoryItemId));
+  if (new Set(inventoryItemIds).size !== options.length || options.some(option => option.inventoryCatalogItemId !== option.catalogItemId)) {
+    throw new Error("Variant inventory relationships are not independent; use controlled reconciliation before switching to Shared variants.");
+  }
+  if (new Set(options.map(option => option.baseUnit.trim().toLocaleLowerCase())).size !== 1) {
+    throw new Error("Variants use different inventory units; use controlled reconciliation to convert them before switching to Shared variants.");
+  }
+  const optionIds = options.map(option => Number(option.optionId));
+  const catalogItemIds = [...new Set(options.flatMap(option => [Number(option.catalogItemId), Number(option.inventoryCatalogItemId)]))];
+  const activity = rows<{ unsafe: boolean }>(await tx.execute(sql`
+    SELECT (
+      EXISTS (SELECT 1 FROM catalogue_options co
+        WHERE co.tenant_id=${tenantId} AND co.inventory_item_id=ANY(${intArray(inventoryItemIds)}) AND co.product_id<>${productId})
+      OR EXISTS (SELECT 1 FROM inventory_balances b
+        WHERE b.tenant_id=${tenantId} AND b.product_id=ANY(${intArray(catalogItemIds)}))
+      OR EXISTS (SELECT 1 FROM inventory_reorder_policies p
+        WHERE p.tenant_id=${tenantId} AND p.inventory_item_id=ANY(${intArray(inventoryItemIds)}))
+      OR EXISTS (SELECT 1 FROM inventory_reservations r JOIN orders o ON o.id=r.order_id
+        WHERE o.tenant_id=${tenantId} AND r.catalog_item_id=ANY(${intArray(catalogItemIds)}))
+      OR EXISTS (SELECT 1 FROM order_items oi JOIN orders o ON o.id=oi.order_id
+        WHERE o.tenant_id=${tenantId} AND (oi.option_id=ANY(${intArray(optionIds)})
+          OR oi.inventory_item_id=ANY(${intArray(inventoryItemIds)}) OR oi.catalog_item_id=ANY(${intArray(catalogItemIds)})))
+      OR EXISTS (SELECT 1 FROM inventory_movements m
+        WHERE m.tenant_id=${tenantId} AND m.catalog_item_id=ANY(${intArray(catalogItemIds)}))
+      OR EXISTS (SELECT 1 FROM inventory_valuation_states v
+        WHERE v.tenant_id=${tenantId} AND v.catalog_item_id=ANY(${intArray(catalogItemIds)}))
+      OR EXISTS (SELECT 1 FROM inventory_transaction_log l
+        WHERE l.tenant_id=${tenantId} AND l.catalog_item_id=ANY(${intArray(catalogItemIds)}))
+      OR EXISTS (SELECT 1 FROM catalogue_inventory_reconciliation_events e
+        WHERE e.tenant_id=${tenantId} AND e.product_id=${productId})
+      OR EXISTS (SELECT 1 FROM catalog_items ci WHERE ci.tenant_id=${tenantId} AND ci.id=ANY(${intArray(catalogItemIds)})
+        AND (COALESCE(ci.stock_quantity, 0)<>0 OR COALESCE(ci.inventory_amount, 0)<>0))
+    ) AS unsafe
+  `))[0];
+  if (activity?.unsafe) {
+    throw new Error("This product already has inventory, policy, reservation, order, valuation, movement, or reconciliation history. Review and use controlled reconciliation before switching to Shared variants.");
+  }
+  const targetInventoryItemId = inventoryItemIds[0];
+  const discardedInventoryItemIds = inventoryItemIds.filter(itemId => itemId !== targetInventoryItemId);
+  await tx.execute(sql`UPDATE catalogue_options SET inventory_item_id=${targetInventoryItemId}, updated_at=now()
+    WHERE tenant_id=${tenantId} AND product_id=${productId}`);
+  if (discardedInventoryItemIds.length) {
+    await tx.execute(sql`DELETE FROM inventory_items WHERE tenant_id=${tenantId}
+      AND id=ANY(${intArray(discardedInventoryItemIds)})`);
+  }
+  return targetInventoryItemId;
 }
 
 async function productForTenant(executor: typeof db, tenantId: number, productId: number): Promise<ProductRow | undefined> {
@@ -227,21 +296,26 @@ router.patch("/admin/catalogue/products/:productId", admin, async (req, res): Pr
   const tenantId = req.authorizedTenantId!;
   try {
     const updated = await db.transaction(async tx => {
+      await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
       const current = rows<ProductRow>(await tx.execute(sql`
         SELECT id, name, inventory_model AS "inventoryModel", location_evaluation AS "locationEvaluation"
         FROM catalogue_products WHERE tenant_id = ${tenantId} AND id = ${parsedId.data} FOR UPDATE
       `))[0];
       if (!current) return null;
       if (parsed.data.inventoryModel && parsed.data.inventoryModel !== current.inventoryModel) {
-        const options = rows<InventoryRelationship>(await tx.execute(sql`
-          SELECT co.inventory_item_id AS "inventoryItemId", co.catalog_item_id AS "catalogItemId",
-            ii.catalog_item_id AS "inventoryCatalogItemId"
-          FROM catalogue_options co JOIN inventory_items ii
-            ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
-          WHERE co.tenant_id = ${tenantId} AND co.product_id = ${current.id} AND co.active = true
-          ORDER BY co.id
-        `));
-        trustedInventoryItem(parsed.data.inventoryModel, options);
+        if (current.inventoryModel === "SEPARATE_VARIANTS" && parsed.data.inventoryModel === "SHARED") {
+          await safelyShareUnusedVariantInventory(tx, tenantId, current.id);
+        } else {
+          const options = rows<InventoryRelationship>(await tx.execute(sql`
+            SELECT co.inventory_item_id AS "inventoryItemId", co.catalog_item_id AS "catalogItemId",
+              ii.catalog_item_id AS "inventoryCatalogItemId"
+            FROM catalogue_options co JOIN inventory_items ii
+              ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
+            WHERE co.tenant_id = ${tenantId} AND co.product_id = ${current.id} AND co.active = true
+            ORDER BY co.id
+          `));
+          trustedInventoryItem(parsed.data.inventoryModel, options);
+        }
       }
       // The database trigger also rejects model transitions with recorded activity.
       await tx.execute(sql`UPDATE catalogue_products SET name = ${parsed.data.name ?? current.name},
@@ -252,7 +326,14 @@ router.patch("/admin/catalogue/products/:productId", admin, async (req, res): Pr
     });
     if (!updated) { res.status(404).json({ error: "Product not found" }); return; }
     res.json({ product: await productForTenant(db, tenantId, updated) });
-  } catch (error) { res.status(409).json({ error: (error as Error).message, code: "CONTROLLED_RECONCILIATION_REQUIRED" }); }
+  } catch (error) {
+    const wrapped = error as { cause?: { code?: unknown }; code?: unknown; message?: unknown };
+    const sqlState = typeof wrapped.cause?.code === "string" ? wrapped.cause.code : wrapped.code;
+    const message = sqlState === "40001"
+      ? "Product or inventory changed while the model was being saved. Refresh and try again."
+      : String(wrapped.message ?? "Controlled reconciliation is required to change this inventory model.");
+    res.status(409).json({ error: message, code: "CONTROLLED_RECONCILIATION_REQUIRED" });
+  }
 });
 
 router.post("/admin/catalogue/products/:productId/options", admin, async (req, res): Promise<void> => {

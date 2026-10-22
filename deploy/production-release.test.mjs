@@ -35,6 +35,7 @@ const archivePath = path.join(
   "incoming",
   `${APPROVED_RELEASE.sha}.tar.gz`,
 );
+const productionClerkPublishableKey = `pk_live_${Buffer.from("clerk.myorder.fun$").toString("base64url")}`;
 const expectedConfig = {
   name: "deploy",
   services: {
@@ -43,8 +44,9 @@ const expectedConfig = {
       environment: {
         NODE_ENV: "production",
         DATABASE_URL: "postgres://app@db:5432/alavont",
-        CLERK_SECRET_KEY: "masked",
-        CLERK_PUBLISHABLE_KEY: "masked",
+        CLERK_SECRET_KEY: "sk_live_masked",
+        CLERK_PUBLISHABLE_KEY: productionClerkPublishableKey,
+        CLERK_PROXY_URL: "https://myorder.fun/api/__clerk",
         SESSION_SECRET: "masked",
         SETTINGS_ENC_KEY: "masked",
         MYORDER_OWNER_CLERK_ID: "user_testowner",
@@ -65,7 +67,10 @@ const expectedConfig = {
         },
       ],
     },
-    platform: { image: APPROVED_RELEASE.references.platform },
+    platform: { image: APPROVED_RELEASE.references.platform, build: { args: {
+      VITE_CLERK_PUBLISHABLE_KEY: productionClerkPublishableKey,
+      VITE_CLERK_PROXY_URL: "https://myorder.fun/api/__clerk",
+    } } },
     db: {
       environment: {
         POSTGRES_DB: "alavont",
@@ -182,6 +187,22 @@ test("production preflight is separately authorized and cannot reach mutation st
   assert.match(workflow, /if: \$\{\{ inputs\.release_action == 'deploy' \}\}/);
 });
 
+test("production public catalogue smoke uses the MyOrder route, not the external Woo storefront host", () => {
+  const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
+  assert.match(controller, /fetch\("http:\/\/127\.0\.0\.1:8081\/api\/public\/catalog", \{\s*headers: \{ host: "myorder\.fun" \}/);
+  assert.doesNotMatch(controller, /headers: \{ host: "shop\.lucifercruz\.com" \}/);
+  assert.match(controller, /Production MyOrder public catalogue smoke test failed/);
+});
+
+test("production nginx keeps the Clerk browser proxy outside the general API rate limit", () => {
+  const nginx = readFileSync(new URL("./nginx/nginx.conf", import.meta.url), "utf8");
+  const clerk = nginx.match(/location \^~ \/api\/__clerk\/ \{([\s\S]*?)\n        \}/)?.[1] ?? "";
+  const api = nginx.match(/location \/api\/ \{([\s\S]*?)\n        \}/)?.[1] ?? "";
+  assert.match(clerk, /proxy_pass \$api_host/);
+  assert.doesNotMatch(clerk, /limit_req/);
+  assert.match(api, /limit_req zone=api burst=60 nodelay/);
+});
+
 test("isolated restore schema diagnostics name only safe expected and actual facts", () => {
   const passing = PRE_RELEASE_SCHEMA_INVARIANTS.map(({ id, expected }) => ({ id, actual: expected }));
   assert.equal(assertPreReleaseSchemaInvariantDiagnostics(passing), true);
@@ -291,6 +312,15 @@ test("production Compose is pinned to the production database, release images, v
   const missingAuth = structuredClone(expectedConfig);
   missingAuth.services.api.environment.SESSION_SECRET = "";
   assert.throws(() => assertProductionConfig(missingAuth), /SESSION_SECRET/);
+  const testClerk = structuredClone(expectedConfig);
+  testClerk.services.api.environment.CLERK_SECRET_KEY = "sk_test_masked";
+  assert.throws(() => assertProductionConfig(testClerk), /live instance/);
+  const mismatchedClerk = structuredClone(expectedConfig);
+  mismatchedClerk.services.platform.build.args.VITE_CLERK_PUBLISHABLE_KEY = `pk_live_${Buffer.from("other.example$").toString("base64url")}`;
+  assert.throws(() => assertProductionConfig(mismatchedClerk), /do not match/);
+  const wrongClerkProxy = structuredClone(expectedConfig);
+  wrongClerkProxy.services.platform.build.args.VITE_CLERK_PROXY_URL = "https://clerk.myorder.fun";
+  assert.throws(() => assertProductionConfig(wrongClerkProxy), /proxy URLs/);
   assert.equal(assertProductionConfig(expectedConfig), true);
   const enabledWoo = structuredClone(expectedConfig);
   enabledWoo.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "true";
@@ -327,6 +357,24 @@ test("production Compose is pinned to the production database, release images, v
     () => assertProductionConfig(enabledUberDispatch),
     /Uber dispatch/,
   );
+  const configuredOrderLight = structuredClone(expectedConfig);
+  Object.assign(configuredOrderLight.services.api.environment, {
+    ORDER_NOTIFICATION_WORKER_ENABLED: "1",
+    TUYA_TENANT_ID: "10",
+    TUYA_CLIENT_ID: "client",
+    TUYA_CLIENT_SECRET: "secret",
+    TUYA_API_BASE_URL: "https://openapi.tuyaus.com/",
+    TUYA_DEVICE_ID: "device",
+  });
+  assert.equal(assertProductionConfig(configuredOrderLight), true);
+  for (const name of ["TUYA_TENANT_ID", "TUYA_CLIENT_ID", "TUYA_CLIENT_SECRET", "TUYA_API_BASE_URL", "TUYA_DEVICE_ID"]) {
+    const missing = structuredClone(configuredOrderLight);
+    missing.services.api.environment[name] = "";
+    assert.throws(() => assertProductionConfig(missing), /order light/);
+  }
+  const unapprovedTuyaHost = structuredClone(configuredOrderLight);
+  unapprovedTuyaHost.services.api.environment.TUYA_API_BASE_URL = "https://example.test/";
+  assert.throws(() => assertProductionConfig(unapprovedTuyaHost), /not approved/);
 });
 
 test("release deploys only digest-pinned approved artifacts with external Woo disabled", () => {
@@ -344,7 +392,7 @@ test("release deploys only digest-pinned approved artifacts with external Woo di
   assert.match(overlay, /WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "false"/);
   assert.match(overlay, /RECEIPT_PRINT_ENABLED: "false"/);
   assert.match(overlay, /LABEL_PRINT_ENABLED: "false"/);
-  assert.match(overlay, /ORDER_NOTIFICATION_WORKER_ENABLED: "0"/);
+  assert.match(overlay, /ORDER_NOTIFICATION_WORKER_ENABLED: \$\{ORDER_NOTIFICATION_WORKER_ENABLED:-0\}/);
   const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
   assert.match(controller, /docker", \["image", "inspect", reference\]/);
   assert.match(controller, /docker", \["manifest", "inspect", reference\]/);

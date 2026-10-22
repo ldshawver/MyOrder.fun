@@ -86,6 +86,15 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
       TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+      # Tenant-scoped new-order light alerts remain off unless an operator
+      # supplies every server-side Tuya value and explicitly starts the worker.
+      ORDER_NOTIFICATION_WORKER_ENABLED: ${ORDER_NOTIFICATION_WORKER_ENABLED:-0}
+      TUYA_TENANT_ID: ${TUYA_TENANT_ID:-}
+      TUYA_CLIENT_ID: ${TUYA_CLIENT_ID:-}
+      TUYA_CLIENT_SECRET: ${TUYA_CLIENT_SECRET:-}
+      TUYA_API_BASE_URL: ${TUYA_API_BASE_URL:-}
+      TUYA_DEVICE_ID: ${TUYA_DEVICE_ID:-}
+      TUYA_SWITCH_CODE: ${TUYA_SWITCH_CODE:-switch_1}
       UBER_CLIENT_ID: ${UBER_CLIENT_ID:-${Uber_Client_ID:-}}
       UBER_CUSTOMER_ID: ${UBER_CUSTOMER_ID:-${Uber_Customer_ID:-}}
       UBER_CLIENT_SECRET: ${UBER_CLIENT_SECRET:-${Uber_Client_secret:-}}
