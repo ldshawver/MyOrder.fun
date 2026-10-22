@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import {
   APPROVED_RELEASE,
   EXPECTED_PRODUCTION_MIGRATIONS,
@@ -25,6 +26,7 @@ import {
   assertPublicCatalogSmokePayload,
   assertPlatformSmokeDocument,
   executeProductionSequence,
+  loadPreservedSnapshot,
   mayRestoreRollbackApi,
   preReleaseSchemaDiagnosticSql,
   sameWriterInventory,
@@ -37,6 +39,23 @@ const archivePath = path.join(
   "incoming",
   `${APPROVED_RELEASE.sha}.tar.gz`,
 );
+const preservedSnapshotCandidate = () => ({
+  metadataPath: `/safe/${PRESERVED_SNAPSHOT.archiveName}.metadata.json`,
+  metadata: {
+    sourceApiRevision: PRESERVED_SNAPSHOT.sourceApiRevision,
+    sourceApiImage: PRESERVED_SNAPSHOT.sourceApiImage,
+    sourcePlatformRevision: PRESERVED_SNAPSHOT.sourcePlatformRevision,
+    sourcePlatformImage: PRESERVED_SNAPSHOT.sourcePlatformImage,
+    targetSha: PRESERVED_SNAPSHOT.targetSha,
+    targetTree: PRESERVED_SNAPSHOT.targetTree,
+    productionProject: PRODUCTION.project,
+    database: PRODUCTION.database,
+    ledgerRows: 51,
+    ledger: Array.from({ length: 51 }, (_, index) => `${index + 1}|hash|${index + 1}`).join("\n"),
+    representativeCounts: "orders=1;inventory_transaction_log=2;inventory_reservations=3;inventory_balances=4;catalog_items=5;order_items=6",
+    archiveSha256: PRESERVED_SNAPSHOT.archiveSha256,
+  },
+});
 const productionClerkPublishableKey = `pk_live_${Buffer.from("clerk.myorder.fun$").toString("base64url")}`;
 const expectedConfig = {
   name: "deploy",
@@ -253,28 +272,44 @@ test("pre-release slug uniqueness requires the canonical valid and ready lower(s
   assert.doesNotMatch(sql, /tenants_slug_unique/);
 });
 
-test("preserved snapshot selection is exact and refuses absent or ambiguous candidates", () => {
-  const metadata = {
-    sourceApiRevision: PRESERVED_SNAPSHOT.sourceApiRevision,
-    sourceApiImage: PRESERVED_SNAPSHOT.sourceApiImage,
-    sourcePlatformRevision: PRESERVED_SNAPSHOT.sourcePlatformRevision,
-    sourcePlatformImage: PRESERVED_SNAPSHOT.sourcePlatformImage,
-    targetSha: PRESERVED_SNAPSHOT.targetSha,
-    targetTree: PRESERVED_SNAPSHOT.targetTree,
-    productionProject: PRODUCTION.project,
-    database: PRODUCTION.database,
-    ledgerRows: 51,
-    ledger: Array.from({ length: 51 }, (_, index) => `${index + 1}|hash|${index + 1}`).join("\n"),
-    representativeCounts: "orders=1;inventory_transaction_log=2;inventory_reservations=3;inventory_balances=4;catalog_items=5;order_items=6",
-    archiveSha256: "a".repeat(64),
-  };
-  const candidate = { metadataPath: "/safe/snapshot.dump.metadata.json", metadata };
-  assert.equal(selectPreservedSnapshotMetadata([candidate]), candidate);
-  assert.throws(() => selectPreservedSnapshotMetadata([]), /found 0/);
-  assert.throws(() => selectPreservedSnapshotMetadata([candidate, structuredClone(candidate)]), /found 2/);
+test("preserved snapshot selection pins the rehearsed archive and ignores extra snapshots", () => {
+  const candidate = preservedSnapshotCandidate();
+  const extra = structuredClone(candidate);
+  extra.metadataPath = "/safe/alavont-before-5dd5b258f0b932e9a9ea4888af00a857d7d10146-extra.dump.metadata.json";
+  assert.equal(selectPreservedSnapshotMetadata([extra, candidate]), candidate);
+});
+
+test("preserved snapshot selection refuses a missing pinned snapshot", () => {
+  assert.throws(() => selectPreservedSnapshotMetadata([]), /metadata is missing/);
+});
+
+test("preserved snapshot selection refuses a pinned checksum mismatch", () => {
+  const candidate = preservedSnapshotCandidate();
+  candidate.metadata.archiveSha256 = "a".repeat(64);
+  assert.throws(() => selectPreservedSnapshotMetadata([candidate]), /checksum differs/);
+});
+
+test("preserved snapshot loading hashes the pinned archive against the approved digest", async () => {
+  const backupRoot = mkdtempSync(path.join(tmpdir(), "myorder-pinned-snapshot-"));
+  try {
+    const candidate = preservedSnapshotCandidate();
+    candidate.metadataPath = path.join(backupRoot, `${PRESERVED_SNAPSHOT.archiveName}.metadata.json`);
+    const archivePath = path.join(backupRoot, PRESERVED_SNAPSHOT.archiveName);
+    writeFileSync(candidate.metadataPath, `${JSON.stringify(candidate.metadata)}\n`, { mode: 0o600 });
+    writeFileSync(archivePath, "not-the-approved-archive", { mode: 0o600 });
+    writeFileSync(`${archivePath}.sha256`, `${PRESERVED_SNAPSHOT.archiveSha256}  ${PRESERVED_SNAPSHOT.archiveName}\n`, { mode: 0o600 });
+    writeFileSync(`${archivePath}.toc`, "TABLE DATA", { mode: 0o600 });
+    await assert.rejects(() => loadPreservedSnapshot(backupRoot), /archive SHA-256 differs from the approved digest/);
+  } finally {
+    rmSync(backupRoot, { recursive: true, force: true });
+  }
+});
+
+test("preserved snapshot selection refuses the wrong release baseline", () => {
+  const candidate = preservedSnapshotCandidate();
   const wrongBaseline = structuredClone(candidate);
   wrongBaseline.metadata.sourceApiImage = "sha256:" + "b".repeat(64);
-  assert.throws(() => selectPreservedSnapshotMetadata([wrongBaseline]), /found 0/);
+  assert.throws(() => selectPreservedSnapshotMetadata([wrongBaseline]), /approved release baseline/);
 });
 
 test("rehearsal command uses only the preserved snapshot and isolated restore path", () => {
@@ -610,6 +645,9 @@ test("production rollback baseline is the current pre-release image set", () => 
   assert.equal(PRESERVED_SNAPSHOT.sourceApiRevision, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
   assert.equal(PRESERVED_SNAPSHOT.targetSha, "5dd5b258f0b932e9a9ea4888af00a857d7d10146");
   assert.equal(PRESERVED_SNAPSHOT.targetTree, "bd96df1c597e64d17c1aaa47f0d0201115a89173");
+  assert.equal(PRESERVED_SNAPSHOT.archiveName, "alavont-before-5dd5b258f0b932e9a9ea4888af00a857d7d10146-20261022T103613Z.dump");
+  assert.equal(PRESERVED_SNAPSHOT.archiveSha256, "059e28765fbdda27e9072497364e16b36e25e97968d4972c03326f4af2f2ac9e");
+  assert.equal(PRESERVED_SNAPSHOT.rehearsalWorkflowRun, "39771000177");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.manifests).sort(), ["api", "migrate", "platform"]);
   assert.deepEqual(Object.keys(APPROVED_RELEASE.configs).sort(), ["api", "migrate", "platform"]);
   assert.equal(APPROVED_RELEASE.manifests.api, "sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40");
