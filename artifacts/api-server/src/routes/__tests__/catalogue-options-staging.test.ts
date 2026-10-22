@@ -124,22 +124,26 @@ describe("customer product options", () => {
     expect(response.body.inventoryItemId).toBe(182);
   });
 
-  it("rejects a model switch to SHARED while separate options have different inventory items", async () => {
+  it("rejects a direct model switch to SHARED when the product has inventory history", async () => {
     state.txResults = [
+      [],
       [{ id: 1, name: "Existing product", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION" }],
-      [{ inventoryItemId: 1, catalogItemId: 1, inventoryCatalogItemId: 1 },
-        { inventoryItemId: 185, catalogItemId: 188, inventoryCatalogItemId: 188 },
-        { inventoryItemId: 186, catalogItemId: 189, inventoryCatalogItemId: 189 }],
+      [{ optionId: 1, inventoryItemId: 1, catalogItemId: 1, inventoryCatalogItemId: 1, baseUnit: "each", active: true },
+        { optionId: 2, inventoryItemId: 185, catalogItemId: 188, inventoryCatalogItemId: 188, baseUnit: "each", active: true },
+        { optionId: 3, inventoryItemId: 186, catalogItemId: 189, inventoryCatalogItemId: 189, baseUnit: "each", active: true }],
+      [{ unsafe: true }],
     ];
     const response = await supertest(app).patch("/api/admin/catalogue/products/1")
       .send({ inventoryModel: "SHARED" });
     expect(response.status).toBe(409);
     expect(response.body.code).toBe("CONTROLLED_RECONCILIATION_REQUIRED");
-    expect(state.txQueries).toHaveLength(2); // no update
+    expect(response.body.error).toMatch(/inventory.*history/i);
+    expect(state.txQueries).toHaveLength(4); // no update
   });
 
   it("rejects a model switch to SEPARATE_VARIANTS while options share an inventory item", async () => {
     state.txResults = [
+      [],
       [{ id: 182, name: "Coffee Beans", inventoryModel: "SHARED", locationEvaluation: "COMBINED_LOCATIONS" }],
       [{ inventoryItemId: 182, catalogItemId: 182, inventoryCatalogItemId: 182 },
         { inventoryItemId: 182, catalogItemId: 191, inventoryCatalogItemId: 182 }],
@@ -148,7 +152,7 @@ describe("customer product options", () => {
       .send({ inventoryModel: "SEPARATE_VARIANTS" });
     expect(response.status).toBe(409);
     expect(response.body.code).toBe("CONTROLLED_RECONCILIATION_REQUIRED");
-    expect(state.txQueries).toHaveLength(2);
+    expect(state.txQueries).toHaveLength(3);
   });
 
   it("rejects a separate option whose inventory identity belongs to another catalogue item", async () => {

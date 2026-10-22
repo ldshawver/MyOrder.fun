@@ -42,15 +42,16 @@ const put = (user: keyof typeof identities, body: unknown) =>
     const tenants = await client.query<{ id: number }>("INSERT INTO tenants(name,slug,status) VALUES($1,$2,'active'),($3,$4,'active') RETURNING id",
       [`Notification settings A ${suffix}`, `notification-settings-a-${suffix}`, `Notification settings B ${suffix}`, `notification-settings-b-${suffix}`]);
     tenantA = tenants.rows[0]!.id;
-    const users = await client.query<{ id: number }>(`INSERT INTO users(clerk_id,email,normalized_email,role,tenant_id,status,is_active,identity_status,provisioning_status)
-      VALUES($1,$2,$2,'admin',$3,'approved',true,'verified','active'),
-      ($4,$5,$5,'supervisor',$3,'approved',true,'verified','active'),
-      ($6,$7,$7,'user',$3,'approved',true,'verified','active'),
-      ($8,$9,$9,'admin',$10,'approved',true,'verified','active') RETURNING id`,
+    const users = await client.query<{ id: number }>(`INSERT INTO users(clerk_id,email,normalized_email,role,tenant_id,status,approved_by_clerk_id,approved_at,is_active,identity_status,provisioning_status)
+      VALUES($1,$2,$2,'admin',$3,'approved',$11,now(),true,'verified','active'),
+      ($4,$5,$5,'supervisor',$3,'approved',$11,now(),true,'verified','active'),
+      ($6,$7,$7,'user',$3,'approved',$11,now(),true,'verified','active'),
+      ($8,$9,$9,'admin',$10,'approved',$11,now(),true,'verified','active') RETURNING id`,
       [identities.admin,`${identities.admin}@example.test`,tenantA,
         identities.supervisor,`${identities.supervisor}@example.test`,
         identities.viewer,`${identities.viewer}@example.test`,
-        identities.foreignAdmin,`${identities.foreignAdmin}@example.test`,tenants.rows[1]!.id]);
+        identities.foreignAdmin,`${identities.foreignAdmin}@example.test`,tenants.rows[1]!.id,
+        process.env.MYORDER_OWNER_CLERK_ID]);
     adminId = users.rows[0]!.id;
     foreignId = users.rows[3]!.id;
   });
@@ -83,5 +84,30 @@ const put = (user: keyof typeof identities, body: unknown) =>
     const get = await http.get("/api/admin/order-notifications").set(header, identities.admin);
     expect(get.status).toBe(200);
     expect(JSON.stringify(get.body)).not.toMatch(/\+1555|TWILIO_AUTH_TOKEN|TUYA_CLIENT_SECRET/);
+  });
+
+  it("allows a configured tenant Admin to enable the MyOrder light and reload the persisted setting", async () => {
+    const names = ["ORDER_NOTIFICATION_WORKER_ENABLED", "TUYA_TENANT_ID", "TUYA_CLIENT_ID", "TUYA_CLIENT_SECRET", "TUYA_API_BASE_URL", "TUYA_DEVICE_ID"];
+    const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+    Object.assign(process.env, {
+      ORDER_NOTIFICATION_WORKER_ENABLED: "1", TUYA_TENANT_ID: String(tenantA), TUYA_CLIENT_ID: "test-client",
+      TUYA_CLIENT_SECRET: "test-secret", TUYA_API_BASE_URL: "https://openapi.tuyaus.com/", TUYA_DEVICE_ID: "test-device",
+    });
+    try {
+      const enabled = await put("admin", { ...payload(adminId), lightEnabled: true, alertDurationSeconds: 90 });
+      expect(enabled.status, enabled.text).toBe(200);
+      expect(enabled.body).toMatchObject({ settings: { lightEnabled: true, alertDurationSeconds: 90 }, lightConfigured: true });
+      const reloaded = await http.get("/api/admin/order-notifications").set(header, identities.admin);
+      expect(reloaded.status, reloaded.text).toBe(200);
+      expect(reloaded.body).toMatchObject({ settings: { lightEnabled: true, alertDurationSeconds: 90 }, lightConfigured: true });
+      const foreign = await http.get("/api/admin/order-notifications").set(header, identities.foreignAdmin);
+      expect(foreign.status).toBe(200);
+      expect(foreign.body.lightConfigured).toBe(false);
+      expect(foreign.body.settings.lightEnabled).toBe(false);
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
   });
 });

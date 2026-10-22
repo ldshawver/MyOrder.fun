@@ -84,7 +84,7 @@ it("keeps variants, location inventory, and Global Admin compliance controls tog
   expect(JSON.parse(String(fetchMock.mock.calls.find(([path]) => path === "/api/admin/product-master/70/lifecycle")?.[1]?.body))).toEqual({ complianceHold: true, reason: "Review required" });
 });
 
-it("does not change inventory when Shared is selected and requires an explicit reconciliation preview", async () => {
+it("shows a clear reconciliation path when saving Shared is unsafe", async () => {
   const requests: Array<{ path: string; method?: string }> = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
     const path = String(input); requests.push({ path, method: init?.method });
@@ -94,6 +94,7 @@ it("does not change inventory when Shared is selected and requires an explicit r
     ] }] }), { status: 200, headers: { "Content-Type": "application/json" } });
     if (path === "/api/admin/catalogue/recommendations") return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
     if (path.startsWith("/api/admin/catalogue/inventory/") && path.endsWith("/locations")) return new Response(JSON.stringify({ locations: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.endsWith("/products/7") && init?.method === "PATCH") return new Response(JSON.stringify({ error: "This product already has inventory history. Review and use controlled reconciliation before switching to Shared variants." }), { status: 409, headers: { "Content-Type": "application/json" } });
     if (path.endsWith("/inventory-reconciliation/preview")) return new Response(JSON.stringify({ product: { id: 7, name: "Shirt", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION" },
       target: { inventoryItemId: 90 }, targetUnit: "each", variants: [], reservations: [], committed: [], costs: [], legacyHistory: [], locations: [], orderHistory: [], issues: [], costRequired: false, fingerprint: "a".repeat(64) }), { status: 200, headers: { "Content-Type": "application/json" } });
     return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400, headers: { "Content-Type": "application/json" } });
@@ -107,11 +108,44 @@ it("does not change inventory when Shared is selected and requires an explicit r
   const inventoryModel = host!.querySelectorAll("select")[2] as HTMLSelectElement;
   await act(async () => { inventoryModel.value = "SHARED"; inventoryModel.dispatchEvent(new Event("change", { bubbles: true })); });
   expect(host?.textContent).toContain("Reconcile inventory");
-  expect(requests.some(request => request.method === "PATCH" && request.path.endsWith("/products/7"))).toBe(false);
+  const saveModel = [...host!.querySelectorAll("button")].find(button => button.textContent?.includes("Save inventory model"));
+  await act(async () => saveModel!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await vi.waitFor(() => expect(host?.textContent).toContain("already has inventory history"));
+  expect(requests.some(request => request.method === "PATCH" && request.path.endsWith("/products/7"))).toBe(true);
   const previewButton = [...host!.querySelectorAll("button")].find(button => button.textContent?.includes("Reconcile inventory · preview"));
   expect(previewButton).toBeTruthy();
   await act(async () => previewButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
   await vi.waitFor(() => expect(host?.textContent).toContain("Preview · proposed base unit: each"));
   expect(requests.filter(request => request.method === "POST" && request.path.endsWith("/inventory-reconciliation/preview"))).toHaveLength(1);
-  expect(requests.some(request => request.method === "PATCH" && request.path.endsWith("/products/7"))).toBe(false);
+});
+
+it("saves an eligible Shared model and shows it after the settings reload", async () => {
+  let inventoryModel: "SHARED" | "SEPARATE_VARIANTS" = "SEPARATE_VARIANTS";
+  const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+    const path = String(input);
+    if (path === "/api/admin/catalogue/products" && !init?.method) return new Response(JSON.stringify({ products: [{ id: 7, name: "Shirt", inventoryModel, locationEvaluation: "PER_LOCATION", options: [
+      { id: 9, catalogItemId: 70, label: "Small", optionValues: { Size: "S" }, sku: "S", price: "12.00", active: true, isAvailable: true, inventoryItemId: 90, baseUnit: "each", consumptionQuantity: "1.000000", complianceHold: false, complianceReason: null },
+      { id: 10, catalogItemId: 71, label: "Large", optionValues: { Size: "L" }, sku: "L", price: "17.50", active: true, isAvailable: true, inventoryItemId: inventoryModel === "SHARED" ? 90 : 91, baseUnit: "each", consumptionQuantity: "2.500000", complianceHold: false, complianceReason: null },
+    ] }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path === "/api/admin/catalogue/recommendations") return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.startsWith("/api/admin/catalogue/inventory/") && path.endsWith("/locations")) return new Response(JSON.stringify({ locations: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.endsWith("/products/7") && init?.method === "PATCH") {
+      inventoryModel = JSON.parse(String(init.body)).inventoryModel;
+      return new Response(JSON.stringify({ product: { id: 7, inventoryModel } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400, headers: { "Content-Type": "application/json" } });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(createElement(AdminCatalogueProducts)));
+  await vi.waitFor(() => expect(host?.textContent).toContain("Shirt"));
+  await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent?.includes("Shirt"))!.click());
+  const select = host!.querySelectorAll("select")[2] as HTMLSelectElement;
+  await act(async () => { select.value = "SHARED"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent === "Save inventory model")!.click());
+  await vi.waitFor(() => expect(host?.textContent).toContain("Inventory model saved."));
+  expect((host!.querySelectorAll("select")[2] as HTMLSelectElement).value).toBe("SHARED");
+  const inputValues = [...host!.querySelectorAll("input")].map(input => input.value);
+  expect(inputValues).toContain("2.500000");
+  expect(inputValues).toContain("17.50");
 });

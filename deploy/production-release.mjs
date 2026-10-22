@@ -285,16 +285,47 @@ export function assertProductionConfig(config, expected) {
     if (typeof api[name] !== "string" || api[name].trim() === "")
       throw new Error(`Required production setting is missing: ${name}`);
   }
+  const platformBuildArgs = config.services?.platform?.build?.args ?? {};
+  const platformClerkKey = platformBuildArgs.VITE_CLERK_PUBLISHABLE_KEY;
+  const platformClerkProxy = platformBuildArgs.VITE_CLERK_PROXY_URL;
+  let clerkDomain = "";
+  try {
+    clerkDomain = Buffer.from(api.CLERK_PUBLISHABLE_KEY.slice("pk_live_".length), "base64url")
+      .toString("utf8").replace(/\$$/, "");
+  } catch { /* rejected below */ }
+  if (!api.CLERK_SECRET_KEY.startsWith("sk_live_") || !api.CLERK_PUBLISHABLE_KEY.startsWith("pk_live_") ||
+      clerkDomain !== "clerk.myorder.fun")
+    throw new Error("Production API Clerk keys must use the clerk.myorder.fun live instance");
+  if (platformClerkKey !== api.CLERK_PUBLISHABLE_KEY)
+    throw new Error("Production API and Platform Clerk publishable keys do not match");
+  if (api.CLERK_PROXY_URL !== "https://myorder.fun/api/__clerk" ||
+      platformClerkProxy !== "https://myorder.fun/api/__clerk")
+    throw new Error("Production API and Platform Clerk proxy URLs must match the MyOrder proxy route");
   if (!/^user_[A-Za-z0-9_-]+$/.test(api.MYORDER_OWNER_CLERK_ID))
     throw new Error("Production owner Clerk subject is invalid");
   if (api.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED !== "false")
     throw new Error("Production WooCommerce external integration must remain explicitly disabled for this release");
   if (
     api.RECEIPT_PRINT_ENABLED !== "false" ||
-    api.LABEL_PRINT_ENABLED !== "false" ||
-    api.ORDER_NOTIFICATION_WORKER_ENABLED !== "0"
+    api.LABEL_PRINT_ENABLED !== "false"
   )
-    throw new Error("Production printing and outbound notification worker must remain disabled for this release");
+    throw new Error("Production printing must remain disabled for this release");
+  if (!["0", "1"].includes(api.ORDER_NOTIFICATION_WORKER_ENABLED))
+    throw new Error("Production order notification worker setting is invalid");
+  if (api.ORDER_NOTIFICATION_WORKER_ENABLED === "1") {
+    if (!/^\d+$/.test(String(api.TUYA_TENANT_ID ?? "")) || Number(api.TUYA_TENANT_ID) <= 0)
+      throw new Error("Production order light tenant is invalid");
+    for (const name of ["TUYA_CLIENT_ID", "TUYA_CLIENT_SECRET", "TUYA_API_BASE_URL", "TUYA_DEVICE_ID"]) {
+      if (typeof api[name] !== "string" || api[name].trim() === "")
+        throw new Error(`Required production order light setting is missing: ${name}`);
+    }
+    let tuyaUrl;
+    try { tuyaUrl = new URL(api.TUYA_API_BASE_URL); }
+    catch { throw new Error("Production order light API URL is invalid"); }
+    if (tuyaUrl.protocol !== "https:" || tuyaUrl.pathname !== "/" || tuyaUrl.search || tuyaUrl.hash ||
+        !["openapi.tuyaus.com", "openapi.tuyaeu.com", "openapi.tuyain.com", "openapi.tuyacn.com", "openapi-ueaz.tuyaus.com", "openapi-weaz.tuyaeu.com"].includes(tuyaUrl.hostname))
+      throw new Error("Production order light API URL is not approved");
+  }
   if (
     typeof db.POSTGRES_PASSWORD !== "string" ||
     db.POSTGRES_PASSWORD.trim() === ""
@@ -1708,14 +1739,14 @@ async function main() {
       const home = await fetch("http://127.0.0.1:8081/");
       if (!home.ok)
         throw new Error("Production platform homepage smoke test failed");
-      const lucifer = await fetch("http://127.0.0.1:8081/api/public/catalog", {
-        headers: { host: "shop.lucifercruz.com" },
+      const publicCatalog = await fetch("http://127.0.0.1:8081/api/public/catalog", {
+        headers: { host: "myorder.fun" },
       });
-      if (!lucifer.ok)
+      if (!publicCatalog.ok)
         throw new Error(
-          "Production Lucifer public catalogue smoke test failed",
+          "Production MyOrder public catalogue smoke test failed",
         );
-      const luciferBody = await lucifer.json().catch(() => ({}));
+      const publicCatalogBody = await publicCatalog.json().catch(() => ({}));
       const activeTenants = Number(query(compose, "SELECT count(*) FROM tenants WHERE status='active'"));
       if (activeTenants !== 1)
         throw new Error("Production public catalog tenant mapping is ambiguous");
@@ -1736,7 +1767,7 @@ async function main() {
       `));
       if (!Number.isSafeInteger(eligiblePublicTotal) || eligiblePublicTotal <= 0)
         throw new Error("Production public catalog database eligibility projection is empty or invalid");
-      const luciferItems = assertPublicCatalogSmokePayload(luciferBody, eligiblePublicTotal);
+      const publicCatalogItems = assertPublicCatalogSmokePayload(publicCatalogBody, eligiblePublicTotal);
       const signIn = await fetch("http://127.0.0.1:8081/sign-in");
       const signInStatus = assertPlatformSmokeDocument(signIn, await signIn.text(), "sign-in");
       const pos = await fetch("http://127.0.0.1:8081/orders");
@@ -1838,7 +1869,7 @@ async function main() {
         recentLogs.match(/\b(?:ERROR|FATAL|uncaught exception)\b/gi) ?? []
       ).length;
       console.log(
-        `production smoke health_sha=${api.sha} homepage=${home.status} sign_in=${signInStatus} pos_shell=${posStatus} lucifer_items=${luciferItems} lucifer_total=${eligiblePublicTotal} unauthenticated=${accessResults.join(",")} paypal=disabled cash=not-mutated print_bridge=not-probed sanitized_log_errors=${errorLogCount} secret_like_log_entries=${secretLikeLogEntries} checks=health,homepage,sign_in,pos_shell,public_catalog_filter,auth,admin,inventory_read_gate,orders_read_gate,ledger,compose,restart,oom,log_review`,
+        `production smoke health_sha=${api.sha} homepage=${home.status} sign_in=${signInStatus} pos_shell=${posStatus} public_catalog_items=${publicCatalogItems} public_catalog_total=${eligiblePublicTotal} unauthenticated=${accessResults.join(",")} paypal=disabled cash=not-mutated print_bridge=not-probed sanitized_log_errors=${errorLogCount} secret_like_log_entries=${secretLikeLogEntries} checks=health,homepage,sign_in,pos_shell,public_catalog_filter,auth,admin,inventory_read_gate,orders_read_gate,ledger,compose,restart,oom,log_review`,
       );
     },
   };

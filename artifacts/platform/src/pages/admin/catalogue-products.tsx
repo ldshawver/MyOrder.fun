@@ -230,13 +230,13 @@ export default function AdminCatalogueProducts() {
           <div className="grid gap-2 md:grid-cols-2">
             <label>Inventory model<select className="block w-full rounded border bg-background p-2" value={inventoryModelDraft}
               onChange={event => {
-                const next = event.target.value as Product["inventoryModel"];
-                setInventoryModelDraft(next); setPreview(null); setConfirmReconciliation(false);
-                if (next === "SEPARATE_VARIANTS" && selected.inventoryModel !== next) void perform(async () => {
-                  await request(`/api/admin/catalogue/products/${selected.id}`, { method: "PATCH", body: JSON.stringify({ inventoryModel: next }) });
-                });
+                setInventoryModelDraft(event.target.value as Product["inventoryModel"]); setPreview(null); setConfirmReconciliation(false);
               }}>
-              <option>SEPARATE_VARIANTS</option><option>SHARED</option></select></label>
+              <option>SEPARATE_VARIANTS</option><option>SHARED</option></select>
+              <Button className="mt-2" size="sm" disabled={busy || inventoryModelDraft === selected.inventoryModel}
+                onClick={() => void perform(async () => {
+                  await request(`/api/admin/catalogue/products/${selected.id}`, { method: "PATCH", body: JSON.stringify({ inventoryModel: inventoryModelDraft }) });
+                }, "Inventory model saved.")}>Save inventory model</Button></label>
             <label>Location evaluation<select className="block w-full rounded border bg-background p-2" value={selected.locationEvaluation}
               onChange={event => void perform(async () => { await request(`/api/admin/catalogue/products/${selected.id}`, { method: "PATCH", body: JSON.stringify({ locationEvaluation: event.target.value }) }); })}>
               <option>PER_LOCATION</option><option>COMBINED_LOCATIONS</option></select></label>

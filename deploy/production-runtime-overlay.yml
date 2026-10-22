@@ -6,7 +6,7 @@ services:
       WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "false"
       RECEIPT_PRINT_ENABLED: "false"
       LABEL_PRINT_ENABLED: "false"
-      ORDER_NOTIFICATION_WORKER_ENABLED: "0"
+      ORDER_NOTIFICATION_WORKER_ENABLED: ${ORDER_NOTIFICATION_WORKER_ENABLED:-0}
     volumes:
       - /opt/alavont/shared/print-assets:/var/lib/myorder/print-assets
   platform:
