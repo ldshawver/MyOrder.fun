@@ -9,6 +9,7 @@ import {
   openSync,
   closeSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -96,6 +97,79 @@ export const PRODUCTION_STEPS = Object.freeze([
 export const EXPECTED_PRODUCTION_MIGRATIONS = Object.freeze([
   MIGRATION_0077.tag,
 ]);
+
+export const PRE_RELEASE_SCHEMA_INVARIANTS = Object.freeze([
+  Object.freeze({ id: "migration_ledger_rows", expected: "51", allowed: /^\d+$/ }),
+  ...[
+    "public.orders",
+    "public.inventory_transaction_log",
+    "public.inventory_reservations",
+    "public.inventory_balances",
+    "public.admin_settings",
+    "public.tenants",
+    "public.print_jobs",
+    "public.woocommerce_webhook_events",
+  ].map((id) => Object.freeze({ id, expected: "table", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ })),
+  ...[
+    "public.admin_settings_tenant_id_unique_idx",
+    "public.tenants_slug_ci_unique_idx",
+  ].map((id) => Object.freeze({ id, expected: "index", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ })),
+  Object.freeze({ id: "public.catalogue_inventory_reconciliation_events", expected: "missing", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ }),
+  ...[
+    "public.catalog_items_tenant_id_id_unique",
+    "public.inventory_locations_tenant_id_id_unique",
+    "public.orders_tenant_id_id_unique",
+    "public.users_tenant_id_id_unique",
+    "public.tenants_slug_unique",
+  ].map((id) => Object.freeze({ id, expected: "matching unique index", allowed: /^(?:matching unique index|present with unexpected definition|missing)$/ })),
+  Object.freeze({ id: "admin_settings_duplicate_tenant_groups", expected: "0", allowed: /^\d+$/ }),
+  Object.freeze({ id: "tenants_duplicate_casefolded_slug_groups", expected: "0", allowed: /^\d+$/ }),
+]);
+
+export function assertPreReleaseSchemaInvariantDiagnostics(rows) {
+  if (!Array.isArray(rows) || rows.length !== PRE_RELEASE_SCHEMA_INVARIANTS.length)
+    throw new Error("Isolated restore schema diagnostic result set is incomplete");
+  const actualById = new Map();
+  for (const row of rows) {
+    if (!row || typeof row.id !== "string" || typeof row.actual !== "string" || actualById.has(row.id))
+      throw new Error("Isolated restore schema diagnostic result set is invalid");
+    actualById.set(row.id, row.actual);
+  }
+  const failures = [];
+  for (const invariant of PRE_RELEASE_SCHEMA_INVARIANTS) {
+    const actual = actualById.get(invariant.id);
+    if (actual === undefined || !invariant.allowed.test(actual))
+      throw new Error("Isolated restore schema diagnostic contained an unsafe or unknown value");
+    if (actual !== invariant.expected)
+      failures.push(`${invariant.id} expected=${invariant.expected} actual=${actual}`);
+  }
+  if (failures.length)
+    throw new Error(`Isolated restore pre-release schema invariants failed: ${failures.join("; ")}`);
+  return true;
+}
+
+export function selectPreservedSnapshotMetadata(candidates) {
+  if (!Array.isArray(candidates))
+    throw new Error("Preserved production snapshot metadata is invalid");
+  const matching = candidates.filter(({ metadata }) =>
+    metadata?.sourceApiRevision === PRODUCTION_BASELINE.apiRevision &&
+    metadata?.sourceApiImage === PRODUCTION_BASELINE.apiImage &&
+    metadata?.sourcePlatformRevision === PRODUCTION_BASELINE.platformRevision &&
+    metadata?.sourcePlatformImage === PRODUCTION_BASELINE.platformImage &&
+    metadata?.targetSha === APPROVED_RELEASE.sha &&
+    metadata?.targetTree === APPROVED_RELEASE.tree &&
+    metadata?.productionProject === PRODUCTION.project &&
+    metadata?.database === PRODUCTION.database &&
+    metadata?.ledgerRows === 51 &&
+    typeof metadata?.ledger === "string" &&
+    metadata.ledger.split("\n").length === 51 &&
+    /^orders=\d+;inventory_transaction_log=\d+;inventory_reservations=\d+;inventory_balances=\d+;catalog_items=\d+;order_items=\d+$/.test(metadata?.representativeCounts ?? "") &&
+    /^[a-f0-9]{64}$/.test(metadata?.archiveSha256 ?? "")
+  );
+  if (matching.length !== 1)
+    throw new Error(`Expected exactly one preserved production snapshot for the approved release; found ${matching.length}`);
+  return matching[0];
+}
 
 export function assertRelease({
   sha,
@@ -881,6 +955,90 @@ function createSnapshot(compose, backupRoot) {
   return { archive, digest, ledger, identity, counts };
 }
 
+const PRE_RELEASE_TABLES = Object.freeze([
+  "orders",
+  "inventory_transaction_log",
+  "inventory_reservations",
+  "inventory_balances",
+  "admin_settings",
+  "tenants",
+  "print_jobs",
+  "woocommerce_webhook_events",
+]);
+const PRE_RELEASE_NAMED_INDEXES = Object.freeze([
+  "admin_settings_tenant_id_unique_idx",
+  "tenants_slug_ci_unique_idx",
+]);
+const PRE_RELEASE_UNIQUE_INDEXES = Object.freeze([
+  ["catalog_items_tenant_id_id_unique", "tenant_id, id"],
+  ["inventory_locations_tenant_id_id_unique", "tenant_id, id"],
+  ["orders_tenant_id_id_unique", "tenant_id, id"],
+  ["users_tenant_id_id_unique", "tenant_id, id"],
+  ["tenants_slug_unique", "slug"],
+]);
+
+function relationTypeExpression(name) {
+  return `COALESCE((SELECT CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'partitioned table' WHEN 'i' THEN 'index' WHEN 'I' THEN 'partitioned index' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'S' THEN 'sequence' WHEN 'f' THEN 'foreign table' ELSE 'other' END FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='${name}'), 'missing')`;
+}
+
+function preReleaseSchemaDiagnosticSql() {
+  let ordinal = 0;
+  const facts = [];
+  const add = (id, actual) => facts.push(`SELECT ${++ordinal} AS ordinal, '${id}'::text AS id, ${actual}::text AS actual`);
+  add("migration_ledger_rows", "(SELECT count(*) FROM drizzle.__drizzle_migrations)");
+  for (const name of PRE_RELEASE_TABLES)
+    add(`public.${name}`, relationTypeExpression(name));
+  for (const name of PRE_RELEASE_NAMED_INDEXES)
+    add(`public.${name}`, relationTypeExpression(name));
+  add("public.catalogue_inventory_reconciliation_events", relationTypeExpression("catalogue_inventory_reconciliation_events"));
+  for (const [name, columns] of PRE_RELEASE_UNIQUE_INDEXES) {
+    add(
+      `public.${name}`,
+      `CASE WHEN EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='${name}' AND indexdef LIKE 'CREATE UNIQUE INDEX% (${columns})') THEN 'matching unique index' WHEN to_regclass('public.${name}') IS NOT NULL THEN 'present with unexpected definition' ELSE 'missing' END`,
+    );
+  }
+  add("admin_settings_duplicate_tenant_groups", "(SELECT count(*) FROM (SELECT tenant_id FROM admin_settings GROUP BY tenant_id HAVING count(*) > 1) duplicate_groups)");
+  add("tenants_duplicate_casefolded_slug_groups", "(SELECT count(*) FROM (SELECT lower(slug) FROM tenants GROUP BY lower(slug) HAVING count(*) > 1) duplicate_groups)");
+  return `SELECT COALESCE(json_agg(json_build_object('id', id, 'actual', actual) ORDER BY ordinal), '[]'::json)::text FROM (${facts.join(" UNION ALL ")}) schema_facts`;
+}
+
+async function loadPreservedSnapshot(backupRoot) {
+  assertRealFilesystemPath(backupRoot, "directory");
+  const prefix = `alavont-before-${APPROVED_RELEASE.sha}-`;
+  const suffix = ".dump.metadata.json";
+  const candidates = [];
+  for (const entry of readdirSync(backupRoot)) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(suffix)) continue;
+    const metadataPath = path.join(backupRoot, entry);
+    assertRealFilesystemPath(metadataPath, "file");
+    let metadata;
+    try {
+      metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+    } catch {
+      throw new Error("Preserved production snapshot metadata JSON is invalid");
+    }
+    candidates.push({ metadataPath, metadata });
+  }
+  const selected = selectPreservedSnapshotMetadata(candidates);
+  const archive = selected.metadataPath.slice(0, -".metadata.json".length);
+  for (const filename of [archive, `${archive}.sha256`, `${archive}.toc`])
+    assertRealFilesystemPath(filename, "file");
+  const digest = selected.metadata.archiveSha256;
+  if ((await sha256File(archive)) !== digest)
+    throw new Error("Preserved production snapshot archive SHA-256 differs from metadata");
+  if (readFileSync(`${archive}.sha256`, "utf8") !== `${digest}  ${path.basename(archive)}\n`)
+    throw new Error("Preserved production snapshot checksum sidecar differs from metadata");
+  if (!readFileSync(`${archive}.toc`, "utf8").includes("TABLE DATA"))
+    throw new Error("Preserved production snapshot archive inspection is incomplete");
+  return {
+    archive,
+    digest,
+    ledger: selected.metadata.ledger,
+    identity: selected.metadata.databaseIdentity,
+    counts: selected.metadata.representativeCounts,
+  };
+}
+
 function restoreSnapshotInIsolation(snapshot) {
   const name = `myorder-release1-restore-${process.pid}-${Date.now()}`;
   if (spawnSync("docker", ["inspect", name], { stdio: "ignore" }).status === 0)
@@ -967,27 +1125,7 @@ function restoreSnapshotInIsolation(snapshot) {
       throw new Error(
         "Isolated restore migration ledger differs from snapshot source",
       );
-    const invariantSql = `SELECT
-      (SELECT count(*) FROM drizzle.__drizzle_migrations)=51
-      AND to_regclass('public.orders') IS NOT NULL
-      AND to_regclass('public.inventory_transaction_log') IS NOT NULL
-      AND to_regclass('public.inventory_reservations') IS NOT NULL
-      AND to_regclass('public.inventory_balances') IS NOT NULL
-      AND to_regclass('public.admin_settings') IS NOT NULL
-      AND to_regclass('public.tenants') IS NOT NULL
-      AND to_regclass('public.print_jobs') IS NOT NULL
-      AND to_regclass('public.admin_settings_tenant_id_unique_idx') IS NOT NULL
-      AND to_regclass('public.tenants_slug_ci_unique_idx') IS NOT NULL
-      AND to_regclass('public.woocommerce_webhook_events') IS NOT NULL
-      AND to_regclass('public.catalogue_inventory_reconciliation_events') IS NULL
-      AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='catalog_items_tenant_id_id_unique' AND indexdef LIKE 'CREATE UNIQUE INDEX% (tenant_id, id)')
-      AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='inventory_locations_tenant_id_id_unique' AND indexdef LIKE 'CREATE UNIQUE INDEX% (tenant_id, id)')
-      AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='orders_tenant_id_id_unique' AND indexdef LIKE 'CREATE UNIQUE INDEX% (tenant_id, id)')
-      AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='users_tenant_id_id_unique' AND indexdef LIKE 'CREATE UNIQUE INDEX% (tenant_id, id)')
-      AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='tenants_slug_unique' AND indexdef LIKE 'CREATE UNIQUE INDEX% (slug)')
-      AND NOT EXISTS (SELECT 1 FROM admin_settings GROUP BY tenant_id HAVING count(*) > 1)
-      AND NOT EXISTS (SELECT 1 FROM tenants GROUP BY lower(slug) HAVING count(*) > 1)`;
-    const invariant = run("docker", [
+    const invariantJson = run("docker", [
       "exec",
       name,
       "psql",
@@ -999,10 +1137,15 @@ function restoreSnapshotInIsolation(snapshot) {
       "-v",
       "ON_ERROR_STOP=1",
       "-Atc",
-      invariantSql,
+      preReleaseSchemaDiagnosticSql(),
     ]);
-    if (invariant.trim() !== "t")
-      throw new Error("Isolated restore pre-release schema invariants failed");
+    let invariantRows;
+    try {
+      invariantRows = JSON.parse(invariantJson);
+    } catch {
+      throw new Error("Isolated restore schema diagnostic returned invalid JSON");
+    }
+    assertPreReleaseSchemaInvariantDiagnostics(invariantRows);
     const counts = run("docker", [
       "exec",
       name,
@@ -1299,9 +1442,14 @@ async function waitForApiContainer(compose, expectedSha, attempts = 45) {
 
 async function main() {
   const [, , command, ...args] = process.argv;
-  if (!new Set(["preflight", "deploy"]).has(command))
+  const confirmations = Object.freeze({
+    preflight: "PREFLIGHT-PRODUCTION",
+    rehearsal: "REHEARSE-PRODUCTION-SNAPSHOT",
+    deploy: "DEPLOY-PRODUCTION",
+  });
+  if (!Object.hasOwn(confirmations, command))
     throw new Error(
-      "Usage: production-release.mjs <preflight|deploy> --base-sha SHA --base-tree TREE --release-sha SHA --release-tree TREE --archive PATH --archive-sha SHA256 --tooling-sha SHA --authorized",
+      "Usage: production-release.mjs <preflight|rehearsal|deploy> --base-sha SHA --base-tree TREE --release-sha SHA --release-tree TREE --archive PATH --archive-sha SHA256 --tooling-sha SHA --authorized",
     );
   const get = (name) => {
     const i = args.indexOf(name);
@@ -1309,8 +1457,7 @@ async function main() {
   };
   if (
     !args.includes("--authorized") ||
-    process.env.PRODUCTION_DEPLOY_CONFIRMATION !==
-      (command === "preflight" ? "PREFLIGHT-PRODUCTION" : "DEPLOY-PRODUCTION")
+    process.env.PRODUCTION_DEPLOY_CONFIRMATION !== confirmations[command]
   )
     throw new Error(
       "Production requires explicit protected-workflow authorization",
@@ -1682,6 +1829,20 @@ async function main() {
       );
     },
   };
+  if (command === "rehearsal") {
+    console.log("production rehearsal step start=select-preserved-snapshot");
+    const preservedSnapshot = await loadPreservedSnapshot(backupRoot);
+    console.log(
+      `production rehearsal step complete=select-preserved-snapshot archive=${path.basename(preservedSnapshot.archive)} sha256=${preservedSnapshot.digest}`,
+    );
+    console.log("production rehearsal step start=restore-rehearsal");
+    const rehearsal = restoreSnapshotInIsolation(preservedSnapshot);
+    console.log("production rehearsal step complete=restore-rehearsal");
+    console.log(
+      `production rehearsal result=passed release_sha=${sha} isolated=${rehearsal.isolated} migration_0077=${rehearsal.migration0077} ledger_rows=${rehearsal.ledgerRows}`,
+    );
+    return;
+  }
   if (command === "preflight") {
     for (const name of ["validate", "verify-release-images", "validate-lineage", "verify-writer-inventory"]) {
       console.log(`production preflight step start=${name}`);
