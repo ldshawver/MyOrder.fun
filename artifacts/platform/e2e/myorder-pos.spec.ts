@@ -16,7 +16,7 @@ const publicCatalog = [
   },
 ];
 
-async function mockPosApi(page: Page, overrides: { processors?: string[]; archived?: boolean } = {}) {
+async function mockPosApi(page: Page, overrides: { processors?: string[]; archived?: boolean; queueFailure?: boolean; orderDetailFailure?: boolean } = {}) {
   const processors = overrides.processors ?? ["paypal"];
   const catalog = overrides.archived ? [] : publicCatalog;
   await page.route("**/api/**", async route => {
@@ -52,7 +52,10 @@ async function mockPosApi(page: Page, overrides: { processors?: string[]; archiv
     if (path === "/api/orders" && method === "POST") return json({ id: 9001, status: "pending", paymentStatus: "pending", items: [{ catalogItemId: 354, quantity: 1 }] }, 201);
     if (path === "/api/payments/tokenize" && method === "POST") return json({ paymentIntentId: "pi_test_pos", clientSecret: "pi_test_pos_secret", orderId: 9001 });
     if (path === "/api/payments/9001/confirm" && method === "POST") return json({ id: 9001, status: "confirmed", paymentStatus: "paid", inventoryDeducted: true });
-    if (path === "/api/orders/9001") return json({ id: 9001, status: "confirmed", paymentStatus: "paid", assignedShiftId: 77 });
+    if (path === "/api/orders/9001") {
+      if (overrides.orderDetailFailure) return json({ error: "Temporary service error" }, 503);
+      return json({ id: 9001, status: "confirmed", paymentStatus: "paid", assignedShiftId: 77 });
+    }
     if (path === "/api/shifts/current" || path === "/api/shifts/active") return json({ shift: {
       id: 77, tech_id: 1, box_assignment_id: "sales-box-1", status: "active", setup_json: { inventoryConfirmed: true },
       clockedInAt: new Date(Date.now() - 15 * 60_000).toISOString(), cashBankStart: 100, runningCashBank: 124,
@@ -60,7 +63,10 @@ async function mockPosApi(page: Page, overrides: { processors?: string[]; archiv
       stats: { orderCount: 1, totalRevenue: 24, cashSales: 24, cardSales: 0, compSales: 0, paymentTotals: { cash: 24 }, byItem: [{ catalogItemId: 354, name: "Calm Drops", qtySold: 1, revenue: 24 }], byCustomer: [{ customerId: 1, name: "Test Customer", orderCount: 1, total: 24, paymentMethod: "cash" }] }
     } });
     if (path === "/api/shifts/inventory-template") return json({ template: [{ id: 1, catalogItemId: 354, itemName: "Calm Drops", rowType: "item", unitType: "EA", startingQuantityDefault: 12, sectionName: "Wellness", displayOrder: 1, menuPrice: 24, payoutPrice: 0 }], boxes: [{ id: "sales-box-1", label: "CSR Sales Box 1" }] });
-    if (path === "/api/shift-queue/orders") return json({ orders: [{ id: 9001, status: "pending", fulfillmentStatus: "pending", assignedShiftId: 77, customerName: "Test Customer", createdAt: new Date().toISOString(), paymentStatus: "paid", paymentMethod: "cash", total: 24 }], total: 1 });
+    if (path === "/api/shift-queue/orders") {
+      if (overrides.queueFailure) return json({ error: "Too many requests" }, 429);
+      return json({ orders: [{ id: 9001, status: "pending", fulfillmentStatus: "pending", assignedShiftId: 77, customerName: "Test Customer", createdAt: new Date().toISOString(), paymentStatus: "paid", paymentMethod: "cash", total: 24 }], total: 1 });
+    }
     if (path === "/api/orders/9001/accept" && method === "POST") return json({ id: 9001, status: "processing" });
     if (path === "/api/orders/9001/fulfillment" && method === "POST") return json({ id: 9001, status: "completed" });
     if (path === "/api/admin/import/product-master" && method === "POST") return json({ importedProducts: 35, catalogItemsCreated: 35, inventoryBalancesUpserted: 140 });
@@ -168,6 +174,28 @@ test.describe("MyOrder.fun POS browser verification", () => {
       await testInfo.attach("staff-active-shift", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
       expect(browserErrors, `Browser console/page errors:\n${browserErrors.join("\n")}`).toEqual([]);
       expect(cspViolations, `Browser CSP violations:\n${cspViolations.join("\n")}`).toEqual([]);
+    });
+
+    test("queue loading errors preserve a retry path and recover", async ({ page }) => {
+      const overrides = { queueFailure: true };
+      await mockPosApi(page, overrides);
+      await page.goto("/staff", { waitUntil: "domcontentloaded" });
+      await expect(page.getByTestId("queue-load-error")).toContainText("temporarily rate-limited");
+      overrides.queueFailure = false;
+      await page.getByTestId("queue-load-error").getByRole("button", { name: "Retry" }).click();
+      await expect(page.getByTestId("queue-load-error")).toHaveCount(0);
+      await expect(page.getByText("Test Customer")).toBeVisible();
+    });
+
+    test("order detail distinguishes a recoverable service error from access denial", async ({ page }) => {
+      const overrides = { orderDetailFailure: true };
+      await mockPosApi(page, overrides);
+      await page.goto("/orders/9001");
+      await expect(page.getByTestId("order-load-error")).toContainText("temporary service error");
+      await expect(page.getByText(/do not have access/i)).toHaveCount(0);
+      overrides.orderDetailFailure = false;
+      await page.getByRole("button", { name: "Retry" }).click();
+      await expect(page.getByTestId("text-order-id")).toHaveText("Order #9001");
     });
   });
 

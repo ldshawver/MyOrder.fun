@@ -44,11 +44,21 @@ app.use(
 app.use(CLERK_PROXY_PATH, clerkProxyMiddleware());
 
 // ── Global rate limiting ────────────────────────────────────────────────────
-const globalLimiter = rateLimit({
+const apiReadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => !["GET", "HEAD", "OPTIONS"].includes(req.method),
+  message: { error: "Too many requests, please try again later." },
+});
+
+const apiWriteLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => ["GET", "HEAD", "OPTIONS"].includes(req.method),
   message: { error: "Too many requests, please try again later." },
 });
 
@@ -64,7 +74,7 @@ const onboardingLimiter = rateLimit({
   message: { error: "Onboarding request rate-limited." },
 });
 
-app.use("/api", globalLimiter);
+app.use("/api", apiReadLimiter, apiWriteLimiter);
 app.use("/api/admin/mfa", mfaLimiter);
 app.use("/api/onboarding/request", onboardingLimiter);
 
