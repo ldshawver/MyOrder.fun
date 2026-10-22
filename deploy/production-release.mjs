@@ -23,43 +23,55 @@ import { fileURLToPath } from "node:url";
 export const FROZEN_RELEASE = Object.freeze({
   // The replacement candidate must descend from the previously approved
   // application candidate; deployment-only successors cannot change it.
-  sha: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
-  tree: "c2851c74077f94e189867b574a3f1aef244f61cc",
-});
-export const APPROVED_RELEASE = Object.freeze({
   sha: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
   tree: "bd96df1c597e64d17c1aaa47f0d0201115a89173",
+});
+export const APPROVED_RELEASE = Object.freeze({
+  sha: "583d556c8d3a5a094641ea229835d7c3397de1b1",
+  tree: "5d28e84ac2cf71aa6c99f42b299fedfcde51079f",
   // Production's containerd-backed Docker image store reports the immutable
   // manifest digest as image.Id. Keep registry manifests and their referenced
   // image-config digests separate so neither identity can stand in for the other.
   manifests: Object.freeze({
-    api: "sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1",
-    platform: "sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861",
-    migrate: "sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6",
+    api: "sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40",
+    platform: "sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd",
+    migrate: "sha256:506ebdba19ca1889dd527f3f0a26d29092ad232b1301f313fc6440b68dcf66d7",
   }),
   configs: Object.freeze({
-    api: "sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f",
-    platform: "sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88",
-    migrate: "sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001",
+    api: "sha256:2b31521937379210521fdb46a3f3f720e8557542d9b224c3bb91644861502e84",
+    platform: "sha256:aff084db79784db86c57d029f6c7868bc14cfeff2a5a7e578ed104865e3375a7",
+    migrate: "sha256:05e30ebb37a1032c67a5bc8dd13929733c299f34ea374fca86e214f7e8b26e9e",
   }),
   revisions: Object.freeze({
-    api: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
-    platform: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
-    migrate: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
+    api: "583d556c8d3a5a094641ea229835d7c3397de1b1",
+    platform: "583d556c8d3a5a094641ea229835d7c3397de1b1",
+    migrate: "583d556c8d3a5a094641ea229835d7c3397de1b1",
   }),
   references: Object.freeze({
-    api: "ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1",
-    platform: "ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861",
-    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6",
+    api: "ghcr.io/ldshawver/myorder-api@sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40",
+    platform: "ghcr.io/ldshawver/myorder-platform@sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd",
+    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:506ebdba19ca1889dd527f3f0a26d29092ad232b1301f313fc6440b68dcf66d7",
   }),
 });
 export const PRODUCTION_BASELINE = Object.freeze({
-  apiImage: "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
-  apiRevision: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
-  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
-  platformImage: "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
-  platformRevision: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
-  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
+  apiImage: "sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1",
+  apiRevision: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
+  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1",
+  platformImage: "sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861",
+  platformRevision: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
+  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861",
+  nginxImage: "sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a",
+  nginxReference: "nginx:alpine",
+  databaseImage: "sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229",
+  databaseReference: "postgres:16-alpine",
+});
+export const PRESERVED_SNAPSHOT = Object.freeze({
+  sourceApiRevision: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
+  sourceApiImage: "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
+  sourcePlatformRevision: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
+  sourcePlatformImage: "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
+  targetSha: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
+  targetTree: "bd96df1c597e64d17c1aaa47f0d0201115a89173",
 });
 export const MIGRATION_0077 = Object.freeze({
   tag: "0077_catalogue_inventory_reconciliation",
@@ -151,12 +163,12 @@ export function selectPreservedSnapshotMetadata(candidates) {
   if (!Array.isArray(candidates))
     throw new Error("Preserved production snapshot metadata is invalid");
   const matching = candidates.filter(({ metadata }) =>
-    metadata?.sourceApiRevision === PRODUCTION_BASELINE.apiRevision &&
-    metadata?.sourceApiImage === PRODUCTION_BASELINE.apiImage &&
-    metadata?.sourcePlatformRevision === PRODUCTION_BASELINE.platformRevision &&
-    metadata?.sourcePlatformImage === PRODUCTION_BASELINE.platformImage &&
-    metadata?.targetSha === APPROVED_RELEASE.sha &&
-    metadata?.targetTree === APPROVED_RELEASE.tree &&
+    metadata?.sourceApiRevision === PRESERVED_SNAPSHOT.sourceApiRevision &&
+    metadata?.sourceApiImage === PRESERVED_SNAPSHOT.sourceApiImage &&
+    metadata?.sourcePlatformRevision === PRESERVED_SNAPSHOT.sourcePlatformRevision &&
+    metadata?.sourcePlatformImage === PRESERVED_SNAPSHOT.sourcePlatformImage &&
+    metadata?.targetSha === PRESERVED_SNAPSHOT.targetSha &&
+    metadata?.targetTree === PRESERVED_SNAPSHOT.targetTree &&
     metadata?.productionProject === PRODUCTION.project &&
     metadata?.database === PRODUCTION.database &&
     metadata?.ledgerRows === 51 &&
@@ -697,6 +709,18 @@ function verifyWriterSet(compose) {
     platform?.image === approvedImageReference("platform");
   if (!platformIsBaseline && !platformIsApproved)
     throw new Error("Current production Platform is neither the recorded rollback image nor the exact approved release image");
+  const nginx = idsByService.get("nginx");
+  if (
+    nginx?.imageId !== PRODUCTION_BASELINE.nginxImage ||
+    nginx?.image !== PRODUCTION_BASELINE.nginxReference
+  )
+    throw new Error("Current production nginx is not the exact recorded live baseline image");
+  const database = idsByService.get("db");
+  if (
+    database?.imageId !== PRODUCTION_BASELINE.databaseImage ||
+    database?.image !== PRODUCTION_BASELINE.databaseReference
+  )
+    throw new Error("Current production database is not the exact recorded live baseline image");
   if (idsByService.get("migrate")?.running)
     throw new Error("A production migration container is already running");
   for (const id of run("docker", ["ps", "--all", "--quiet"])
@@ -1048,7 +1072,7 @@ export function preReleaseSchemaDiagnosticSql() {
 
 async function loadPreservedSnapshot(backupRoot) {
   assertRealFilesystemPath(backupRoot, "directory");
-  const prefix = `alavont-before-${APPROVED_RELEASE.sha}-`;
+  const prefix = `alavont-before-${PRESERVED_SNAPSHOT.targetSha}-`;
   const suffix = ".dump.metadata.json";
   const candidates = [];
   for (const entry of readdirSync(backupRoot)) {
@@ -1412,25 +1436,8 @@ function verifyP0Schema(compose) {
   return true;
 }
 
-function validatePendingLineage(compose) {
-  verifyP0Schema(compose);
+export function classifyMigrationLineage(output) {
   const expected = EXPECTED_PRODUCTION_MIGRATIONS;
-  const output = run(
-    "docker",
-    [
-      ...compose.args,
-      "run",
-      "--rm",
-      "--no-deps",
-      "--entrypoint",
-      "pnpm",
-      "migrate",
-      "--filter",
-      "@workspace/db",
-      "db:validate-migrations",
-    ],
-    { env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha } },
-  );
   const pending = [
     ...output.matchAll(/\[migration-ledger\] PENDING ([^ ]+)/g),
   ].map((match) => match[1]);
@@ -1448,6 +1455,27 @@ function validatePendingLineage(compose) {
   throw new Error(
     `Production migration state is neither the exact 51-row pre-0077 path nor the verified 52-row applied lineage: ${pending.join(",")}`,
   );
+}
+
+function validatePendingLineage(compose) {
+  verifyP0Schema(compose);
+  const output = run(
+    "docker",
+    [
+      ...compose.args,
+      "run",
+      "--rm",
+      "--no-deps",
+      "--entrypoint",
+      "pnpm",
+      "migrate",
+      "--filter",
+      "@workspace/db",
+      "db:validate-migrations",
+    ],
+    { env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha } },
+  );
+  return classifyMigrationLineage(output);
 }
 
 async function waitFor(url, expectedSha, attempts = 45) {

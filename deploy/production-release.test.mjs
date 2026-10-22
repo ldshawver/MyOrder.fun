@@ -8,6 +8,7 @@ import {
   EXPECTED_PRODUCTION_MIGRATIONS,
   FROZEN_RELEASE,
   MIGRATION_0077,
+  PRESERVED_SNAPSHOT,
   PRODUCTION_BASELINE,
   PRODUCTION,
   PRODUCTION_STEPS,
@@ -18,6 +19,7 @@ import {
   assertRelease,
   assertReleaseIdentityManifest,
   assertReusableReleaseIdentity,
+  classifyMigrationLineage,
   assertKnownNonWriterService,
   assertNoEncryptedProductionPayPalSettings,
   assertPublicCatalogSmokePayload,
@@ -253,12 +255,12 @@ test("pre-release slug uniqueness requires the canonical valid and ready lower(s
 
 test("preserved snapshot selection is exact and refuses absent or ambiguous candidates", () => {
   const metadata = {
-    sourceApiRevision: PRODUCTION_BASELINE.apiRevision,
-    sourceApiImage: PRODUCTION_BASELINE.apiImage,
-    sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision,
-    sourcePlatformImage: PRODUCTION_BASELINE.platformImage,
-    targetSha: APPROVED_RELEASE.sha,
-    targetTree: APPROVED_RELEASE.tree,
+    sourceApiRevision: PRESERVED_SNAPSHOT.sourceApiRevision,
+    sourceApiImage: PRESERVED_SNAPSHOT.sourceApiImage,
+    sourcePlatformRevision: PRESERVED_SNAPSHOT.sourcePlatformRevision,
+    sourcePlatformImage: PRESERVED_SNAPSHOT.sourcePlatformImage,
+    targetSha: PRESERVED_SNAPSHOT.targetSha,
+    targetTree: PRESERVED_SNAPSHOT.targetTree,
     productionProject: PRODUCTION.project,
     database: PRODUCTION.database,
     ledgerRows: 51,
@@ -595,26 +597,33 @@ test("missing production authorization is rejected by the executable entrypoint"
 });
 
 test("production rollback baseline is the current pre-release image set", () => {
-  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
-  assert.equal(PRODUCTION_BASELINE.apiRevision, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
-  assert.equal(PRODUCTION_BASELINE.apiReference, "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
-  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf");
-  assert.equal(PRODUCTION_BASELINE.platformRevision, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
-  assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf");
+  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1");
+  assert.equal(PRODUCTION_BASELINE.apiRevision, "5dd5b258f0b932e9a9ea4888af00a857d7d10146");
+  assert.equal(PRODUCTION_BASELINE.apiReference, "ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1");
+  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861");
+  assert.equal(PRODUCTION_BASELINE.platformRevision, "5dd5b258f0b932e9a9ea4888af00a857d7d10146");
+  assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861");
+  assert.equal(PRODUCTION_BASELINE.nginxImage, "sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a");
+  assert.equal(PRODUCTION_BASELINE.nginxReference, "nginx:alpine");
+  assert.equal(PRODUCTION_BASELINE.databaseImage, "sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229");
+  assert.equal(PRODUCTION_BASELINE.databaseReference, "postgres:16-alpine");
+  assert.equal(PRESERVED_SNAPSHOT.sourceApiRevision, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
+  assert.equal(PRESERVED_SNAPSHOT.targetSha, "5dd5b258f0b932e9a9ea4888af00a857d7d10146");
+  assert.equal(PRESERVED_SNAPSHOT.targetTree, "bd96df1c597e64d17c1aaa47f0d0201115a89173");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.manifests).sort(), ["api", "migrate", "platform"]);
   assert.deepEqual(Object.keys(APPROVED_RELEASE.configs).sort(), ["api", "migrate", "platform"]);
-  assert.equal(APPROVED_RELEASE.manifests.api, "sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1");
-  assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6");
-  assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861");
-  assert.equal(APPROVED_RELEASE.configs.api, "sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f");
-  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:a983f87ab707e6f83ccfc583ebb0f6b6d3c351d4cf4667d175c1e4afb9acb001");
-  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:72e4d92c347e38661072a6a69044493e3ba10b9b2a7f0b47ca75ced80d1caf88");
+  assert.equal(APPROVED_RELEASE.manifests.api, "sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40");
+  assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:506ebdba19ca1889dd527f3f0a26d29092ad232b1301f313fc6440b68dcf66d7");
+  assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd");
+  assert.equal(APPROVED_RELEASE.configs.api, "sha256:2b31521937379210521fdb46a3f3f720e8557542d9b224c3bb91644861502e84");
+  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:05e30ebb37a1032c67a5bc8dd13929733c299f34ea374fca86e214f7e8b26e9e");
+  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:aff084db79784db86c57d029f6c7868bc14cfeff2a5a7e578ed104865e3375a7");
   assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.platform, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.migrate, APPROVED_RELEASE.sha);
-  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1");
-  assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6");
-  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861");
+  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40");
+  assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:506ebdba19ca1889dd527f3f0a26d29092ad232b1301f313fc6440b68dcf66d7");
+  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd");
   assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, ["0077_catalogue_inventory_reconciliation"]);
   assert.equal(MIGRATION_0077.timestamp, "1792440000000");
   assert.equal(MIGRATION_0077.sha256, "29b98289bd97b1c4781495a93d3d034f03a0daa503a96adfda035d2a3aeecd6b");
@@ -629,6 +638,38 @@ test("production rollback baseline is the current pre-release image set", () => 
   assert.equal(
     mayRestoreRollbackApi({ apiStopAttempted: false, migrationStarted: false }),
     false,
+  );
+});
+
+test("candidate builder is frozen to the exact approved source and unique immutable tags", () => {
+  const workflow = readFileSync(
+    new URL("../.github/workflows/build-production-platform.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, new RegExp(`SOURCE_SHA: ${APPROVED_RELEASE.sha}`));
+  assert.match(workflow, new RegExp(`SOURCE_TREE: ${APPROVED_RELEASE.tree}`));
+  assert.match(workflow, new RegExp(`ref: ${APPROVED_RELEASE.sha}`));
+  assert.equal(workflow.match(new RegExp(APPROVED_RELEASE.sha, "g"))?.length, 5);
+  assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
+  assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
+});
+
+test("migration lineage classifier safely resumes the exact already-applied 0077 state", () => {
+  assert.equal(
+    classifyMigrationLineage(
+      "[migration-ledger] APPLIED 0077_catalogue_inventory_reconciliation hash\n[migration-ledger] recognized lineage preserved: 52/52\n",
+    ),
+    "applied",
+  );
+  assert.equal(
+    classifyMigrationLineage(
+      "[migration-ledger] PENDING 0077_catalogue_inventory_reconciliation hash\n[migration-ledger] recognized lineage preserved: 51/52\n",
+    ),
+    "pending",
+  );
+  assert.throws(
+    () => classifyMigrationLineage("[migration-ledger] recognized lineage preserved: 51/52\n"),
+    /neither the exact 51-row pre-0077 path nor the verified 52-row applied lineage/,
   );
 });
 
@@ -751,6 +792,9 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.match(runner, /\/opt\/alavont\/shared\/print-assets/);
   assert.match(workflow, /production-release\.mjs/);
   assert.ok(workflow.includes('git merge-base --is-ancestor "${RELEASE_SHA}" "${TOOLING_SHA}"'));
+  assert.ok(workflow.includes('git show "${GITHUB_SHA}:artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts"'));
+  assert.ok(workflow.includes('git show "${GITHUB_SHA}:.github/workflows/deploy.yml"'));
+  assert.doesNotMatch(workflow, /git show "HEAD:(?:artifacts\/api-server\/src\/routes\/__tests__\/myorder-pos-stabilization-static\.test\.ts|\.github\/workflows\/deploy\.yml)"/);
   assert.ok(workflow.includes('git show "${TOOLING_SHA}:deploy/production-release.mjs"'));
   assert.ok(workflow.includes('git show "${TOOLING_SHA}:deploy/production-runtime-overlay.yml"'));
   assert.ok(workflow.includes('"${TOOLING_ROOT}/production-release.mjs"'));
@@ -766,16 +810,16 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.ok(workflow.includes('if [[ "${TOOLING_TRANSFER_MODE}" == "install" ]]'));
   assert.ok(workflow.includes("Reusing hash-verified immutable deployment tooling"));
   assert.ok(workflow.includes("name: Stage immutable replacement API, migrator and Platform images"));
-  assert.ok(workflow.includes("REPLACEMENT_API_REFERENCE: ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1"));
-  assert.ok(workflow.includes("REPLACEMENT_MIGRATE_REFERENCE: ghcr.io/ldshawver/myorder-migrate@sha256:be1e9263b1ad45f8348e16dc9a859ab3f36cfc216f62a60ae92229d3552a86e6"));
-  assert.ok(workflow.includes("REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861"));
+  assert.ok(workflow.includes(`REPLACEMENT_API_REFERENCE: ${APPROVED_RELEASE.references.api}`));
+  assert.ok(workflow.includes(`REPLACEMENT_MIGRATE_REFERENCE: ${APPROVED_RELEASE.references.migrate}`));
+  assert.ok(workflow.includes(`REPLACEMENT_PLATFORM_REFERENCE: ${APPROVED_RELEASE.references.platform}`));
   assert.ok(workflow.includes("docker pull '${REPLACEMENT_PLATFORM_REFERENCE}'"));
   assert.ok(workflow.includes("Pulled API manifest identity: %s; config identity: %s"));
   assert.ok(workflow.includes("Pulled migrator manifest identity: %s; config identity: %s"));
   assert.ok(workflow.includes("Pulled Platform manifest identity: %s; config identity: %s"));
-  assert.ok(workflow.includes('test \\"\\$api_id\\" = \'sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1\''));
-  assert.ok(workflow.includes('test \\"\\$api_config\\" = \'sha256:be576251d21514559e9e4a9a047d8373767d26e2ac8443089acf624bdc0b3c9f\''));
-  assert.ok(workflow.includes("sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861"));
+  assert.ok(workflow.includes(`test \\"\\$api_id\\" = '${APPROVED_RELEASE.manifests.api}'`));
+  assert.ok(workflow.includes(`test \\"\\$api_config\\" = '${APPROVED_RELEASE.configs.api}'`));
+  assert.ok(workflow.includes(APPROVED_RELEASE.manifests.platform));
   assert.ok(workflow.includes("{{range .RepoDigests}}{{println .}}{{end}}"));
   assert.ok(workflow.includes("grep -Fx"));
 });
@@ -817,7 +861,7 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(
     workflow,
-    /RELEASE_BASE_SHA: 3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb/,
+    new RegExp(`RELEASE_BASE_SHA: ${FROZEN_RELEASE.sha}`),
   );
   assert.match(
     workflow,
@@ -825,8 +869,8 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
   const globalEnv = workflow.match(/^env:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
-  assert.equal(APPROVED_RELEASE.sha, "5dd5b258f0b932e9a9ea4888af00a857d7d10146");
-  assert.equal(APPROVED_RELEASE.tree, "bd96df1c597e64d17c1aaa47f0d0201115a89173");
+  assert.equal(APPROVED_RELEASE.sha, "583d556c8d3a5a094641ea229835d7c3397de1b1");
+  assert.equal(APPROVED_RELEASE.tree, "5d28e84ac2cf71aa6c99f42b299fedfcde51079f");
   for (const [key, value] of [["SHA", APPROVED_RELEASE.sha], ["TREE", APPROVED_RELEASE.tree]]) {
     const pin = `PINNED_RELEASE_${key}`;
     assert.deepEqual(globalEnv.match(new RegExp(`^  ${pin}: ([a-f0-9]{40})$`, "gm")), [`  ${pin}: ${value}`]);
@@ -839,7 +883,7 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   assert.match(workflow, /needs: \[test, release-tooling\]/);
   assert.match(workflow, /branches:\n\s+- "release-tooling\/\*\*"/);
   assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
-  assert.match(workflow, /RELEASE_BASE_TREE: c2851c74077f94e189867b574a3f1aef244f61cc/);
+  assert.match(workflow, new RegExp(`RELEASE_BASE_TREE: ${FROZEN_RELEASE.tree}`));
   assert.ok(workflow.includes('git rev-parse "${RELEASE_BASE_SHA}^{tree}"'));
   assert.ok(workflow.includes('git merge-base --is-ancestor "${RELEASE_BASE_SHA}" "${RELEASE_SHA}"'));
   assert.match(workflow, /MYORDER-RELEASE-IDENTITY\.json/);
