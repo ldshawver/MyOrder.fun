@@ -66,6 +66,12 @@ export const PRODUCTION_BASELINE = Object.freeze({
   databaseReference: "postgres:16-alpine",
 });
 export const PRESERVED_SNAPSHOT = Object.freeze({
+  // Guarded rehearsal run 39771000177 selected this exact archive, logged
+  // this digest, and completed the isolated 0077 restore rehearsal before
+  // guarded preflight run 39771583853 passed.
+  archiveName: "alavont-before-5dd5b258f0b932e9a9ea4888af00a857d7d10146-20261022T103613Z.dump",
+  archiveSha256: "059e28765fbdda27e9072497364e16b36e25e97968d4972c03326f4af2f2ac9e",
+  rehearsalWorkflowRun: "39771000177",
   sourceApiRevision: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
   sourceApiImage: "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
   sourcePlatformRevision: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
@@ -162,7 +168,17 @@ export function assertPreReleaseSchemaInvariantDiagnostics(rows) {
 export function selectPreservedSnapshotMetadata(candidates) {
   if (!Array.isArray(candidates))
     throw new Error("Preserved production snapshot metadata is invalid");
-  const matching = candidates.filter(({ metadata }) =>
+  const pinnedMetadataName = `${PRESERVED_SNAPSHOT.archiveName}.metadata.json`;
+  const pinned = candidates.filter(({ metadataPath }) =>
+    typeof metadataPath === "string" && path.basename(metadataPath) === pinnedMetadataName
+  );
+  if (pinned.length === 0)
+    throw new Error("Pinned preserved production snapshot metadata is missing");
+  if (pinned.length !== 1)
+    throw new Error("Pinned preserved production snapshot metadata is not unique");
+  const selected = pinned[0];
+  const metadata = selected.metadata;
+  const baselineMatches =
     metadata?.sourceApiRevision === PRESERVED_SNAPSHOT.sourceApiRevision &&
     metadata?.sourceApiImage === PRESERVED_SNAPSHOT.sourceApiImage &&
     metadata?.sourcePlatformRevision === PRESERVED_SNAPSHOT.sourcePlatformRevision &&
@@ -175,11 +191,12 @@ export function selectPreservedSnapshotMetadata(candidates) {
     typeof metadata?.ledger === "string" &&
     metadata.ledger.split("\n").length === 51 &&
     /^orders=\d+;inventory_transaction_log=\d+;inventory_reservations=\d+;inventory_balances=\d+;catalog_items=\d+;order_items=\d+$/.test(metadata?.representativeCounts ?? "") &&
-    /^[a-f0-9]{64}$/.test(metadata?.archiveSha256 ?? "")
-  );
-  if (matching.length !== 1)
-    throw new Error(`Expected exactly one preserved production snapshot for the approved release; found ${matching.length}`);
-  return matching[0];
+    /^[a-f0-9]{64}$/.test(metadata?.archiveSha256 ?? "");
+  if (!baselineMatches)
+    throw new Error("Pinned preserved production snapshot does not match the approved release baseline");
+  if (metadata.archiveSha256 !== PRESERVED_SNAPSHOT.archiveSha256)
+    throw new Error("Pinned preserved production snapshot metadata checksum differs from the approved digest");
+  return selected;
 }
 
 export function assertRelease({
@@ -1070,7 +1087,7 @@ export function preReleaseSchemaDiagnosticSql() {
   return `SELECT COALESCE(json_agg(json_build_object('id', id, 'actual', actual) ORDER BY ordinal), '[]'::json)::text FROM (${facts.join(" UNION ALL ")}) schema_facts`;
 }
 
-async function loadPreservedSnapshot(backupRoot) {
+export async function loadPreservedSnapshot(backupRoot) {
   assertRealFilesystemPath(backupRoot, "directory");
   const prefix = `alavont-before-${PRESERVED_SNAPSHOT.targetSha}-`;
   const suffix = ".dump.metadata.json";
@@ -1089,11 +1106,13 @@ async function loadPreservedSnapshot(backupRoot) {
   }
   const selected = selectPreservedSnapshotMetadata(candidates);
   const archive = selected.metadataPath.slice(0, -".metadata.json".length);
+  if (path.basename(archive) !== PRESERVED_SNAPSHOT.archiveName)
+    throw new Error("Pinned preserved production snapshot path differs from the approved path");
   for (const filename of [archive, `${archive}.sha256`, `${archive}.toc`])
     assertRealFilesystemPath(filename, "file");
-  const digest = selected.metadata.archiveSha256;
+  const digest = PRESERVED_SNAPSHOT.archiveSha256;
   if ((await sha256File(archive)) !== digest)
-    throw new Error("Preserved production snapshot archive SHA-256 differs from metadata");
+    throw new Error("Preserved production snapshot archive SHA-256 differs from the approved digest");
   if (readFileSync(`${archive}.sha256`, "utf8") !== `${digest}  ${path.basename(archive)}\n`)
     throw new Error("Preserved production snapshot checksum sidecar differs from metadata");
   if (!readFileSync(`${archive}.toc`, "utf8").includes("TABLE DATA"))
