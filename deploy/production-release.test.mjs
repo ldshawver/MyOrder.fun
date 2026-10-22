@@ -794,7 +794,8 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.ok(workflow.includes('git merge-base --is-ancestor "${RELEASE_SHA}" "${TOOLING_SHA}"'));
   assert.ok(workflow.includes('git show "${GITHUB_SHA}:artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts"'));
   assert.ok(workflow.includes('git show "${GITHUB_SHA}:.github/workflows/deploy.yml"'));
-  assert.doesNotMatch(workflow, /git show "HEAD:(?:artifacts\/api-server\/src\/routes\/__tests__\/myorder-pos-stabilization-static\.test\.ts|\.github\/workflows\/deploy\.yml)"/);
+  assert.ok(workflow.includes('git show "${GITHUB_SHA}:deploy/production-release.mjs"'));
+  assert.doesNotMatch(workflow, /git show "HEAD:(?:artifacts\/api-server\/src\/routes\/__tests__\/myorder-pos-stabilization-static\.test\.ts|\.github\/workflows\/deploy\.yml|deploy\/production-release\.mjs)"/);
   assert.ok(workflow.includes('git show "${TOOLING_SHA}:deploy/production-release.mjs"'));
   assert.ok(workflow.includes('git show "${TOOLING_SHA}:deploy/production-runtime-overlay.yml"'));
   assert.ok(workflow.includes('"${TOOLING_ROOT}/production-release.mjs"'));
