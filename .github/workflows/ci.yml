@@ -91,8 +91,15 @@ jobs:
       - run: pnpm lint:ratchet
       - run: pnpm --filter @workspace/scripts inventory:lockdown
       - run: pnpm test
-      - name: Validate migration lineage and 0077 schema fingerprints
-        run: pnpm --filter @workspace/db exec tsx --test scripts/migration-lineage.test.ts scripts/reconciliation-schema.test.ts
+      - name: Validate migration history, lineage, and schema fingerprints
+        run: >-
+          pnpm --filter @workspace/db exec tsx --test
+          scripts/catalogue-variant-migration.test.ts
+          scripts/migrate-verified.test.ts
+          scripts/migration-lineage.test.ts
+          scripts/reconciliation-schema.test.ts
+          scripts/tenant-slug-uniqueness.test.ts
+          scripts/woo-store-url-migration.test.ts
       - name: Run guarded production release orchestration tests
         run: node --test deploy/production-release.test.mjs
       - name: Run guarded staging feature release tests
