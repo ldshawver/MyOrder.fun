@@ -9,7 +9,8 @@
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings 0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "inventory-history-repair": "node --enable-source-maps ./dist/maintenance-inventory-history-baseline-repair.mjs"
   },
   "dependencies": {
     "@clerk/express": "^2.0.8",

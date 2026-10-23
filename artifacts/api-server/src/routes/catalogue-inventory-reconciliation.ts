@@ -7,7 +7,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } 
 import { requireTenantContext } from "../lib/tenantContext";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
 import { convertQuantity, convertUnitCost, reconciliationFingerprint } from "../lib/catalogueInventoryReconciliation";
-import { quantityText, quantityUnits } from "../lib/exactQuantity";
+import { ledgerQuantityUnits, quantityText, quantityUnits } from "../lib/exactQuantity";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -40,13 +40,6 @@ function rows<T extends Row = Row>(result: unknown): T[] {
 }
 function intArray(values: number[]) {
   return sql`ARRAY[${sql.join(values.map(value => sql`${value}`), sql`, `)}]::int[]`;
-}
-function ledgerQuantityUnits(value: string): bigint {
-  const match = /^(\d+)(?:\.(\d+))?$/.exec(value);
-  if (!match) throw new Error("Invalid inventory ledger quantity");
-  const fraction = match[2] ?? "";
-  if (fraction.length > 6 && /[^0]/.test(fraction.slice(6))) throw new Error("Inventory ledger precision exceeds physical balance precision");
-  return quantityUnits(`${match[1]}.${fraction.slice(0, 6).padEnd(6, "0")}`);
 }
 function previewConversion(value: string, fromUnit: string, toUnit: string): string {
   try { return convertQuantity(value, fromUnit, toUnit); }
