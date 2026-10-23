@@ -14,13 +14,13 @@ import {
   DeleteCatalogItemParams,
   ListCatalogCategoriesResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireCatalogReadAccess, evaluateAccountApproval, normalizeRole, writeAuditLog } from "../lib/auth";
 import { requireTenantContext } from "../lib/tenantContext";
 import { hasSellableProductSchema, loadSellableProducts } from "../lib/catalogueSellable";
 import { publicCatalogEligibility } from "../lib/catalogEligibility";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+router.use(requireAuth, loadDbUser, requireDbUser, requireCatalogReadAccess, requireTenantContext);
 
 function rows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
@@ -361,7 +361,8 @@ router.get("/catalog", async (req, res): Promise<void> => {
   // storefront/end-customer views only. This prevents catalog edits from accidentally
   // overwriting live routing config with suppressed null/false defaults.
   const actorRole = normalizeRole(actor.role);
-  const isAdminActor = actorRole === "global_admin" || actorRole === "admin";
+  const isAdminActor = (actorRole === "global_admin" || actorRole === "admin")
+    && evaluateAccountApproval(req, actor).allowed;
   const alavontOnly = !isLuciferMode && !isAdminActor;
 
   const tenantId = req.authorizedTenantId!;
@@ -657,7 +658,8 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
   const mode = req.query.mode === "lucifer" ? "lucifer" : "alavont";
   const tenantId = req.authorizedTenantId!;
   const role = normalizeRole(req.dbUser?.role);
-  const isAdminActor = role === "global_admin" || role === "admin";
+  const isAdminActor = (role === "global_admin" || role === "admin")
+    && evaluateAccountApproval(req, req.dbUser).allowed;
   const rows = await db
     .select({
       alavontCategory: catalogItemsTable.alavontCategory,
@@ -746,7 +748,8 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
   }
   const tenantId = req.authorizedTenantId!;
   const actorRole = normalizeRole(req.dbUser?.role);
-  const alavontOnly = actorRole !== "global_admin" && actorRole !== "admin";
+  const alavontOnly = !((actorRole === "global_admin" || actorRole === "admin")
+    && evaluateAccountApproval(req, req.dbUser).allowed);
   const [row] = await db.select().from(catalogItemsTable).where(and(
     eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, params.data.id),
     alavontOnly ? publicCatalogEligibility() : undefined,

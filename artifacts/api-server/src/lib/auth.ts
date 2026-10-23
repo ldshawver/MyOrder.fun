@@ -28,6 +28,10 @@ export type AccountApprovalDecision =
   | { allowed: true; reason: "configured_owner_provenance_exception" | "valid_provenance" }
   | { allowed: false; reason: "missing_db_user" | "inactive" | "rejected" | "pending" | "missing_provenance" };
 
+export type CatalogReadAccessDecision =
+  | { allowed: true; reason: "approved_account" | "verified_legacy_tenant_member" }
+  | { allowed: false; reason: Extract<AccountApprovalDecision, { allowed: false }>["reason"] | "missing_tenant_membership" | "unverified_identity" };
+
 /** Shared approval policy. The owner exception satisfies provenance only; it
  * does not bypass account status, activity, tenant, role, or object checks. */
 export function evaluateAccountApproval(req: Request, user: {
@@ -47,6 +51,41 @@ export function evaluateAccountApproval(req: Request, user: {
     return { allowed: false, reason: "missing_provenance" };
   }
   return { allowed: true, reason: "valid_provenance" };
+}
+
+/**
+ * Read-only catalogue access has a deliberately narrower compatibility path
+ * than the application-wide approval gate. Historical approved customer rows
+ * predate approval provenance, but remain server-side tenant memberships.
+ * They may read only their own tenant's customer-safe catalogue after their
+ * Clerk identity has been verified and provisioning completed. Privileged and
+ * mutating routes continue to use requireApproved/requireRole.
+ */
+export function evaluateCatalogReadAccess(req: Request, user: {
+  clerkId?: string | null;
+  tenantId?: number | null;
+  role?: string | null;
+  status?: string | null;
+  isActive?: boolean | null;
+  identityStatus?: string | null;
+  provisioningStatus?: string | null;
+  approvedByClerkId?: string | null;
+  approvedAt?: Date | string | null;
+} | null | undefined): CatalogReadAccessDecision {
+  const approval = evaluateAccountApproval(req, user);
+  if (approval.allowed) return { allowed: true, reason: "approved_account" };
+  if (approval.reason !== "missing_provenance") return approval;
+  // Never let the compatibility path turn a privileged database role into a
+  // cross-tenant reader. Staff and administrators retain the full provenance
+  // gate, including for catalogue reads.
+  if (normalizeRole(user?.role) !== "user") return approval;
+  if (!Number.isSafeInteger(user?.tenantId) || Number(user?.tenantId) <= 0) {
+    return { allowed: false, reason: "missing_tenant_membership" };
+  }
+  if (user?.identityStatus !== "verified" || user.provisioningStatus !== "active") {
+    return { allowed: false, reason: "unverified_identity" };
+  }
+  return { allowed: true, reason: "verified_legacy_tenant_member" };
 }
 
 let usersSchemaVerified = false;
@@ -254,6 +293,23 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
     return;
   }
   res.status(403).json({ error: "Account approval provenance required", code: "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED", status: user?.status });
+}
+
+export function requireCatalogReadAccess(req: Request, res: Response, next: NextFunction): void {
+  const decision = evaluateCatalogReadAccess(req, req.dbUser);
+  if (decision.allowed) {
+    next();
+    return;
+  }
+  if (decision.reason === "missing_tenant_membership") {
+    res.status(403).json({ error: "Tenant assignment required", code: "TENANT_ASSIGNMENT_REQUIRED" });
+    return;
+  }
+  if (decision.reason === "unverified_identity") {
+    res.status(403).json({ error: "Verified account provisioning required", code: "ACCOUNT_IDENTITY_REQUIRED" });
+    return;
+  }
+  requireApproved(req, res, next);
 }
 
 export function requireAccountOwner(req: Request, res: Response, next: NextFunction): void {
