@@ -365,6 +365,13 @@
       "when": 1792440000000,
       "tag": "0077_catalogue_inventory_reconciliation",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1792785600000,
+      "tag": "0078_inventory_history_baseline_repair",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,7 @@ import supertest from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@workspace/db";
 import { postInventoryMovement } from "../../lib/inventoryMovementLedger";
+import { applyInventoryHistoryBaselineRepair, previewInventoryHistoryBaselineRepair } from "../../lib/inventoryHistoryBaselineRepair";
 
 const enabled = process.env.RUN_CATALOGUE_INVENTORY_RECONCILIATION_INTEGRATION === "1";
 const authHeader = "x-reconciliation-user";
@@ -16,8 +17,9 @@ import reconciliationRouter from "../catalogue-inventory-reconciliation";
 
 const { Client } = pg;
 const suffix = randomUUID().replaceAll("-", "").slice(0, 14);
-const users = { admin: `reconcile_admin_${suffix}`, other: `reconcile_other_${suffix}` };
+const users = { admin: `reconcile_admin_${suffix}`, other: `reconcile_other_${suffix}`, foreign: `reconcile_foreign_${suffix}` };
 let client: pg.Client; let tenantId: number; let locationId: number;
+let foreignTenantId: number;
 let product: { productId: number; optionId: number; catalogItemId: number; inventoryItemId: number };
 let second: typeof product;
 const app = express(); app.use(express.json()); app.use("/api", productRouter, reconciliationRouter);
@@ -51,9 +53,12 @@ async function snapshot() {
     const migration = await client.query("SELECT to_regclass('catalogue_inventory_reconciliation_events') AS event_table");
     expect(migration.rows[0].event_table).toBe("catalogue_inventory_reconciliation_events");
     const tenant = await client.query("INSERT INTO tenants(name,slug,status) VALUES($1,$2,'active') RETURNING id", [`Reconciliation ${suffix}`, `reconciliation-${suffix}`]); tenantId = tenant.rows[0].id;
+    const foreignTenant = await client.query("INSERT INTO tenants(name,slug,status) VALUES($1,$2,'active') RETURNING id", [`Foreign ${suffix}`, `foreign-${suffix}`]); foreignTenantId = foreignTenant.rows[0].id;
     await client.query(`INSERT INTO users(clerk_id,email,normalized_email,role,tenant_id,status,is_active,identity_status,provisioning_status)
       VALUES($1,$2,$2,'admin',$3,'approved',true,'verified','active'),($4,$5,$5,'user',$3,'approved',true,'verified','active')`,
     [users.admin, `${users.admin}@example.test`, tenantId, users.other, `${users.other}@example.test`]);
+    await client.query(`INSERT INTO users(clerk_id,email,normalized_email,role,tenant_id,status,is_active,identity_status,provisioning_status)
+      VALUES($1,$2,$2,'admin',$3,'approved',true,'verified','active')`, [users.foreign, `${users.foreign}@example.test`, foreignTenantId]);
     const loc = await client.query("INSERT INTO inventory_locations(tenant_id,type,name,is_active) VALUES($1,'backstock',$2,true) RETURNING id", [tenantId, `Reconcile ${suffix}`]); locationId = loc.rows[0].id;
     const create = await requestAs("admin").post("/api/admin/catalogue/products").send({ name: `Variant Stock ${suffix}`, category: "Test", price: "10.00", inventoryModel: "SEPARATE_VARIANTS", baseUnit: "each", consumptionQuantity: "1.000000" });
     expect(create.status, create.text).toBe(201); product = create.body;
@@ -235,6 +240,56 @@ async function snapshot() {
     ]);
     const compensation = await client.query("SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND source_type='catalogue_inventory_reconciliation_rollback' AND source_id=$2", [tenantId, rollback.body.rollbackId]);
     expect(compensation.rows[0].count).toBe(2);
+  });
+
+  it("previews and appends a tenant-scoped history baseline without changing physical balances", async () => {
+    const local = await requestAs("admin").post("/api/admin/catalogue/products").send({ name: `Baseline ${suffix}`, category: "Test", price: "10.00", inventoryModel: "SEPARATE_VARIANTS", baseUnit: "each", consumptionQuantity: "1.000000" });
+    expect(local.status, local.text).toBe(201);
+    const foreignLocation = await client.query("INSERT INTO inventory_locations(tenant_id,type,name,is_active) VALUES($1,'backstock',$2,true) RETURNING id", [foreignTenantId, `Foreign ${suffix}`]);
+    process.env.MYORDER_OWNER_CLERK_ID = users.foreign;
+    const foreign = await requestAs("foreign").post("/api/admin/catalogue/products").send({ name: `Foreign baseline ${suffix}`, category: "Test", price: "10.00", inventoryModel: "SEPARATE_VARIANTS", baseUnit: "each", consumptionQuantity: "1.000000" });
+    process.env.MYORDER_OWNER_CLERK_ID = users.admin;
+    expect(foreign.status, foreign.text).toBe(201);
+    await client.query(`INSERT INTO inventory_balances(tenant_id,product_id,location_id,quantity_on_hand,par_level)
+      VALUES($1,$2,$3,2,0),($4,$5,$6,9,0)`, [tenantId, local.body.catalogItemId, locationId, foreignTenantId, foreign.body.catalogItemId, foreignLocation.rows[0].id]);
+    const evidence = [{ inventoryItemId: local.body.inventoryItemId, locationId, verifiedPhysicalQuantity: "2.000000", documentedUnitCost: "3.25",
+      physicalCountNote: "Count sheet witnessed by two staff", costBasisNote: "Supplier invoice reviewed" }];
+    const before = await client.query("SELECT quantity_on_hand::text AS quantity FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2 AND location_id=$3", [tenantId,local.body.catalogItemId,locationId]);
+    const adminId = Number((await client.query("SELECT id FROM users WHERE clerk_id=$1", [users.admin])).rows[0].id);
+    const openOrder = await client.query(`INSERT INTO orders(tenant_id,customer_id,subtotal,total,status,payment_status,payment_method)
+      VALUES($1,$2,1,1,'pending','unpaid','cash') RETURNING id`, [tenantId,adminId]);
+    await client.query(`INSERT INTO inventory_reservations(order_id,catalog_item_id,location_id,quantity,status,expires_at)
+      VALUES($1,$2,$3,1,'reserved',now()+interval '10 minutes')`, [openOrder.rows[0].id,local.body.catalogItemId,locationId]);
+    const blocked = await previewInventoryHistoryBaselineRepair(tenantId, local.body.productId, evidence);
+    expect(blocked.blockers.join(" ")).toMatch(/Active reservations/);
+    await client.query("DELETE FROM inventory_reservations WHERE order_id=$1", [openOrder.rows[0].id]);
+    await client.query("DELETE FROM orders WHERE id=$1", [openOrder.rows[0].id]);
+    const preview = await previewInventoryHistoryBaselineRepair(tenantId, local.body.productId, evidence);
+    expect(preview.blockers).toEqual([]); expect(preview.corrections[0]).toMatchObject({ bridgeQuantityDelta: "2.000000", ledgerQuantity: "0" });
+    expect((await client.query("SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantId,local.body.catalogItemId])).rows[0].count).toBe(0);
+    const foreignAdminId = Number((await client.query("SELECT id FROM users WHERE clerk_id=$1", [users.foreign])).rows[0].id);
+    await expect(applyInventoryHistoryBaselineRepair({ tenantId, productId: local.body.productId, evidence, previewFingerprint: preview.fingerprint,
+      idempotencyKey: randomUUID(), reason: "Attempt a cross-tenant baseline repair", actor: { id: foreignAdminId, role: "admin" } }))
+      .rejects.toMatchObject({ status: 403 });
+    expect((await client.query("SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantId,local.body.catalogItemId])).rows[0].count).toBe(0);
+    const idempotencyKey = randomUUID();
+    const applied = await applyInventoryHistoryBaselineRepair({ tenantId, productId: local.body.productId, evidence, previewFingerprint: preview.fingerprint,
+      idempotencyKey, reason: "Establish reviewed opening history baseline", actor: { id: adminId, role: "admin" } });
+    expect(applied.idempotent).toBe(false); expect(applied.movementIds).toHaveLength(1);
+    const repeated = await applyInventoryHistoryBaselineRepair({ tenantId, productId: local.body.productId, evidence, previewFingerprint: preview.fingerprint,
+      idempotencyKey, reason: "Establish reviewed opening history baseline", actor: { id: adminId, role: "admin" } });
+    expect(repeated).toMatchObject({ repairId: applied.repairId, idempotent: true });
+    const after = await client.query("SELECT quantity_on_hand::text AS quantity FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2 AND location_id=$3", [tenantId,local.body.catalogItemId,locationId]);
+    expect(after.rows).toEqual(before.rows);
+    const ledger = await client.query("SELECT SUM(quantity_delta)::text AS quantity,MIN(source_type) AS source_type FROM inventory_movements WHERE tenant_id=$1 AND catalog_item_id=$2 AND location_id=$3", [tenantId,local.body.catalogItemId,locationId]);
+    expect(ledger.rows[0]).toEqual({ quantity: "2.000000000000", source_type: "verified_physical_count_history_bridge" });
+    const valuation = await client.query("SELECT cost_status,known_quantity::text,average_unit_cost::text,inventory_value::text FROM inventory_valuation_states WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantId,local.body.catalogItemId]);
+    expect(valuation.rows[0]).toEqual({ cost_status: "known", known_quantity: "2.000000000000", average_unit_cost: "3.250000000000", inventory_value: "6.500000000000" });
+    await expect(client.query("UPDATE inventory_history_baseline_repair_events SET reason='tampered' WHERE id=$1", [applied.repairId]))
+      .rejects.toMatchObject({ code: "P0001" });
+    const crossed = await previewInventoryHistoryBaselineRepair(tenantId, local.body.productId, [{ ...evidence[0], inventoryItemId: foreign.body.inventoryItemId, locationId: Number(foreignLocation.rows[0].id) }]);
+    expect(crossed.blockers.join(" ")).toMatch(/not an active balance for this product and tenant/);
+    expect((await client.query("SELECT quantity_on_hand::text AS quantity FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2", [foreignTenantId,foreign.body.catalogItemId])).rows[0].quantity).toBe("9.000000");
   });
 
 });
