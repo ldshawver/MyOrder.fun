@@ -9,6 +9,7 @@ vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
   loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => { req.dbUser = { id: 1, role: "customer", tenantId: state.tenantId }; next(); },
   requireDbUser: (_req: unknown, _res: unknown, next: () => void) => next(),
+  requireCatalogReadAccess: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireApproved: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireRole: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));

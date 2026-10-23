@@ -86,6 +86,7 @@ vi.mock("../lib/auth", () => {
     requireAuth: noop,
     loadDbUser: noop,
     requireDbUser: noop,
+    requireCatalogReadAccess: noop,
     requireApproved: noop,
     requireAccountOwner: noop,
     requireRecentOwnerAuth: noop,

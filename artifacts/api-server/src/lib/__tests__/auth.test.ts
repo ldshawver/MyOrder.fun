@@ -21,7 +21,7 @@ vi.mock("../logger", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
 
-import { isConfiguredAccountOwner, normalizeRole, requireApproved, requireDbUser, requireRole } from "../auth";
+import { isConfiguredAccountOwner, normalizeRole, requireApproved, requireCatalogReadAccess, requireDbUser, requireRole } from "../auth";
 
 function makeRes() {
   const res = {
@@ -49,9 +49,79 @@ function makeUser(overrides: Record<string, unknown> = {}) {
     approvedByClerkId: "configured_owner",
     approvedAt: new Date(),
     isActive: true,
+    identityStatus: "verified",
+    provisioningStatus: "active",
+    tenantId: 1,
     ...overrides,
   };
 }
+
+describe("requireCatalogReadAccess middleware", () => {
+  let next: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    next = vi.fn();
+    process.env.MYORDER_OWNER_CLERK_ID = "configured_owner";
+    vi.mocked(getAuth).mockReturnValue({ userId: "affected_subject", sessionClaims: {} } as never);
+  });
+
+  it("reproduces and fixes the affected verified legacy tenant member", () => {
+    const req = { dbUser: makeUser({
+      clerkId: "affected_subject",
+      approvedByClerkId: null,
+      approvedAt: null,
+    }), query: {}, body: {} } as unknown as Request;
+    const res = makeRes();
+
+    requireApproved(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).code).toBe("ACCOUNT_APPROVAL_PROVENANCE_REQUIRED");
+
+    const catalogNext = vi.fn();
+    const catalogRes = makeRes();
+    requireCatalogReadAccess(req, catalogRes, (() => requireTenantContext(req, catalogRes, catalogNext as NextFunction)) as NextFunction);
+    expect(catalogNext).toHaveBeenCalledOnce();
+    expect(req.authorizedTenantId).toBe(1);
+  });
+
+  it("keeps the configured owner comparison account working", () => {
+    vi.mocked(getAuth).mockReturnValue({ userId: "configured_owner", sessionClaims: { org_id: "mapped_org" } } as never);
+    const req = { dbUser: makeUser({ clerkId: "configured_owner", approvedByClerkId: null, approvedAt: null }), query: {}, body: {} } as unknown as Request;
+    const res = makeRes();
+
+    requireCatalogReadAccess(req, res, (() => requireTenantContext(req, res, next as NextFunction)) as NextFunction);
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.authorizedTenantId).toBe(1);
+  });
+
+  it("never derives tenant authority from the active Clerk organization or a client tenantId", () => {
+    vi.mocked(getAuth).mockReturnValue({ userId: "affected_subject", sessionClaims: { org_id: "other_org" } } as never);
+    const req = { dbUser: makeUser({ clerkId: "affected_subject", approvedByClerkId: null, approvedAt: null }), query: { tenantId: "2" }, body: {} } as unknown as Request;
+    const res = makeRes();
+
+    requireCatalogReadAccess(req, res, (() => requireTenantContext(req, res, next as NextFunction)) as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).error).toMatch(/tenant assignment does not match/i);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "pending" },
+    { status: "rejected" },
+    { isActive: false },
+    { tenantId: null },
+    { identityStatus: "verification_pending" },
+    { provisioningStatus: "pending" },
+    { role: "admin" },
+    { role: "global_admin" },
+  ])("denies an ineligible legacy catalogue account: %o", override => {
+    const req = { dbUser: makeUser({ approvedByClerkId: null, approvedAt: null, ...override }) } as unknown as Request;
+    const res = makeRes();
+    requireCatalogReadAccess(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+});
 
 describe("requireApproved middleware", () => {
   let next: ReturnType<typeof vi.fn>;

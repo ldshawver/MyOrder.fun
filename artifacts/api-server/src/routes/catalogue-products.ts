@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireCatalogReadAccess, requireRole } from "../lib/auth";
 import { requireTenantContext } from "../lib/tenantContext";
 import { quantityText, quantityUnits } from "../lib/exactQuantity";
 import { recommendReplenishment, type LocationPolicyInput } from "../lib/cataloguePolicy";
@@ -11,7 +11,7 @@ import { loadSellableProducts } from "../lib/catalogueSellable";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+router.use(requireAuth, loadDbUser, requireDbUser, requireCatalogReadAccess, requireTenantContext);
 const admin = requireRole("global_admin", "admin", "supervisor");
 const id = z.coerce.number().int().positive();
 const physical = z.string().refine(value => {
