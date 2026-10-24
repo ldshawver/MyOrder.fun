@@ -727,8 +727,8 @@ test("candidate builder is frozen to the exact proposed source and unique immuta
     "utf8",
   );
   const proposed = {
-    sha: "8cac50ca931afbb1c0101688da823994d6a0cf25",
-    tree: "5f9cf61815ba0f1913cb1e1d71ebeed057837e27",
+    sha: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
+    tree: "e34c23fbe19f1a1813d24298454f0a8abbd1c3ab",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${proposed.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${proposed.tree}`));
