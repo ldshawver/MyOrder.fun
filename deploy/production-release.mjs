@@ -18,6 +18,7 @@ import {
   realpathSync,
 } from "node:fs";
 import path from "node:path";
+import { request as httpRequest } from "node:http";
 import { fileURLToPath } from "node:url";
 
 export const FROZEN_RELEASE = Object.freeze({
@@ -502,6 +503,50 @@ export function assertPlatformSmokeDocument(response, body, label) {
       !body.includes('id="root"'))
     throw new Error(`Production ${label} page smoke test failed`);
   return response.status;
+}
+
+export function requestLoopbackJsonWithHost(
+  url,
+  host,
+  timeoutMs = 10_000,
+  requestImpl = httpRequest,
+) {
+  const target = new URL(url);
+  if (target.protocol !== "http:" || target.hostname !== "127.0.0.1")
+    throw new Error("Production smoke request must use the IPv4 loopback interface");
+  if (host !== "myorder.fun")
+    throw new Error("Production smoke request host must be myorder.fun");
+
+  return new Promise((resolve, reject) => {
+    const request = requestImpl(
+      target,
+      { headers: { host } },
+      (response) => {
+        let rawBody = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          rawBody += chunk;
+          if (rawBody.length > 1_000_000)
+            request.destroy(new Error("Production smoke response exceeded the size limit"));
+        });
+        response.on("end", () => {
+          const status = response.statusCode ?? 0;
+          let body = {};
+          try {
+            body = JSON.parse(rawBody);
+          } catch {
+            // The caller's existing response-contract guard will reject this.
+          }
+          resolve({ ok: status >= 200 && status < 300, status, body });
+        });
+      },
+    );
+    request.setTimeout(timeoutMs, () =>
+      request.destroy(new Error("Production smoke request timed out")),
+    );
+    request.on("error", reject);
+    request.end();
+  });
 }
 
 function run(command, args, options = {}) {
@@ -1786,14 +1831,15 @@ async function main() {
       const home = await fetch("http://127.0.0.1:8081/");
       if (!home.ok)
         throw new Error("Production platform homepage smoke test failed");
-      const publicCatalog = await fetch("http://127.0.0.1:8081/api/public/catalog", {
-        headers: { host: "myorder.fun" },
-      });
+      const publicCatalog = await requestLoopbackJsonWithHost(
+        "http://127.0.0.1:8081/api/public/catalog",
+        "myorder.fun",
+      );
       if (!publicCatalog.ok)
         throw new Error(
           "Production MyOrder public catalogue smoke test failed",
         );
-      const publicCatalogBody = await publicCatalog.json().catch(() => ({}));
+      const publicCatalogBody = publicCatalog.body;
       const activeTenants = Number(query(compose, "SELECT count(*) FROM tenants WHERE status='active'"));
       if (activeTenants !== 1)
         throw new Error("Production public catalog tenant mapping is ambiguous");
