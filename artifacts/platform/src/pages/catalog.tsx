@@ -280,7 +280,7 @@ function CatalogItemCard({
               onChange={event => setSelectedOptionId(event.target.value ? Number(event.target.value) : null)}
               aria-label={`${product.name} option`}>
               <option value="">Select an option</option>
-              {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
+              {product.options.map(option => <option key={option.id} value={option.id} disabled={!option.orderable}>{option.label} · ${Number(option.price).toFixed(2)}{option.orderable ? "" : " — unavailable"}</option>)}
             </select>
           </label>
         )}
@@ -303,10 +303,17 @@ function CatalogItemCard({
         </div>
 
         {selectedOption?.sku && <div className="text-[10px] text-muted-foreground">SKU: {selectedOption.sku}</div>}
+        {selectedOption && <div className={`text-[10px] font-mono ${selectedOption.orderable ? "text-muted-foreground" : "text-red-500"}`}>
+          {selectedOption.inventoryStatus !== "ready"
+            ? "Inventory setup incomplete"
+            : selectedOption.orderable
+              ? `${selectedOption.availableQuantity} available after reservations`
+              : "Out of stock"}
+        </div>}
         <div className="grid grid-cols-2 gap-2 mt-1">
           <button
             type="button"
-            disabled={!selectedOption || optionsLoading}
+            disabled={!selectedOption || !selectedOption.orderable || optionsLoading}
             onClick={() => {
               if (!product || !selectedOption) return;
               addItem(optionCartEntry(product, selectedOption, item.imageUrl ?? null));

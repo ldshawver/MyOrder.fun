@@ -50,7 +50,10 @@ it("keeps variants, location inventory, and Global Admin compliance controls tog
     const path = String(input);
     if (path === "/api/admin/catalogue/products") return new Response(JSON.stringify({ products: [{
       id: 7, name: "Test Shirt", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION",
-      options: [{ id: 9, catalogItemId: 70, label: "Black / Small", optionValues: { Color: "Black", Size: "Small" }, sku: "TS-BS", price: "12.00", compareAtPrice: null, active: true, isAvailable: true, inventoryItemId: 90, baseUnit: "each", consumptionQuantity: "1", complianceHold: held, complianceReason: held ? "Review required" : null }],
+      options: [
+        { id: 9, catalogItemId: 70, label: "Black / Small", optionValues: { Color: "Black", Size: "Small" }, sku: "TS-BS", price: "12.00", compareAtPrice: null, active: true, isAvailable: true, inventoryItemId: 90, baseUnit: "each", consumptionQuantity: "1", complianceHold: held, complianceReason: held ? "Review required" : null, inventoryStatus: "ready", balanceRowCount: 1, stockOnHand: "4", reservedQuantity: "1", availableQuantity: "3", orderable: true },
+        { id: 10, catalogItemId: 71, label: "Black / Large", optionValues: { Color: "Black", Size: "Large" }, sku: "TS-BL", price: "14.00", compareAtPrice: null, active: true, isAvailable: true, inventoryItemId: 91, baseUnit: "each", consumptionQuantity: "1", complianceHold: false, complianceReason: null, inventoryStatus: "missing_balance", balanceRowCount: 0, stockOnHand: null, reservedQuantity: null, availableQuantity: null, orderable: false },
+      ],
     }] }), { status: 200, headers: { "Content-Type": "application/json" } });
     if (path === "/api/admin/catalogue/recommendations") return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
     if (path === "/api/admin/catalogue/inventory/90/locations") return new Response(JSON.stringify({ locations: [{ locationId: 2, name: "Main", quantityOnHand: "4", par: "0", reorderPoint: "0", preferredReorderQuantity: "0", moq: "0" }] }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -71,6 +74,8 @@ it("keeps variants, location inventory, and Global Admin compliance controls tog
   expect([...host!.querySelectorAll("input")].some(input => input.value === "Color=Black; Size=Small")).toBe(true);
   expect(host?.textContent).toContain("Inventory item #90 by location");
   expect(host?.textContent).toContain("Main");
+  expect(host?.textContent).toContain("On hand 4; reserved 1; available 3");
+  expect(host?.textContent).toContain("No active sellable balance — ordering blocked");
   const reason = host!.querySelector('input[aria-label="Compliance action reason"]') as HTMLInputElement;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(reason, "Review required");

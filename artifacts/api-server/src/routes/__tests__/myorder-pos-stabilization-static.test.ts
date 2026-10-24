@@ -123,6 +123,9 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("insert(ordersTable)");
     expect(orders).toContain("insert(orderItemsTable)");
     expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,");
+    expect(orders).toContain("const shouldReserveInventory = true;");
+    expect(orders).not.toContain('routing.routeSource === "active_csr" && targetLocationId != null');
+    expect(orders).toContain("inspectCheckoutInventoryAvailability(tx, houseTenantId, inventoryCatalogItemId)");
     expect(orders).toContain("inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,");
     expect(orders).toContain("confirmInventoryReservationsForOrder(tx, houseTenantId, createdOrder.id,");
     expect(api("lib/inventoryReservations.ts")).toContain("FOR UPDATE OF ib");
@@ -145,7 +148,7 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("remainingStock: used.remainingStock");
     expect(orders).not.toContain("GREATEST(${inventoryBalancesTable.quantityOnHand} -");
     expect(orders).toContain("InsufficientInventoryError");
-    expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id");
+    expect(orders).toContain("throw new InsufficientInventoryError(");
     expect(orders).toContain('error: "Insufficient inventory"');
     expect(orders).toContain("await tx.execute(sql`");
     expect(orders).toContain("UPDATE catalog_items");

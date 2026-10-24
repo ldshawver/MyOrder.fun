@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { parseVariantAxes, generateVariantCombinations } from "@/lib/variantCombinations";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 
-type Option = { id: number; catalogItemId: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; price: string; compareAtPrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number; baseUnit: string; consumptionQuantity: string; complianceHold: boolean; complianceReason: string | null };
+type Option = { id: number; catalogItemId: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; price: string; compareAtPrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number | null; baseUnit: string | null; consumptionQuantity: string; complianceHold: boolean; complianceReason: string | null; inventoryStatus: "ready" | "missing_identity" | "missing_balance"; balanceRowCount: number; stockOnHand: string | null; reservedQuantity: string | null; availableQuantity: string | null; orderable: boolean };
 type Product = { id: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; options: Option[] };
 type Location = { locationId: number; name: string; quantityOnHand: string; par: string; reorderPoint: string; preferredReorderQuantity: string; moq: string };
 type Recommendation = { inventoryItemId: number; productName: string; baseUnit: string; recommendations: Array<{ locationId: number; locationName: string; internalTransfers: Array<{ fromLocationId: number; quantity: string }>; externalPurchaseQuantity: string }> };
@@ -51,13 +51,20 @@ function OptionEditor({ option, save, selectItem }: { option: Option; save: (val
     <label>Barcode<Input value={value.barcode} onChange={event => setValue({ ...value, barcode: event.target.value })} /></label>
     <label>Price<Input value={value.price} onChange={event => setValue({ ...value, price: event.target.value })} /></label>
     <label>Compare-at price<Input value={value.compareAtPrice} onChange={event => setValue({ ...value, compareAtPrice: event.target.value })} /></label>
-    <label>Consumption ({option.baseUnit})<Input value={value.consumptionQuantity} onChange={event => setValue({ ...value, consumptionQuantity: event.target.value })} /></label>
+    <label>Consumption ({option.baseUnit ?? "unit not configured"})<Input value={value.consumptionQuantity} onChange={event => setValue({ ...value, consumptionQuantity: event.target.value })} /></label>
     <label className="flex items-center gap-2"><input type="checkbox" checked={value.isAvailable} onChange={event => setValue({ ...value, isAvailable: event.target.checked })} /> Sellable</label>
     <div className="flex flex-col gap-1 justify-end"><Button size="sm" onClick={() => save({ ...value, compareAtPrice: value.compareAtPrice || null, optionValues: parseOptionValues(value.optionValuesText), active: option.active })}>Save option</Button>
       <Button size="sm" variant="outline" onClick={() => save({ active: !option.active })}>
         {option.active ? "Remove variant (keep history)" : "Enable variant"}
       </Button>
-      <button type="button" className="underline" onClick={() => selectItem(option.inventoryItemId)}>Inventory item #{option.inventoryItemId}</button></div>
+      {option.inventoryItemId == null
+        ? <span className="text-destructive">Missing inventory identity — ordering blocked</span>
+        : <button type="button" className="underline" onClick={() => selectItem(option.inventoryItemId!)}>Inventory item #{option.inventoryItemId}</button>}
+      <span className={option.inventoryStatus === "ready" ? "text-muted-foreground" : "text-destructive"}>
+        {option.inventoryStatus === "missing_balance" ? "No active sellable balance — ordering blocked"
+          : option.inventoryStatus === "missing_identity" ? "Inventory setup incomplete"
+            : `On hand ${option.stockOnHand}; reserved ${option.reservedQuantity}; available ${option.availableQuantity}`}
+      </span></div>
   </div>;
 }
 
@@ -249,7 +256,7 @@ export default function AdminCatalogueProducts() {
               <label>Shared inventory item<select className="block w-full rounded border bg-background p-2" value={createSharedItem ? "create" : reconcileTarget} onChange={event => {
                 setCreateSharedItem(event.target.value === "create"); if (event.target.value !== "create") setReconcileTarget(event.target.value); setPreview(null);
               }}>
-                {Array.from(new Set(selected.options.filter(o => o.active).map(o => o.inventoryItemId))).map(itemId => <option key={itemId} value={itemId}>Use inventory item #{itemId}</option>)}
+                {Array.from(new Set(selected.options.filter(o => o.active && o.inventoryItemId != null).map(o => o.inventoryItemId as number))).map(itemId => <option key={itemId} value={itemId}>Use inventory item #{itemId}</option>)}
                 <option value="create">Create a new shared item</option>
               </select></label>
               {createSharedItem && <><label>New shared item name<Input value={sharedItemName} onChange={event => { setSharedItemName(event.target.value); setPreview(null); }} /></label>
@@ -299,6 +306,7 @@ export default function AdminCatalogueProducts() {
           {!isGlobalAdmin && selected.options.some(option => option.complianceHold) && <p className="text-xs text-muted-foreground">Only a Global Admin can change compliance hold status.</p>}
         </section>
         <section className="rounded-xl border p-4 space-y-3"><h2 className="font-semibold">Options / variants</h2>
+          {selected.options.length === 0 && <p className="text-sm text-destructive">No variants or inventory identity are configured. Ordering is blocked until setup is repaired.</p>}
           {selected.options.map(option => <OptionEditor key={option.id} option={option} selectItem={setSelectedItemId}
             save={value => void perform(async () => {
               const patch = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "optionValuesText"));

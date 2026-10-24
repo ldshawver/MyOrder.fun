@@ -21,7 +21,7 @@ import Catalog from "../catalog";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-type Option = { id: number; catalogItemId: number; label: string; price: string; sku: string | null; optionValues?: Record<string, string> };
+type Option = { id: number; catalogItemId: number; label: string; price: string; sku: string | null; optionValues?: Record<string, string>; inventoryStatus?: "ready" | "missing_identity" | "missing_balance"; balanceRowCount?: number; stockOnHand?: string | null; reservedQuantity?: string | null; availableQuantity?: string | null; orderable?: boolean };
 const shirtOptions: Option[] = [
   { id: 179, catalogItemId: 182, label: "Small", price: "20.00", sku: "TS-S" },
   { id: 180, catalogItemId: 183, label: "Medium", price: "22.00", sku: "TS-M" },
@@ -40,8 +40,9 @@ afterEach(async () => {
 });
 
 async function renderCustomerCatalogue(options: Option[]) {
-  const product = { id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", active: true, options };
-  const items = options.map(option => ({
+  const normalizedOptions = options.map(option => ({ inventoryStatus: "ready" as const, balanceRowCount: 1, stockOnHand: "3.000000", reservedQuantity: "0.000000", availableQuantity: "3.000000", orderable: true, ...option }));
+  const product = { id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", active: true, options: normalizedOptions };
+  const items = normalizedOptions.map(option => ({
     id: option.catalogItemId, name: `T-Shirt ${option.label}`, alavontName: `T-Shirt ${option.label}`,
     category: "Apparel", price: Number(option.price), isAvailable: true, isTaxable: true,
     imageUrl: null, stockQuantity: 3, sellableProduct: product,
@@ -99,6 +100,13 @@ describe("actual customer catalogue card", () => {
     expect(labels).toContain("Small · $20.00");
     expect(labels).toContain("Medium · $22.00");
     expect(labels).not.toContain("Large · $24.00");
+  });
+
+  it("shows missing inventory setup and blocks the affected option", async () => {
+    const page = await renderCustomerCatalogue([{ id: 179, catalogItemId: 182, label: "Standard", price: "20.00", sku: null,
+      inventoryStatus: "missing_balance", balanceRowCount: 0, stockOnHand: null, reservedQuantity: null, availableQuantity: null, orderable: false }]);
+    expect(page.textContent).toContain("Inventory setup incomplete");
+    expect((page.querySelector('[data-testid="link-buy-now-182"]') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("requires Color and Size and adds the matching stable variant identity to cart", async () => {

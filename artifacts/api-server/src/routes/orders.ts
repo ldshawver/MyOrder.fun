@@ -62,10 +62,10 @@ import { type InventoryOrderType } from "../lib/inventoryBalances";
 import {
   confirmInventoryReservationsForOrder,
   ensureInventoryReservationsTable,
+  inspectCheckoutInventoryAvailability,
   releaseInventoryReservationsForOrder,
   reserveCheckoutInventoryByOrderType,
 } from "../lib/inventoryReservations";
-import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
 import { consumeCustomerCredit, getCustomerCreditBalance, releaseCustomerCredit, reserveCustomerCredit, CustomerCreditError } from "../payments/customerCredit";
@@ -120,8 +120,8 @@ class InsufficientInventoryError extends Error {
     public readonly hasInventoryRows: boolean = false,
   ) {
     super(hasInventoryRows
-      ? `Insufficient inventory in ${locationName ?? "assigned CSR location"}. Available: ${available}. Backstock: ${backstock}. Storefront: ${storefront}.`
-      : `No inventory rows exist for catalog item ${catalogItemId}`);
+      ? `Insufficient tracked inventory. Available across eligible locations: ${available}.`
+      : `Inventory setup is incomplete: no active sellable balance exists for catalog item ${catalogItemId}`);
     this.name = "InsufficientInventoryError";
   }
 }
@@ -1067,32 +1067,16 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
   await ensureInventoryReservationsTable();
 
-  const shouldReserveInventory =
-    routing.routeSource === "active_csr" && targetLocationId != null;
+  // Every checkout path consumes the same authoritative tracked inventory.
+  // Routing selects fulfillment priority; it must never decide whether stock
+  // is reserved, because general-queue and online orders can oversell too.
+  const shouldReserveInventory = true;
 
   // Reservations represent availability holds.  They may only become an
   // authoritative sale after the payment/tender transaction has settled.
   // In particular, do not confirm cash reservations while the order row is
   // still unpaid: cash is settled by the closeout endpoint below.
   const shouldConfirmReservationImmediately = false;
-
-  if (POS_INTEGRITY_STRICT && shouldReserveInventory) {
-    const missingRows = await db
-      .select({ catalogItemId: catalogItemsTable.id })
-      .from(catalogItemsTable)
-      .where(and(
-        eq(catalogItemsTable.tenantId, houseTenantId),
-        inArray(catalogItemsTable.id, normalizedCatalogIds),
-      ));
-
-    if (missingRows.length !== normalizedCatalogIds.length) {
-      res.status(409).json({
-        error: "Inventory integrity check failed",
-        missingInventoryByCatalogId: missingRows.map(row => ({ catalogItemId: row.catalogItemId, locationId: null })),
-      });
-      return;
-    }
-  }
 
   let order: typeof ordersTable.$inferSelect;
   let replayed = false;
@@ -1281,7 +1265,15 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
             inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,
             option?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");
           if (!reservations) {
-            throw new InsufficientInventoryError(line.catalog_item_id);
+            const availability = await inspectCheckoutInventoryAvailability(tx, houseTenantId, inventoryCatalogItemId);
+            throw new InsufficientInventoryError(
+              line.catalog_item_id,
+              null,
+              availability.available,
+              0,
+              0,
+              availability.hasInventoryRows,
+            );
           }
           await tx.update(orderItemsTable)
             .set({ inventoryDeductions: reservations })

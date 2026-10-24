@@ -24,6 +24,10 @@ type LockedBalanceRow = {
 };
 
 type ReservedQuantityRow = { reservedQuantity: unknown };
+export type CheckoutInventoryAvailability = {
+  hasInventoryRows: boolean;
+  available: number;
+};
 
 function rowsFrom<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
@@ -67,6 +71,38 @@ export async function releaseExpiredInventoryReservations(executor: ReservationE
     `));
     return released.length;
   });
+}
+
+export async function inspectCheckoutInventoryAvailability(
+  executor: ReservationExecutor,
+  tenantId: number,
+  productId: number,
+): Promise<CheckoutInventoryAvailability> {
+  assertKernelCatalogItemId(productId, "checkout.inventoryAvailability");
+  const result = rowsFrom<{ balanceRowCount: number | string; available: unknown }>(await executor.execute(sql`
+    WITH reserved_by_location AS (
+      SELECT r.location_id, SUM(r.quantity)::numeric AS quantity
+      FROM inventory_reservations r
+      JOIN orders o ON o.id = r.order_id AND o.tenant_id = ${tenantId}
+      WHERE r.catalog_item_id = ${productId} AND r.status = 'reserved'
+        AND (r.expires_at > now() OR EXISTS (
+          SELECT 1 FROM payment_attempts p WHERE p.order_id = r.order_id AND p.tenant_id = ${tenantId}
+            AND p.state IN ('creating','created','approved','capturing','reconciliation_required')
+        ))
+      GROUP BY r.location_id
+    )
+    SELECT COUNT(*)::integer AS "balanceRowCount",
+      COALESCE(SUM(GREATEST(ib.quantity_on_hand - COALESCE(r.quantity, 0), 0)), 0)::numeric AS available
+    FROM inventory_balances ib
+    JOIN inventory_locations il ON il.tenant_id = ib.tenant_id AND il.id = ib.location_id AND il.is_active = true
+    LEFT JOIN reserved_by_location r ON r.location_id = ib.location_id
+    WHERE ib.tenant_id = ${tenantId} AND ib.product_id = ${productId}
+      AND ib.inventory_kind = 'sellable_catalog' AND ib.is_sellable = true AND ib.quarantined_at IS NULL
+  `))[0];
+  return {
+    hasInventoryRows: Number(result?.balanceRowCount ?? 0) > 0,
+    available: Number(result?.available ?? 0),
+  };
 }
 
 export async function reserveCheckoutInventoryByOrderType(

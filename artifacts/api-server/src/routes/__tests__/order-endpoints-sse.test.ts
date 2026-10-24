@@ -30,6 +30,17 @@ const dbState: {
 } = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [], auditLogs: [] };
 
 let mockActor: Record<string, unknown> = {};
+const reservationMocks = vi.hoisted(() => ({
+  reserve: vi.fn(async (_executor: unknown, _tenantId: number, _orderId: number, _productId: number, quantity: string | number) => [{ locationId: 50, locationName: "Storefront", quantity: Number(quantity), remainingStock: 9 }]),
+}));
+
+vi.mock("../../lib/inventoryReservations", () => ({
+  ensureInventoryReservationsTable: vi.fn(async () => undefined),
+  reserveCheckoutInventoryByOrderType: reservationMocks.reserve,
+  inspectCheckoutInventoryAvailability: vi.fn(async () => ({ hasInventoryRows: true, available: 10 })),
+  confirmInventoryReservationsForOrder: vi.fn(async () => []),
+  releaseInventoryReservationsForOrder: vi.fn(async () => 0),
+}));
 
 vi.mock("@clerk/express", () => ({
   clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -447,6 +458,7 @@ beforeEach(() => {
   dbState.uberQuotes = [];
   dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
   mockActor = {};
+  reservationMocks.reserve.mockClear();
   uberQuoteCalls.length = 0;
   _resetBus();
 });
@@ -570,6 +582,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
 
     expect([200, 201]).toContain(res.status);
     expect(dbState.orders).toHaveLength(1);
+    expect(reservationMocks.reserve).toHaveBeenCalledWith(expect.anything(), 1, expect.any(Number), 1, "1.000000", "ONLINE", expect.any(Number), "COMBINED_LOCATIONS");
     expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash", paymentStatus: "unpaid" }));
     expect(checkoutConversionToken).toEqual(expect.any(String));
     expect(conversionExpiresAt).toEqual(expect.any(String));
