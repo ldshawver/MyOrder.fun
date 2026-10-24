@@ -1,17 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { checkoutOptionLines, optionAxes, optionForValues, optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "../sellableOptions";
 
+const ready = { inventoryStatus: "ready" as const, balanceRowCount: 1, stockOnHand: "10.000000", reservedQuantity: "0.000000", availableQuantity: "10.000000", orderable: true };
+
 const shirt: SellableProduct = {
   id: 1, name: "T-Shirt", options: [
-    { id: 101, catalogItemId: 201, label: "Small", price: "20.00", sku: "TS-S" },
-    { id: 102, catalogItemId: 202, label: "Medium", price: "22.00", sku: "TS-M" },
-    { id: 103, catalogItemId: 203, label: "Large", price: "24.00", sku: "TS-L" },
+    { id: 101, catalogItemId: 201, label: "Small", price: "20.00", sku: "TS-S", ...ready },
+    { id: 102, catalogItemId: 202, label: "Medium", price: "22.00", sku: "TS-M", ...ready },
+    { id: 103, catalogItemId: 203, label: "Large", price: "24.00", sku: "TS-L", ...ready },
   ],
 };
 
 describe("sellable option selection", () => {
   it("keeps a backfilled single Standard option simple while sending its option ID", () => {
-    const product = { id: 2, name: "Legacy Item", options: [{ id: 104, catalogItemId: 204, label: "Standard", price: "10.00", sku: null }] };
+    const product = { id: 2, name: "Legacy Item", options: [{ id: 104, catalogItemId: 204, label: "Standard", price: "10.00", sku: null, ...ready }] };
     expect(showOptionSelector(product)).toBe(false);
     const entry = optionCartEntry(product, selectedSellableOption(product, null)!, null);
     expect(entry).toMatchObject({ id: 204, optionId: 104, name: "Legacy Item", price: 10 });
@@ -35,8 +37,8 @@ describe("sellable option selection", () => {
 
   it("supports shared inventory options with different server prices", () => {
     const beans: SellableProduct = { id: 3, name: "Coffee Beans", options: [
-      { id: 111, catalogItemId: 211, label: "250 g", price: "8.00", sku: null },
-      { id: 112, catalogItemId: 212, label: "1 kg", price: "28.00", sku: null },
+      { id: 111, catalogItemId: 211, label: "250 g", price: "8.00", sku: null, ...ready },
+      { id: 112, catalogItemId: 212, label: "1 kg", price: "28.00", sku: null, ...ready },
     ] };
     expect(optionCartEntry(beans, selectedSellableOption(beans, 112)!, null)).toMatchObject({ optionId: 112, price: 28 });
     expect(() => optionCartEntry(beans, shirt.options[0], null)).toThrow("Option does not belong to product");
@@ -44,9 +46,9 @@ describe("sellable option selection", () => {
 
   it("requires all Color and Size selections and preserves the selected variant identity/options in cart", () => {
     const product: SellableProduct = { id: 4, name: "Shirt", options: [
-      { id: 401, catalogItemId: 501, label: "Red / Small", price: "18.00", sku: "RS", optionValues: { Color: "Red", Size: "S" } },
-      { id: 402, catalogItemId: 502, label: "Red / Large", price: "19.00", sku: "RL", optionValues: { Color: "Red", Size: "L" } },
-      { id: 403, catalogItemId: 503, label: "Blue / Small", price: "20.00", sku: "BS", optionValues: { Color: "Blue", Size: "S" } },
+      { id: 401, catalogItemId: 501, label: "Red / Small", price: "18.00", sku: "RS", optionValues: { Color: "Red", Size: "S" }, ...ready },
+      { id: 402, catalogItemId: 502, label: "Red / Large", price: "19.00", sku: "RL", optionValues: { Color: "Red", Size: "L" }, ...ready },
+      { id: 403, catalogItemId: 503, label: "Blue / Small", price: "20.00", sku: "BS", optionValues: { Color: "Blue", Size: "S" }, ...ready },
     ] };
     expect(optionAxes(product)).toEqual([{ name: "Color", values: ["Blue", "Red"] }, { name: "Size", values: ["L", "S"] }]);
     expect(optionForValues(product, { Color: "Red" })).toBeUndefined();
@@ -61,8 +63,8 @@ describe("sellable option selection", () => {
 
   it.each(["Color", "Size"])("supports a single %s axis", axis => {
     const product: SellableProduct = { id: 9, name: "Variant product", options: [
-      { id: 901, catalogItemId: 911, label: "A", price: "5.00", optionValues: { [axis]: "A" } },
-      { id: 902, catalogItemId: 912, label: "B", price: "6.00", optionValues: { [axis]: "B" } },
+      { id: 901, catalogItemId: 911, label: "A", price: "5.00", optionValues: { [axis]: "A" }, ...ready },
+      { id: 902, catalogItemId: 912, label: "B", price: "6.00", optionValues: { [axis]: "B" }, ...ready },
     ] };
     expect(optionAxes(product)).toEqual([{ name: axis, values: ["A", "B"] }]);
     expect(optionForValues(product, { [axis]: "B" })?.id).toBe(902);

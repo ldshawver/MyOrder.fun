@@ -240,7 +240,9 @@ export default function CatalogItemDetail() {
                 </div>
                 <div>
                   <div className="text-xs font-mono font-medium text-muted-foreground mb-1 uppercase tracking-wider">Stock</div>
-                  <div className="font-medium text-sm">{product && product.options.length > 1 ? "Varies by option" : item.stockQuantity ?? "Unlimited"}</div>
+                  <div className="font-medium text-sm">{selectedOption
+                    ? selectedOption.inventoryStatus !== "ready" ? "Inventory setup incomplete" : `${selectedOption.availableQuantity} available after reservations`
+                    : product && product.options.length > 1 ? "Varies by option" : item.stockQuantity ?? "Inventory setup incomplete"}</div>
                 </div>
               </div>
 
@@ -278,14 +280,14 @@ export default function CatalogItemDetail() {
                   <select id="detail-product-option" className="mt-2 w-full rounded-lg border border-border bg-background p-3"
                     value={selectedOption?.id ?? ""} onChange={event => setSelectedOptionId(event.target.value ? Number(event.target.value) : null)}>
                     <option value="">Select an option</option>
-                    {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
+                    {product.options.map(option => <option key={option.id} value={option.id} disabled={!option.orderable}>{option.label} · ${Number(option.price).toFixed(2)}{option.orderable ? "" : " — unavailable"}</option>)}
                   </select>
                 </label>
               )}
               {(item.isAvailable || selectedOption) && (
                 <div className="pt-6 border-t border-border/50">
                   <Button className="w-full h-12 text-sm font-bold rounded-xl gap-2" data-testid="button-order-now"
-                    disabled={!selectedOption || productQuery.isLoading || productQuery.isError}
+                    disabled={!selectedOption || !selectedOption.orderable || productQuery.isLoading || productQuery.isError}
                     onClick={() => {
                       if (!product || !selectedOption) return;
                       addItem(optionCartEntry(product, selectedOption, item.imageUrl ?? null));
@@ -295,6 +297,9 @@ export default function CatalogItemDetail() {
                     Add to Cart
                   </Button>
                   {productQuery.isError && <p className="mt-2 text-sm text-destructive">Product options could not be loaded.</p>}
+                  {selectedOption && !selectedOption.orderable && <p className="mt-2 text-sm text-destructive">
+                    {selectedOption.inventoryStatus === "ready" ? "This option is out of stock." : "This option needs inventory setup before it can be ordered."}
+                  </p>}
                 </div>
               )}
             </CardContent>

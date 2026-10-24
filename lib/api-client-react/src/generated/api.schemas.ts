@@ -140,12 +140,27 @@ export interface TenantSummary {
   topProducts: TenantSummaryTopProductsItem[];
 }
 
+export type CatalogItemSellableProductOptionsItemInventoryStatus = typeof CatalogItemSellableProductOptionsItemInventoryStatus[keyof typeof CatalogItemSellableProductOptionsItemInventoryStatus];
+
+
+export const CatalogItemSellableProductOptionsItemInventoryStatus = {
+  ready: 'ready',
+  missing_identity: 'missing_identity',
+  missing_balance: 'missing_balance',
+} as const;
+
 export type CatalogItemSellableProductOptionsItem = {
   id: number;
   catalogItemId: number;
   label: string;
   price: string;
   sku?: string | null;
+  inventoryStatus: CatalogItemSellableProductOptionsItemInventoryStatus;
+  balanceRowCount: number;
+  stockOnHand: string | null;
+  reservedQuantity: string | null;
+  availableQuantity: string | null;
+  orderable: boolean;
 };
 
 export type CatalogItemSellableProduct = {

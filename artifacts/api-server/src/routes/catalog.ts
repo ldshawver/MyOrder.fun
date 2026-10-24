@@ -176,7 +176,7 @@ function normalizeMediaGallery(raw: unknown, fallbackImage?: string | null): Cat
 function mapItem(
   i: typeof catalogItemsTable.$inferSelect,
   alavontOnly = false,
-  linkedInventoryStock?: number,
+  linkedInventoryStock?: number | null,
 ) {
   // Prefer alavont_image_url for the primary imageUrl; fall back to image_url
   const resolvedImageUrl = i.alavontImageUrl ?? i.imageUrl ?? undefined;
@@ -191,7 +191,9 @@ function mapItem(
     sku: i.sku ?? undefined,
     price: parseFloat(i.price as string),
     compareAtPrice: i.compareAtPrice != null ? parseFloat(i.compareAtPrice as string) : null,
-    stockQuantity: linkedInventoryStock ?? (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
+    stockQuantity: linkedInventoryStock !== undefined
+      ? linkedInventoryStock
+      : (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
     isAvailable: i.isAvailable,
     isTaxable: i.isTaxable,
     imageUrl: resolvedImageUrl,
@@ -330,8 +332,8 @@ async function getLinkedInventoryStockByCatalogId(tenantId: number) {
       isNull(inventoryBalancesTable.quarantinedAt),
     ))
     .groupBy(inventoryBalancesTable.productId);
-  const stockByCatalogId = new Map<number, number>();
-  for (const row of balanceRows) stockByCatalogId.set(row.productId, Math.max(0, Math.floor(Number(row.quantity ?? 0))));
+  const stockByCatalogId = new Map<number, number | null>();
+  for (const row of balanceRows) stockByCatalogId.set(row.productId, Math.max(0, Number(row.quantity ?? 0)));
 
   return stockByCatalogId;
 }
@@ -431,11 +433,18 @@ router.get("/catalog", async (req, res): Promise<void> => {
     return a.name.localeCompare(b.name);
   });
 
-  const stockByCatalogId = await getLinkedInventoryStockByCatalogId(tenantId);
+  const sellableSchemaPresent = await hasSellableProductSchema();
+  const stockByCatalogId = sellableSchemaPresent
+    ? new Map<number, number | null>()
+    : await getLinkedInventoryStockByCatalogId(tenantId);
   const sellableByCatalogId = new Map<number, Awaited<ReturnType<typeof loadSellableProducts>>[number]>();
-  if (await hasSellableProductSchema()) {
+  if (sellableSchemaPresent) {
     for (const product of await loadSellableProducts(tenantId)) {
-      for (const option of product.options) sellableByCatalogId.set(option.catalogItemId, product);
+      for (const option of product.options) {
+        sellableByCatalogId.set(option.catalogItemId, product);
+        stockByCatalogId.set(option.catalogItemId,
+          option.inventoryStatus === "ready" ? Number(option.availableQuantity ?? 0) : null);
+      }
     }
   }
   const total = rows.length;

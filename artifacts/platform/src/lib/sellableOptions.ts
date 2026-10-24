@@ -6,6 +6,12 @@ export type SellableOption = {
   sku?: string | null;
   optionValues?: Record<string, string>;
   barcode?: string | null;
+  inventoryStatus: "ready" | "missing_identity" | "missing_balance";
+  balanceRowCount: number;
+  stockOnHand: string | null;
+  reservedQuantity: string | null;
+  availableQuantity: string | null;
+  orderable: boolean;
 };
 
 export type SellableProduct = {

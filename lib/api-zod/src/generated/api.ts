@@ -249,7 +249,13 @@ export const ListCatalogItemsResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "inventoryStatus": zod.enum(['ready', 'missing_identity', 'missing_balance']),
+  "balanceRowCount": zod.number(),
+  "stockOnHand": zod.string().nullable(),
+  "reservedQuantity": zod.string().nullable(),
+  "availableQuantity": zod.string().nullable(),
+  "orderable": zod.boolean()
 }))
 }).optional(),
   "id": zod.number(),
@@ -394,7 +400,13 @@ export const GetCatalogItemResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "inventoryStatus": zod.enum(['ready', 'missing_identity', 'missing_balance']),
+  "balanceRowCount": zod.number(),
+  "stockOnHand": zod.string().nullable(),
+  "reservedQuantity": zod.string().nullable(),
+  "availableQuantity": zod.string().nullable(),
+  "orderable": zod.boolean()
 }))
 }).optional(),
   "id": zod.number(),
@@ -542,7 +554,13 @@ export const UpdateCatalogItemResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "inventoryStatus": zod.enum(['ready', 'missing_identity', 'missing_balance']),
+  "balanceRowCount": zod.number(),
+  "stockOnHand": zod.string().nullable(),
+  "reservedQuantity": zod.string().nullable(),
+  "availableQuantity": zod.string().nullable(),
+  "orderable": zod.boolean()
 }))
 }).optional(),
   "id": zod.number(),
@@ -2093,7 +2111,13 @@ export const AiConciergeChatResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "inventoryStatus": zod.enum(['ready', 'missing_identity', 'missing_balance']),
+  "balanceRowCount": zod.number(),
+  "stockOnHand": zod.string().nullable(),
+  "reservedQuantity": zod.string().nullable(),
+  "availableQuantity": zod.string().nullable(),
+  "orderable": zod.boolean()
 }))
 }).optional(),
   "id": zod.number(),
@@ -2181,7 +2205,13 @@ export const AiCatalogSearchResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "inventoryStatus": zod.enum(['ready', 'missing_identity', 'missing_balance']),
+  "balanceRowCount": zod.number(),
+  "stockOnHand": zod.string().nullable(),
+  "reservedQuantity": zod.string().nullable(),
+  "availableQuantity": zod.string().nullable(),
+  "orderable": zod.boolean()
 }))
 }).optional(),
   "id": zod.number(),
@@ -2263,7 +2293,13 @@ export const AiUpsellSuggestionsResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "inventoryStatus": zod.enum(['ready', 'missing_identity', 'missing_balance']),
+  "balanceRowCount": zod.number(),
+  "stockOnHand": zod.string().nullable(),
+  "reservedQuantity": zod.string().nullable(),
+  "availableQuantity": zod.string().nullable(),
+  "orderable": zod.boolean()
 }))
 }).optional(),
   "id": zod.number(),

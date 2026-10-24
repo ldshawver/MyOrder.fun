@@ -158,10 +158,11 @@ describe("customer catalogue visibility", () => {
       catalogRow(183, { name: "T-Shirt Medium", price: "22.00" }),
       catalogRow(184, { name: "T-Shirt Large", price: "24.00" })];
     rows.products = [{ id: 179, tenantId: 1, name: "T-Shirt", active: true }];
+    const ready = { inventoryStatus: "ready", balanceRowCount: 1, stockOnHand: "3.000000", reservedQuantity: "0", availableQuantity: "3.000000", orderable: true };
     rows.options = [
-      { id: 179, productId: 179, catalogItemId: 182, label: "Small", price: "20.00", sku: null },
-      { id: 180, productId: 179, catalogItemId: 183, label: "Medium", price: "22.00", sku: null },
-      { id: 181, productId: 179, catalogItemId: 184, label: "Large", price: "24.00", sku: null },
+      { id: 179, productId: 179, catalogItemId: 182, label: "Small", price: "20.00", sku: null, ...ready },
+      { id: 180, productId: 179, catalogItemId: 183, label: "Medium", price: "22.00", sku: null, ...ready },
+      { id: 181, productId: 179, catalogItemId: 184, label: "Large", price: "24.00", sku: null, ...ready },
     ];
     const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont");
     expect(response.status, response.text).toBe(200);

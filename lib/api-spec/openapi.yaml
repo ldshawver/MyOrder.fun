@@ -1515,7 +1515,23 @@ components:
                   sku:
                     type: string
                     nullable: true
-                required: [id, catalogItemId, label, price]
+                  inventoryStatus:
+                    type: string
+                    enum: [ready, missing_identity, missing_balance]
+                  balanceRowCount:
+                    type: integer
+                  stockOnHand:
+                    type: string
+                    nullable: true
+                  reservedQuantity:
+                    type: string
+                    nullable: true
+                  availableQuantity:
+                    type: string
+                    nullable: true
+                  orderable:
+                    type: boolean
+                required: [id, catalogItemId, label, price, inventoryStatus, balanceRowCount, stockOnHand, reservedQuantity, availableQuantity, orderable]
           required: [id, name, options]
         id:
           type: integer

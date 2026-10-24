@@ -10,7 +10,7 @@ describeIfDatabase("PostgreSQL Catalog optional-schema compatibility", () => {
   let dbPool: { end: () => Promise<void> } | undefined;
   let dbModule: typeof import("@workspace/db");
   let hasSellableProductSchema: () => Promise<boolean>;
-  let loadSellableProducts: (tenantId: number) => Promise<Array<{ tenantId: number; options: unknown[] }>>;
+  let loadSellableProducts: (tenantId: number) => Promise<Array<{ tenantId: number; options: Array<{ inventoryStatus: string; balanceRowCount: number; stockOnHand: string | null; reservedQuantity: string | null; availableQuantity: string | null; orderable: boolean }> }>>;
 
   beforeAll(async () => {
     if (!databaseUrl) throw new Error("MYORDER_CATALOG_COMPAT_DATABASE_URL is required");
@@ -57,16 +57,24 @@ describeIfDatabase("PostgreSQL Catalog optional-schema compatibility", () => {
       CREATE TABLE inventory_locations (
         id serial PRIMARY KEY,
         tenant_id integer NOT NULL REFERENCES tenants(id),
+        name text NOT NULL DEFAULT 'Backstock',
+        display_order integer NOT NULL DEFAULT 0,
+        is_active boolean NOT NULL DEFAULT true,
         UNIQUE (tenant_id, id)
       );
       CREATE TABLE inventory_balances (
         id serial PRIMARY KEY,
         tenant_id integer NOT NULL,
         product_id integer NOT NULL,
+        location_id integer NOT NULL REFERENCES inventory_locations(id),
         quantity_on_hand numeric(20, 6) NOT NULL DEFAULT 0,
+        inventory_kind text NOT NULL DEFAULT 'sellable_catalog',
+        is_sellable boolean NOT NULL DEFAULT true,
+        quarantined_at timestamptz,
         FOREIGN KEY (tenant_id, product_id) REFERENCES catalog_items(tenant_id, id)
       );
       CREATE TABLE orders (id serial PRIMARY KEY, tenant_id integer NOT NULL REFERENCES tenants(id));
+      CREATE TABLE payment_attempts (id serial PRIMARY KEY, tenant_id integer NOT NULL, order_id integer NOT NULL, state text NOT NULL);
       CREATE TABLE order_items (id serial PRIMARY KEY, order_id integer, catalog_item_id integer);
       CREATE TABLE inventory_transaction_log (catalog_item_id integer);
       INSERT INTO tenants (id) VALUES (1), (2);
@@ -87,7 +95,7 @@ describeIfDatabase("PostgreSQL Catalog optional-schema compatibility", () => {
     if (client) {
       await client.query(`
         DROP TABLE IF EXISTS catalogue_options, inventory_reorder_policies, inventory_reservations,
-          inventory_items, catalogue_products, inventory_transaction_log, order_items, orders,
+          inventory_items, catalogue_products, inventory_transaction_log, payment_attempts, order_items, orders,
           inventory_balances, inventory_locations, catalog_items, tenants CASCADE;
         DROP FUNCTION IF EXISTS block_live_inventory_model_change() CASCADE;
         DROP FUNCTION IF EXISTS create_standard_option_for_catalogue_item() CASCADE;
@@ -114,6 +122,14 @@ describeIfDatabase("PostgreSQL Catalog optional-schema compatibility", () => {
   it("uses the actual 0070 migration when present and keeps enrichment tenant-scoped", async () => {
     const migration = await readFile(new URL("../../../../../lib/db/drizzle/0070_catalogue_products_options_reorder.sql", import.meta.url), "utf8");
     await client.query(migration);
+    // Later catalogue columns consumed by the current loader are represented
+    // directly; this suite isolates 0070 capability detection rather than
+    // replaying the entire migration journal.
+    await client.query(`
+      ALTER TABLE catalogue_options ADD COLUMN option_values jsonb NOT NULL DEFAULT '{}'::jsonb;
+      ALTER TABLE catalog_items ADD COLUMN barcode text;
+      ALTER TABLE catalog_items ADD COLUMN compare_at_price numeric(10, 2);
+    `);
     expect(await hasSellableProductSchema()).toBe(true);
 
     const tenantOne = await loadSellableProducts(1);
@@ -121,8 +137,43 @@ describeIfDatabase("PostgreSQL Catalog optional-schema compatibility", () => {
     expect(tenantOne).toHaveLength(1);
     expect(tenantOne[0]?.tenantId).toBe(1);
     expect(tenantOne[0]?.options).toHaveLength(1);
+    expect(tenantOne[0]?.options[0]).toMatchObject({
+      inventoryStatus: "missing_balance",
+      balanceRowCount: 0,
+      stockOnHand: null,
+      reservedQuantity: null,
+      availableQuantity: null,
+      orderable: false,
+    });
     expect(tenantTwo).toHaveLength(1);
     expect(tenantTwo[0]?.tenantId).toBe(2);
+  }, 20_000);
+
+  it("reports stock minus active reservations and never treats missing setup as zero", async () => {
+    await client.query(`
+      INSERT INTO inventory_locations (id, tenant_id, name) VALUES (1, 1, 'Backstock');
+      INSERT INTO inventory_balances (tenant_id, product_id, location_id, quantity_on_hand) VALUES (1, 1, 1, 10);
+      INSERT INTO orders (id, tenant_id) VALUES (1, 1);
+      INSERT INTO inventory_reservations (order_id, catalog_item_id, location_id, quantity, status, expires_at)
+        VALUES (1, 1, 1, 2, 'reserved', now() + interval '15 minutes');
+    `);
+    const option = (await loadSellableProducts(1))[0]?.options[0];
+    expect(option).toMatchObject({
+      inventoryStatus: "ready",
+      balanceRowCount: 1,
+      stockOnHand: "10.000000",
+      reservedQuantity: "2",
+      availableQuantity: "8.000000",
+      orderable: true,
+    });
+
+    await client.query("UPDATE catalog_items SET metadata = '{\"archived\":true}'::jsonb WHERE tenant_id=1 AND id=1");
+    expect(await loadSellableProducts(1)).toEqual([]);
+    await client.query("UPDATE catalog_items SET metadata = '{\"complianceHold\":true}'::jsonb WHERE tenant_id=1 AND id=1");
+    expect(await loadSellableProducts(1)).toEqual([]);
+    await client.query("UPDATE catalog_items SET metadata = '{}'::jsonb, is_available=false WHERE tenant_id=1 AND id=1");
+    expect(await loadSellableProducts(1)).toEqual([]);
+    await client.query("UPDATE catalog_items SET is_available=true WHERE tenant_id=1 AND id=1");
   }, 20_000);
 
   it("rejects a required column missing from an otherwise complete 0070 schema", async () => {
