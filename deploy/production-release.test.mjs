@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import {
   APPROVED_RELEASE,
@@ -29,6 +30,7 @@ import {
   loadPreservedSnapshot,
   mayRestoreRollbackApi,
   preReleaseSchemaDiagnosticSql,
+  requestLoopbackJsonWithHost,
   sameWriterInventory,
   selectPreservedSnapshotMetadata,
 } from "./production-release.mjs";
@@ -208,11 +210,51 @@ test("production preflight is separately authorized and cannot reach mutation st
   assert.match(workflow, /if: \$\{\{ inputs\.release_action == 'deploy' \}\}/);
 });
 
-test("production public catalogue smoke uses the MyOrder route, not the external Woo storefront host", () => {
+test("production public catalogue smoke sends the exact MyOrder host over loopback", async () => {
   const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
-  assert.match(controller, /fetch\("http:\/\/127\.0\.0\.1:8081\/api\/public\/catalog", \{\s*headers: \{ host: "myorder\.fun" \}/);
+  const observed = {};
+  const requestImpl = (target, options, callback) => {
+    observed.url = target.href;
+    observed.host = options.headers.host;
+    const request = new EventEmitter();
+    request.setTimeout = () => request;
+    request.destroy = (error) => request.emit("error", error);
+    request.end = () => queueMicrotask(() => {
+      const response = new EventEmitter();
+      response.statusCode = 200;
+      response.setEncoding = () => response;
+      callback(response);
+      response.emit("data", JSON.stringify({ items: [{ id: 1 }], total: 1 }));
+      response.emit("end");
+    });
+    return request;
+  };
+  const result = await requestLoopbackJsonWithHost(
+    "http://127.0.0.1:8081/api/public/catalog",
+    "myorder.fun",
+    10_000,
+    requestImpl,
+  );
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { items: [{ id: 1 }], total: 1 });
+  assert.deepEqual(observed, {
+    url: "http://127.0.0.1:8081/api/public/catalog",
+    host: "myorder.fun",
+  });
+  assert.match(controller, /requestLoopbackJsonWithHost\(\s*"http:\/\/127\.0\.0\.1:8081\/api\/public\/catalog",\s*"myorder\.fun"/);
   assert.doesNotMatch(controller, /headers: \{ host: "shop\.lucifercruz\.com" \}/);
   assert.match(controller, /Production MyOrder public catalogue smoke test failed/);
+});
+
+test("production loopback smoke request rejects non-loopback targets and invalid hosts", () => {
+  assert.throws(
+    () => requestLoopbackJsonWithHost("https://myorder.fun/api/public/catalog", "myorder.fun"),
+    /IPv4 loopback/,
+  );
+  assert.throws(
+    () => requestLoopbackJsonWithHost("http://127.0.0.1:8081/api/public/catalog", "myorder.fun:8081"),
+    /host must be myorder\.fun/,
+  );
 });
 
 test("production nginx keeps the Clerk browser proxy outside the general API rate limit", () => {
@@ -679,15 +721,20 @@ test("production rollback baseline is the current pre-release image set", () => 
   );
 });
 
-test("candidate builder is frozen to the exact approved source and unique immutable tags", () => {
+test("candidate builder is frozen to the exact proposed source and unique immutable tags", () => {
   const workflow = readFileSync(
     new URL("../.github/workflows/build-production-platform.yml", import.meta.url),
     "utf8",
   );
-  assert.match(workflow, new RegExp(`SOURCE_SHA: ${APPROVED_RELEASE.sha}`));
-  assert.match(workflow, new RegExp(`SOURCE_TREE: ${APPROVED_RELEASE.tree}`));
-  assert.match(workflow, new RegExp(`ref: ${APPROVED_RELEASE.sha}`));
-  assert.equal(workflow.match(new RegExp(APPROVED_RELEASE.sha, "g"))?.length, 5);
+  const proposed = {
+    sha: "8cac50ca931afbb1c0101688da823994d6a0cf25",
+    tree: "5f9cf61815ba0f1913cb1e1d71ebeed057837e27",
+  };
+  assert.match(workflow, new RegExp(`SOURCE_SHA: ${proposed.sha}`));
+  assert.match(workflow, new RegExp(`SOURCE_TREE: ${proposed.tree}`));
+  assert.match(workflow, new RegExp(`ref: ${proposed.sha}`));
+  assert.equal(workflow.match(new RegExp(proposed.sha, "g"))?.length, 5);
+  assert.notEqual(proposed.sha, APPROVED_RELEASE.sha);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
