@@ -118,6 +118,16 @@ export const PRODUCTION_STEPS = Object.freeze([
   "smoke",
 ]);
 
+export const PRODUCTION_SMOKE_DOCKER_CHECKS = Object.freeze({
+  activeTenantProjection: "production smoke active-tenant projection",
+  catalogueEligibilityProjection:
+    "production smoke catalogue-eligibility projection",
+  composeServiceInventory: "production smoke Compose service inventory",
+  projectContainerInventory: "production smoke project container inventory",
+  containerMetadataInspection: "production smoke container metadata inspection",
+  recentServiceLogReview: "production smoke recent service-log review",
+});
+
 export const EXPECTED_PRODUCTION_MIGRATIONS = Object.freeze([
   MIGRATION_0078.tag,
 ]);
@@ -569,6 +579,54 @@ function run(command, args, options = {}) {
   return result.stdout ?? "";
 }
 
+function classifySmokeDockerStderr(stderr) {
+  const value = String(stderr ?? "");
+  if (!value.trim()) return "stderr-empty";
+  if (/no such container/i.test(value)) return "container-not-found";
+  if (/container .* is not running/i.test(value))
+    return "container-not-running";
+  if (/no such service/i.test(value)) return "compose-service-not-found";
+  if (
+    /cannot connect to the docker daemon|docker daemon is not running/i.test(
+      value,
+    )
+  )
+    return "docker-daemon-unavailable";
+  if (/permission denied/i.test(value)) return "permission-denied";
+  if (/connection refused|connection reset/i.test(value))
+    return "connection-failure";
+  if (/syntax error|\bERROR:/i.test(value)) return "database-command-rejected";
+  return "stderr-redacted";
+}
+
+export function formatSmokeDockerFailure(label, result) {
+  if (!Object.values(PRODUCTION_SMOKE_DOCKER_CHECKS).includes(label))
+    throw new Error("Unknown production smoke Docker check label");
+  const exit = Number.isInteger(result?.status)
+    ? String(result.status)
+    : "unavailable";
+  const signal = /^[A-Z0-9]+$/.test(String(result?.signal ?? ""))
+    ? String(result.signal)
+    : "none";
+  const errorCode = /^[A-Z0-9_]+$/.test(String(result?.error?.code ?? ""))
+    ? String(result.error.code)
+    : "none";
+  const stderrClass = classifySmokeDockerStderr(result?.stderr);
+  return `${label} failed (exit=${exit} signal=${signal} error_code=${errorCode} context=${stderrClass})`;
+}
+
+export function runSmokeDockerCheck(
+  label,
+  args,
+  options = {},
+  spawn = spawnSync,
+) {
+  const result = spawn("docker", args, { encoding: "utf8", ...options });
+  if (result.error || result.status !== 0)
+    throw new Error(formatSmokeDockerFailure(label, result));
+  return result.stdout ?? "";
+}
+
 function sha256File(filename) {
   const hash = createHash("sha256");
   const input = createReadStream(filename);
@@ -680,26 +738,30 @@ function validateComposeRuntimeConfig(releaseRoot, envFile, overlayFile) {
   return { args, config, releaseRoot };
 }
 
-function query(compose, sql, env = {}) {
-  return run(
-    "docker",
-    [
-      ...compose.args,
-      "exec",
-      "-T",
-      "db",
-      "psql",
-      "-X",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      String(compose.config.services.db.environment.POSTGRES_USER),
-      "-d",
-      PRODUCTION.database,
-      "-Atc",
-      sql,
-    ],
-    { env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha, ...env } },
+function query(compose, sql, env = {}, smokeDockerCheck) {
+  const args = [
+    ...compose.args,
+    "exec",
+    "-T",
+    "db",
+    "psql",
+    "-X",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-U",
+    String(compose.config.services.db.environment.POSTGRES_USER),
+    "-d",
+    PRODUCTION.database,
+    "-Atc",
+    sql,
+  ];
+  const options = {
+    env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha, ...env },
+  };
+  return (
+    smokeDockerCheck
+      ? runSmokeDockerCheck(smokeDockerCheck, args, options)
+      : run("docker", args, options)
   ).trim();
 }
 
@@ -1890,7 +1952,14 @@ async function main() {
           "Production MyOrder public catalogue smoke test failed",
         );
       const publicCatalogBody = publicCatalog.body;
-      const activeTenants = Number(query(compose, "SELECT count(*) FROM tenants WHERE status='active'"));
+      const activeTenants = Number(
+        query(
+          compose,
+          "SELECT count(*) FROM tenants WHERE status='active'",
+          {},
+          PRODUCTION_SMOKE_DOCKER_CHECKS.activeTenantProjection,
+        ),
+      );
       if (activeTenants !== 1)
         throw new Error("Production public catalog tenant mapping is ambiguous");
       const eligiblePublicTotal = Number(query(compose, `
@@ -1907,7 +1976,7 @@ async function main() {
           AND NOT coalesce(ci.metadata,'{}'::jsonb) @> '{"safeOnlyDuplicate":true}'::jsonb
           AND NOT coalesce(ci.metadata,'{}'::jsonb) @> '{"complianceHold":true}'::jsonb
           AND ci.metadata->>'mergedIntoCatalogItemId' IS NULL
-      `));
+      `, {}, PRODUCTION_SMOKE_DOCKER_CHECKS.catalogueEligibilityProjection));
       if (!Number.isSafeInteger(eligiblePublicTotal) || eligiblePublicTotal <= 0)
         throw new Error("Production public catalog database eligibility projection is empty or invalid");
       const publicCatalogItems = assertPublicCatalogSmokePayload(publicCatalogBody, eligiblePublicTotal);
@@ -1930,7 +1999,7 @@ async function main() {
           );
         accessResults.push(`${name}:${response.status}`);
       }
-      const services = run("docker", [
+      const services = runSmokeDockerCheck(PRODUCTION_SMOKE_DOCKER_CHECKS.composeServiceInventory, [
         ...compose.args,
         "ps",
         "--format",
@@ -1942,7 +2011,7 @@ async function main() {
         !services.includes("nginx")
       )
         throw new Error("Production Compose health inventory is incomplete");
-      const restarts = run("docker", [
+      const restarts = runSmokeDockerCheck(PRODUCTION_SMOKE_DOCKER_CHECKS.projectContainerInventory, [
         "ps",
         "--all",
         "--quiet",
@@ -1954,7 +2023,10 @@ async function main() {
         .filter(Boolean);
       const afterByService = new Map();
       for (const id of restarts) {
-        const data = JSON.parse(run("docker", ["inspect", id]))[0];
+        const data = JSON.parse(runSmokeDockerCheck(
+          PRODUCTION_SMOKE_DOCKER_CHECKS.containerMetadataInspection,
+          ["inspect", id],
+        ))[0];
         const service = data.Config.Labels?.["com.docker.compose.service"];
         if (
           data.Config.Labels?.["com.docker.compose.project"] !==
@@ -1987,7 +2059,7 @@ async function main() {
         afterByService.get("platform").Config.Image !== approvedImageReference("platform")
       )
         throw new Error("Production API/platform image digest mismatch");
-      const recentLogs = run("docker", [
+      const recentLogs = runSmokeDockerCheck(PRODUCTION_SMOKE_DOCKER_CHECKS.recentServiceLogReview, [
         ...compose.args,
         "logs",
         "--no-color",

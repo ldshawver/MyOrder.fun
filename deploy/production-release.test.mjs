@@ -14,6 +14,7 @@ import {
   PRESERVED_SNAPSHOT,
   PRODUCTION_BASELINE,
   PRODUCTION,
+  PRODUCTION_SMOKE_DOCKER_CHECKS,
   PRODUCTION_STEPS,
   PRE_RELEASE_SCHEMA_INVARIANTS,
   assertApprovedImageMetadata,
@@ -32,9 +33,85 @@ import {
   mayRestoreRollbackApi,
   preReleaseSchemaDiagnosticSql,
   requestLoopbackJsonWithHost,
+  runSmokeDockerCheck,
   sameWriterInventory,
   selectPreservedSnapshotMetadata,
 } from "./production-release.mjs";
+
+for (const [checkName, label] of Object.entries(
+  PRODUCTION_SMOKE_DOCKER_CHECKS,
+)) {
+  test(`production smoke Docker failure identifies ${checkName} without exposing process data`, () => {
+    const sensitive = "client_secret=do-not-print customer@example.test";
+    const failingSpawn = () => ({
+      status: 17,
+      signal: null,
+      error: undefined,
+      stdout: sensitive,
+      stderr: sensitive,
+    });
+    assert.throws(
+      () =>
+        runSmokeDockerCheck(
+          label,
+          ["sensitive-command-argument"],
+          {},
+          failingSpawn,
+        ),
+      (error) => {
+        assert.match(
+          error.message,
+          new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        );
+        assert.match(
+          error.message,
+          /exit=17 signal=none error_code=none context=stderr-redacted/,
+        );
+        assert.doesNotMatch(
+          error.message,
+          /do-not-print|customer@example|sensitive-command-argument/,
+        );
+        return true;
+      },
+    );
+  });
+}
+
+test("production smoke Docker failure context uses safe categories instead of raw stderr", () => {
+  const label = PRODUCTION_SMOKE_DOCKER_CHECKS.containerMetadataInspection;
+  assert.throws(
+    () =>
+      runSmokeDockerCheck(label, ["inspect", "sensitive-id"], {}, () => ({
+        status: 1,
+        signal: "SIGTERM",
+        error: { code: "ENOENT", message: "do-not-print" },
+        stdout: "",
+        stderr: "Error response from daemon: No such container: sensitive-id",
+      })),
+    (error) => {
+      assert.match(error.message, /signal=SIGTERM error_code=ENOENT context=container-not-found/);
+      assert.doesNotMatch(error.message, /sensitive-id|do-not-print|Error response/);
+      return true;
+    },
+  );
+});
+
+test("every final-smoke Docker subprocess uses a specific safe diagnostic label", () => {
+  const controller = readFileSync(
+    new URL("./production-release.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = controller.indexOf("    smoke: async () => {");
+  const end = controller.indexOf("\n    },\n  };", start);
+  assert.ok(start >= 0 && end > start);
+  const smoke = controller.slice(start, end);
+  for (const checkName of Object.keys(PRODUCTION_SMOKE_DOCKER_CHECKS))
+    assert.match(
+      smoke,
+      new RegExp(`PRODUCTION_SMOKE_DOCKER_CHECKS\\.${checkName}`),
+    );
+  assert.doesNotMatch(smoke, /\brun\("docker"/);
+});
 
 const releaseRoot = path.join(PRODUCTION.root, "releases", APPROVED_RELEASE.sha);
 const archivePath = path.join(
