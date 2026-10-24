@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import pg from "pg";
-import { assertHistoricalInventorySchema, assertReconciliationSchema } from "./reconciliation-schema.js";
+import {
+  assertHistoricalInventorySchema,
+  assertInventoryHistoryRepairSchema,
+  assertReconciliationSchema,
+} from "./reconciliation-schema.js";
 import {
   assertHistoricalStaging0047Schema,
   historicalStaging0047,
@@ -210,6 +214,7 @@ function loadJournal(): LocalMigration[] {
 
 async function validateCandidateTailSchema(client: pg.Client, applied: Set<number>): Promise<void> {
   if (applied.has(51)) await assertReconciliationSchema(client);
+  if (applied.has(52)) await assertInventoryHistoryRepairSchema(client);
   if (applied.has(49)) {
     const result = await client.query<{ healthy: boolean }>(`
       SELECT

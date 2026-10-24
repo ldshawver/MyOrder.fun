@@ -50,3 +50,49 @@ export async function assertReconciliationSchema(client: Pick<pg.Client, "query"
     throw new Error("[migration-ledger] 0077 reconciliation schema is absent or differs from the reviewed migration");
   }
 }
+
+export async function assertInventoryHistoryRepairSchema(client: Pick<pg.Client, "query">): Promise<void> {
+  const result = await client.query<{ healthy: boolean }>(`
+    SELECT
+      to_regclass('public.inventory_history_baseline_repair_events') IS NOT NULL
+      AND to_regprocedure('public.prevent_inventory_history_baseline_repair_mutation()') IS NOT NULL
+      AND (SELECT count(*) FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='inventory_history_baseline_repair_events')=10
+      AND NOT EXISTS (
+        SELECT 1 FROM (VALUES
+          ('id','uuid','NO'), ('tenant_id','int4','NO'), ('product_id','int4','NO'),
+          ('actor_user_id','int4','NO'), ('idempotency_key','text','NO'),
+          ('preview_fingerprint','text','NO'), ('reason','text','NO'), ('evidence','jsonb','NO'),
+          ('finalized_at','timestamptz','NO'), ('created_at','timestamptz','NO')
+        ) AS expected(column_name, udt_name, is_nullable)
+        WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns c
+          WHERE c.table_schema='public' AND c.table_name='inventory_history_baseline_repair_events'
+            AND c.column_name=expected.column_name AND c.udt_name=expected.udt_name
+            AND c.is_nullable=expected.is_nullable)
+      )
+      AND (SELECT count(*) FROM pg_constraint
+        WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
+          AND contype IN ('p','f','u'))=4
+      AND EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
+          AND contype='p' AND convalidated)
+      AND EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
+          AND contype='f' AND convalidated
+          AND pg_get_constraintdef(oid,true)='FOREIGN KEY (tenant_id) REFERENCES tenants(id)')
+      AND EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
+          AND contype='f' AND convalidated
+          AND pg_get_constraintdef(oid,true)='FOREIGN KEY (tenant_id, product_id) REFERENCES catalogue_products(tenant_id, id)')
+      AND EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
+          AND contype='u' AND convalidated
+          AND pg_get_constraintdef(oid,true)='UNIQUE (tenant_id, idempotency_key)')
+      AND (SELECT count(*) FROM pg_trigger
+        WHERE tgrelid='public.inventory_history_baseline_repair_events'::regclass
+          AND tgname='inventory_history_baseline_repair_events_immutable'
+          AND NOT tgisinternal AND tgenabled='O')=1 AS healthy`);
+  if (result.rows[0]?.healthy !== true) {
+    throw new Error("[migration-ledger] 0078 inventory history repair schema is absent or differs from the reviewed migration");
+  }
+}
