@@ -72,7 +72,7 @@ export async function assertInventoryHistoryRepairSchema(client: Pick<pg.Client,
       )
       AND (SELECT count(*) FROM pg_constraint
         WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
-          AND contype IN ('p','f','u'))=4
+          AND contype IN ('p','f','u'))=5
       AND EXISTS (SELECT 1 FROM pg_constraint
         WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
           AND contype='p' AND convalidated)
@@ -80,6 +80,10 @@ export async function assertInventoryHistoryRepairSchema(client: Pick<pg.Client,
         WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
           AND contype='f' AND convalidated
           AND pg_get_constraintdef(oid,true)='FOREIGN KEY (tenant_id) REFERENCES tenants(id)')
+      AND EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
+          AND contype='f' AND convalidated
+          AND pg_get_constraintdef(oid,true)='FOREIGN KEY (actor_user_id) REFERENCES users(id)')
       AND EXISTS (SELECT 1 FROM pg_constraint
         WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass
           AND contype='f' AND convalidated

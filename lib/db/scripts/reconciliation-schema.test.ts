@@ -48,13 +48,19 @@ test("0077 validator rejects every changed, missing, or additional schema object
 });
 
 test("0078 repair schema validator fails closed unless every structural check passes", async () => {
+  let inspectedSql = "";
   const healthyClient = {
-    query: async () => ({ rows: [{ healthy: true }] }),
+    query: async (sql: string) => {
+      inspectedSql = sql;
+      return { rows: [{ healthy: true }] };
+    },
   } as unknown as Parameters<typeof assertInventoryHistoryRepairSchema>[0];
   const unhealthyClient = {
     query: async () => ({ rows: [{ healthy: false }] }),
   } as unknown as Parameters<typeof assertInventoryHistoryRepairSchema>[0];
   await assertInventoryHistoryRepairSchema(healthyClient);
+  assert.match(inspectedSql, /contype IN \('p','f','u'\)\)=5/);
+  assert.match(inspectedSql, /FOREIGN KEY \(actor_user_id\) REFERENCES users\(id\)/);
   await assert.rejects(
     assertInventoryHistoryRepairSchema(unhealthyClient),
     /0078 inventory history repair schema/,

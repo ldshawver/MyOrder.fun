@@ -845,6 +845,8 @@ test("migration verifier checks physical 0077/0078 effects and release gates bin
   assert.match(controller, /recognized lineage preserved: 53\/53/);
   assert.match(controller, /Migration 0077 reconciliation schema/);
   assert.match(controller, /Migration 0078 repair evidence schema/);
+  assert.match(controller, /contype IN \('p','f','u'\)\)=5/);
+  assert.match(controller, /FOREIGN KEY \(actor_user_id\) REFERENCES users\(id\)/);
   assert.match(controller, /Isolated migration \$\{migration\.tag\.slice\(0, 4\)\} rehearsal failed/);
   assert.match(controller, /--single-transaction/);
   assert.match(controller, /Migration 0077\/0078 rehearsal changed representative production data counts/);
