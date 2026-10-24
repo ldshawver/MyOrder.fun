@@ -1511,9 +1511,10 @@ function verifyMigration(compose) {
       to_regclass('public.inventory_history_baseline_repair_events') IS NOT NULL
       AND to_regprocedure('public.prevent_inventory_history_baseline_repair_mutation()') IS NOT NULL
       AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='inventory_history_baseline_repair_events')=10
-      AND (SELECT count(*) FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype IN ('p','f','u'))=4
+      AND (SELECT count(*) FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype IN ('p','f','u'))=5
       AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND conname='inventory_history_baseline_repair_events_pkey' AND contype='p' AND convalidated)
       AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype='f' AND convalidated AND pg_get_constraintdef(oid,true)='FOREIGN KEY (tenant_id) REFERENCES tenants(id)')
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype='f' AND convalidated AND pg_get_constraintdef(oid,true)='FOREIGN KEY (actor_user_id) REFERENCES users(id)')
       AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype='f' AND convalidated AND pg_get_constraintdef(oid,true)='FOREIGN KEY (tenant_id, product_id) REFERENCES catalogue_products(tenant_id, id)')
       AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype='u' AND convalidated AND pg_get_constraintdef(oid,true)='UNIQUE (tenant_id, idempotency_key)')
       AND (SELECT count(*) FROM pg_trigger WHERE tgname='inventory_history_baseline_repair_events_immutable' AND NOT tgisinternal)=1
