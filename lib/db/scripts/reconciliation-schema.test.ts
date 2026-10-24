@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { assertHistoricalInventorySchema, assertReconciliationSchema, type SchemaObject } from "./reconciliation-schema.js";
+import {
+  assertHistoricalInventorySchema,
+  assertInventoryHistoryRepairSchema,
+  assertReconciliationSchema,
+  type SchemaObject,
+} from "./reconciliation-schema.js";
 
 const fixture = (name: string): SchemaObject[] => JSON.parse(readFileSync(resolve(import.meta.dirname, "fixtures", name), "utf8"));
 const before = fixture("historical-inventory-schema-before-0077.json");
@@ -40,4 +45,18 @@ test("0077 validator rejects every changed, missing, or additional schema object
     await assert.rejects(assertReconciliationSchema(client(tail.filter((_, i) => i !== index))));
   }
   await assert.rejects(assertReconciliationSchema(client([...tail, tail[0]])));
+});
+
+test("0078 repair schema validator fails closed unless every structural check passes", async () => {
+  const healthyClient = {
+    query: async () => ({ rows: [{ healthy: true }] }),
+  } as unknown as Parameters<typeof assertInventoryHistoryRepairSchema>[0];
+  const unhealthyClient = {
+    query: async () => ({ rows: [{ healthy: false }] }),
+  } as unknown as Parameters<typeof assertInventoryHistoryRepairSchema>[0];
+  await assertInventoryHistoryRepairSchema(healthyClient);
+  await assert.rejects(
+    assertInventoryHistoryRepairSchema(unhealthyClient),
+    /0078 inventory history repair schema/,
+  );
 });

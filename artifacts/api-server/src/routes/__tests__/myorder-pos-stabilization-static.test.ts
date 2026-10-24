@@ -21,8 +21,8 @@ function api(path: string): string {
 
 // Production authorization is independent of the staging-only d69275f candidate.
 const approvedProduction = {
-  sha: "583d556c8d3a5a094641ea229835d7c3397de1b1",
-  tree: "5d28e84ac2cf71aa6c99f42b299fedfcde51079f",
+  sha: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
+  tree: "e34c23fbe19f1a1813d24298454f0a8abbd1c3ab",
 };
 
 function productionPinGuard(workflow: string): string {
@@ -289,8 +289,8 @@ describe("receipts and deploy workflow", () => {
       "production-release.mjs",
       "release_sha:",
       "release_tree:",
-      "RELEASE_BASE_SHA: 5dd5b258f0b932e9a9ea4888af00a857d7d10146",
-      "RELEASE_BASE_TREE: bd96df1c597e64d17c1aaa47f0d0201115a89173",
+      "RELEASE_BASE_SHA: 583d556c8d3a5a094641ea229835d7c3397de1b1",
+      "RELEASE_BASE_TREE: 5d28e84ac2cf71aa6c99f42b299fedfcde51079f",
       "RELEASE_SHA: ${{ inputs.release_sha }}",
       "RELEASE_TREE: ${{ inputs.release_tree }}",
       "git merge-base --is-ancestor",

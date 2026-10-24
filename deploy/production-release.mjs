@@ -24,43 +24,43 @@ import { fileURLToPath } from "node:url";
 export const FROZEN_RELEASE = Object.freeze({
   // The replacement candidate must descend from the previously approved
   // application candidate; deployment-only successors cannot change it.
-  sha: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
-  tree: "bd96df1c597e64d17c1aaa47f0d0201115a89173",
-});
-export const APPROVED_RELEASE = Object.freeze({
   sha: "583d556c8d3a5a094641ea229835d7c3397de1b1",
   tree: "5d28e84ac2cf71aa6c99f42b299fedfcde51079f",
+});
+export const APPROVED_RELEASE = Object.freeze({
+  sha: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
+  tree: "e34c23fbe19f1a1813d24298454f0a8abbd1c3ab",
   // Production's containerd-backed Docker image store reports the immutable
   // manifest digest as image.Id. Keep registry manifests and their referenced
   // image-config digests separate so neither identity can stand in for the other.
   manifests: Object.freeze({
-    api: "sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40",
-    platform: "sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd",
-    migrate: "sha256:506ebdba19ca1889dd527f3f0a26d29092ad232b1301f313fc6440b68dcf66d7",
+    api: "sha256:acf3279c72c6ef2d9cd2f64fa4eab9d36d175a17c63422661996d0152477ad38",
+    platform: "sha256:d81df6632045b3b254b366820cfa33818508b704e478eae9ec2ab7cb32380a52",
+    migrate: "sha256:44a0b92e07012fa773490b034c391534aaabf6d0ed27314823fbe3ecc6cb1fb9",
   }),
   configs: Object.freeze({
-    api: "sha256:2b31521937379210521fdb46a3f3f720e8557542d9b224c3bb91644861502e84",
-    platform: "sha256:aff084db79784db86c57d029f6c7868bc14cfeff2a5a7e578ed104865e3375a7",
-    migrate: "sha256:05e30ebb37a1032c67a5bc8dd13929733c299f34ea374fca86e214f7e8b26e9e",
+    api: "sha256:64453aab7645063ec733c9d9edb3bfec76a5ed812ea8accb75a986da219091d2",
+    platform: "sha256:de229245dc36baf69eff446c81afc709f4dca06028b297e0bf2ac9c95aa09695",
+    migrate: "sha256:3e946f86f89f0c397777b5f1c6d79c016ac6f9c76716c3867b9a0d0da157ee1c",
   }),
   revisions: Object.freeze({
-    api: "583d556c8d3a5a094641ea229835d7c3397de1b1",
-    platform: "583d556c8d3a5a094641ea229835d7c3397de1b1",
-    migrate: "583d556c8d3a5a094641ea229835d7c3397de1b1",
+    api: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
+    platform: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
+    migrate: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
   }),
   references: Object.freeze({
-    api: "ghcr.io/ldshawver/myorder-api@sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40",
-    platform: "ghcr.io/ldshawver/myorder-platform@sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd",
-    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:506ebdba19ca1889dd527f3f0a26d29092ad232b1301f313fc6440b68dcf66d7",
+    api: "ghcr.io/ldshawver/myorder-api@sha256:acf3279c72c6ef2d9cd2f64fa4eab9d36d175a17c63422661996d0152477ad38",
+    platform: "ghcr.io/ldshawver/myorder-platform@sha256:d81df6632045b3b254b366820cfa33818508b704e478eae9ec2ab7cb32380a52",
+    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:44a0b92e07012fa773490b034c391534aaabf6d0ed27314823fbe3ecc6cb1fb9",
   }),
 });
 export const PRODUCTION_BASELINE = Object.freeze({
-  apiImage: "sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1",
-  apiRevision: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
-  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:b0cc8e30e99acd009b53aafaf23fa04fdaadd40a8f71329c9610a7b9f951fcf1",
-  platformImage: "sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861",
-  platformRevision: "5dd5b258f0b932e9a9ea4888af00a857d7d10146",
-  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:4ffa052dd46ea258288fee3d438c19f54bdef330fa49ce840161bfbe378d7861",
+  apiImage: "sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40",
+  apiRevision: "583d556c8d3a5a094641ea229835d7c3397de1b1",
+  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40",
+  platformImage: "sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd",
+  platformRevision: "583d556c8d3a5a094641ea229835d7c3397de1b1",
+  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd",
   nginxImage: "sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a",
   nginxReference: "nginx:alpine",
   databaseImage: "sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229",
@@ -84,6 +84,11 @@ export const MIGRATION_0077 = Object.freeze({
   tag: "0077_catalogue_inventory_reconciliation",
   timestamp: "1792440000000",
   sha256: "29b98289bd97b1c4781495a93d3d034f03a0daa503a96adfda035d2a3aeecd6b",
+});
+export const MIGRATION_0078 = Object.freeze({
+  tag: "0078_inventory_history_baseline_repair",
+  timestamp: "1792785600000",
+  sha256: "9d62687484ce3bdea6a0b127411643125739ec198644793b247313a92b2b78a4",
 });
 let releaseIdentity = APPROVED_RELEASE;
 export const PRODUCTION = Object.freeze({
@@ -114,11 +119,11 @@ export const PRODUCTION_STEPS = Object.freeze([
 ]);
 
 export const EXPECTED_PRODUCTION_MIGRATIONS = Object.freeze([
-  MIGRATION_0077.tag,
+  MIGRATION_0078.tag,
 ]);
 
-export const PRE_RELEASE_SCHEMA_INVARIANTS = Object.freeze([
-  Object.freeze({ id: "migration_ledger_rows", expected: "51", allowed: /^\d+$/ }),
+const preReleaseSchemaInvariants = (ledgerRows) => Object.freeze([
+  Object.freeze({ id: "migration_ledger_rows", expected: String(ledgerRows), allowed: /^\d+$/ }),
   ...[
     "public.orders",
     "public.inventory_transaction_log",
@@ -132,7 +137,8 @@ export const PRE_RELEASE_SCHEMA_INVARIANTS = Object.freeze([
   ...[
     "public.admin_settings_tenant_id_unique_idx",
   ].map((id) => Object.freeze({ id, expected: "index", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ })),
-  Object.freeze({ id: "public.catalogue_inventory_reconciliation_events", expected: "missing", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ }),
+  Object.freeze({ id: "public.catalogue_inventory_reconciliation_events", expected: ledgerRows === 51 ? "missing" : "table", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ }),
+  Object.freeze({ id: "public.inventory_history_baseline_repair_events", expected: "missing", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ }),
   ...[
     "public.catalog_items_tenant_id_id_unique",
     "public.inventory_locations_tenant_id_id_unique",
@@ -143,9 +149,13 @@ export const PRE_RELEASE_SCHEMA_INVARIANTS = Object.freeze([
   Object.freeze({ id: "admin_settings_duplicate_tenant_groups", expected: "0", allowed: /^\d+$/ }),
   Object.freeze({ id: "tenants_duplicate_casefolded_slug_groups", expected: "0", allowed: /^\d+$/ }),
 ]);
+export const PRE_RELEASE_SCHEMA_INVARIANTS = preReleaseSchemaInvariants(52);
 
-export function assertPreReleaseSchemaInvariantDiagnostics(rows) {
-  if (!Array.isArray(rows) || rows.length !== PRE_RELEASE_SCHEMA_INVARIANTS.length)
+export function assertPreReleaseSchemaInvariantDiagnostics(rows, ledgerRows = 52) {
+  if (![51, 52].includes(ledgerRows))
+    throw new Error("Isolated restore migration ledger length is not a recognized release predecessor");
+  const invariants = preReleaseSchemaInvariants(ledgerRows);
+  if (!Array.isArray(rows) || rows.length !== invariants.length)
     throw new Error("Isolated restore schema diagnostic result set is incomplete");
   const actualById = new Map();
   for (const row of rows) {
@@ -154,7 +164,7 @@ export function assertPreReleaseSchemaInvariantDiagnostics(rows) {
     actualById.set(row.id, row.actual);
   }
   const failures = [];
-  for (const invariant of PRE_RELEASE_SCHEMA_INVARIANTS) {
+  for (const invariant of invariants) {
     const actual = actualById.get(invariant.id);
     if (actual === undefined || !invariant.allowed.test(actual))
       throw new Error("Isolated restore schema diagnostic contained an unsafe or unknown value");
@@ -998,9 +1008,9 @@ function createSnapshot(compose, backupRoot) {
     compose,
     "SELECT id || '|' || hash || '|' || created_at::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (ledger.split("\n").length !== 51)
+  if (ledger.split("\n").length !== 52)
     throw new Error(
-      "Expected the recognized 51-row pre-0077 production ledger",
+      "Expected the recognized 52-row pre-0078 production ledger",
     );
   const counts = query(
     compose,
@@ -1063,7 +1073,7 @@ function createSnapshot(compose, backupRoot) {
   });
   writeFileSync(
     `${archive}.metadata.json`,
-    `${JSON.stringify({ sourceApiRevision: PRODUCTION_BASELINE.apiRevision, sourceApiImage: PRODUCTION_BASELINE.apiImage, sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision, sourcePlatformImage: PRODUCTION_BASELINE.platformImage, targetSha: releaseIdentity.sha, targetTree: releaseIdentity.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 51, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({ sourceApiRevision: PRODUCTION_BASELINE.apiRevision, sourceApiImage: PRODUCTION_BASELINE.apiImage, sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision, sourcePlatformImage: PRODUCTION_BASELINE.platformImage, targetSha: releaseIdentity.sha, targetTree: releaseIdentity.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 52, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
     { flag: "wx", mode: 0o600 },
   );
   chmodSync(partial, 0o600);
@@ -1105,6 +1115,7 @@ export function preReleaseSchemaDiagnosticSql() {
   for (const name of PRE_RELEASE_NAMED_INDEXES)
     add(`public.${name}`, relationTypeExpression(name));
   add("public.catalogue_inventory_reconciliation_events", relationTypeExpression("catalogue_inventory_reconciliation_events"));
+  add("public.inventory_history_baseline_repair_events", relationTypeExpression("inventory_history_baseline_repair_events"));
   for (const [name, columns] of PRE_RELEASE_UNIQUE_INDEXES) {
     add(
       `public.${name}`,
@@ -1257,6 +1268,9 @@ function restoreSnapshotInIsolation(snapshot) {
       throw new Error(
         "Isolated restore migration ledger differs from snapshot source",
       );
+    const ledgerRows = recoveredLedger.trim().split("\n").filter(Boolean).length;
+    if (![51, 52].includes(ledgerRows))
+      throw new Error("Isolated restore does not have a recognized 0077/0078 predecessor lineage");
     const invariantJson = run("docker", [
       "exec",
       name,
@@ -1277,7 +1291,7 @@ function restoreSnapshotInIsolation(snapshot) {
     } catch {
       throw new Error("Isolated restore schema diagnostic returned invalid JSON");
     }
-    assertPreReleaseSchemaInvariantDiagnostics(invariantRows);
+    assertPreReleaseSchemaInvariantDiagnostics(invariantRows, ledgerRows);
     const counts = run("docker", [
       "exec",
       name,
@@ -1296,38 +1310,47 @@ function restoreSnapshotInIsolation(snapshot) {
       throw new Error(
         "Restored representative table counts differ from snapshot metadata",
       );
-    const migrationPath = path.join(
-      PRODUCTION.root,
-      "releases",
-      releaseIdentity.sha,
-      "lib/db/drizzle/0077_catalogue_inventory_reconciliation.sql",
-    );
-    assertRealFilesystemPath(migrationPath, "file");
-    const migrationSource = readFileSync(migrationPath);
-    if (createHash("sha256").update(migrationSource).digest("hex") !== MIGRATION_0077.sha256)
-      throw new Error("Migration 0077 source checksum differs from the reviewed candidate");
-    const migrationFd = openSync(migrationPath, "r");
-    const rehearsal = spawnSync(
-      "docker",
-      [
-        "exec",
-        "-i",
-        name,
-        "psql",
-        "-U",
-        "postgres",
-        "-d",
-        "alavont_recovery",
-        "-X",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "--single-transaction",
-      ],
-      { stdio: [migrationFd, "pipe", "pipe"] },
-    );
-    closeSync(migrationFd);
-    if (rehearsal.error || rehearsal.status !== 0)
-      throw new Error("Isolated migration 0077 rehearsal failed");
+    const migrations = ledgerRows === 51
+      ? [
+          [MIGRATION_0077, "0077_catalogue_inventory_reconciliation.sql"],
+          [MIGRATION_0078, "0078_inventory_history_baseline_repair.sql"],
+        ]
+      : [[MIGRATION_0078, "0078_inventory_history_baseline_repair.sql"]];
+    for (const [migration, filename] of migrations) {
+      const migrationPath = path.join(
+        PRODUCTION.root,
+        "releases",
+        releaseIdentity.sha,
+        "lib/db/drizzle",
+        filename,
+      );
+      assertRealFilesystemPath(migrationPath, "file");
+      const migrationSource = readFileSync(migrationPath);
+      if (createHash("sha256").update(migrationSource).digest("hex") !== migration.sha256)
+        throw new Error(`Migration ${migration.tag.slice(0, 4)} source checksum differs from the reviewed candidate`);
+      const migrationFd = openSync(migrationPath, "r");
+      const rehearsal = spawnSync(
+        "docker",
+        [
+          "exec",
+          "-i",
+          name,
+          "psql",
+          "-U",
+          "postgres",
+          "-d",
+          "alavont_recovery",
+          "-X",
+          "-v",
+          "ON_ERROR_STOP=1",
+          "--single-transaction",
+        ],
+        { stdio: [migrationFd, "pipe", "pipe"] },
+      );
+      closeSync(migrationFd);
+      if (rehearsal.error || rehearsal.status !== 0)
+        throw new Error(`Isolated migration ${migration.tag.slice(0, 4)} rehearsal failed`);
+    }
     const rehearsalVerified = run("docker", [
       "exec",
       name,
@@ -1345,17 +1368,20 @@ function restoreSnapshotInIsolation(snapshot) {
         AND to_regprocedure('public.prevent_catalogue_reconciliation_mutation()') IS NOT NULL
         AND to_regprocedure('public.block_live_inventory_model_change()') IS NOT NULL
         AND (SELECT count(*) FROM pg_trigger WHERE tgname IN ('catalogue_inventory_reconciliation_immutable','catalogue_product_inventory_model_guard') AND NOT tgisinternal)=2
-        AND (SELECT count(*) FROM drizzle.__drizzle_migrations)=51`,
+        AND to_regclass('public.inventory_history_baseline_repair_events') IS NOT NULL
+        AND to_regprocedure('public.prevent_inventory_history_baseline_repair_mutation()') IS NOT NULL
+        AND (SELECT count(*) FROM pg_trigger WHERE tgname='inventory_history_baseline_repair_events_immutable' AND NOT tgisinternal)=1
+        AND (SELECT count(*) FROM drizzle.__drizzle_migrations)=${ledgerRows}`,
     ]).trim();
     if (rehearsalVerified !== "t")
-      throw new Error("Isolated migration 0077 rehearsal schema verification failed");
+      throw new Error("Isolated 0077/0078 rehearsal schema verification failed");
     const countsAfterRehearsal = run("docker", [
       "exec", name, "psql", "-U", "postgres", "-d", "alavont_recovery",
       "-X", "-v", "ON_ERROR_STOP=1", "-Atc",
       "SELECT 'orders='||(SELECT count(*) FROM orders)||';inventory_transaction_log='||(SELECT count(*) FROM inventory_transaction_log)||';inventory_reservations='||(SELECT count(*) FROM inventory_reservations)||';inventory_balances='||(SELECT count(*) FROM inventory_balances)||';catalog_items='||(SELECT count(*) FROM catalog_items)||';order_items='||(SELECT count(*) FROM order_items)",
     ]).trim();
     if (countsAfterRehearsal !== snapshot.counts.trim())
-      throw new Error("Migration 0077 rehearsal changed representative production data counts");
+      throw new Error("Migration 0077/0078 rehearsal changed representative production data counts");
     const isolation = JSON.parse(run("docker", ["inspect", name]))[0];
     if (
       isolation.HostConfig.NetworkMode !== "none" ||
@@ -1366,7 +1392,13 @@ function restoreSnapshotInIsolation(snapshot) {
       throw new Error(
         "Recovery database isolation label/network/volume mismatch",
       );
-    return { counts: counts.trim(), ledgerRows: 51, isolated: true, migration0077: true };
+    return {
+      counts: counts.trim(),
+      ledgerRows,
+      isolated: true,
+      migration0077: ledgerRows === 51,
+      migration0078: true,
+    };
   } finally {
     if (started) {
       const inspected = spawnSync("docker", ["inspect", name], {
@@ -1393,23 +1425,23 @@ function verifyMigration(compose) {
     compose,
     "SELECT substring(hash from 1 for 0) || id::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (actual.split("\n").length !== 52)
-    throw new Error("Production migration ledger count is not 52");
+  if (actual.split("\n").length !== 53)
+    throw new Error("Production migration ledger count is not 53");
   const journal = JSON.parse(
     readFileSync(
       path.join(compose.releaseRoot, "lib/db/drizzle/meta/_journal.json"),
       "utf8",
     ),
   );
-  if (journal.entries.length !== 52)
-    throw new Error("Candidate migration journal must contain all 52 canonical entries through 0077");
+  if (journal.entries.length !== 53)
+    throw new Error("Candidate migration journal must contain all 53 canonical entries through 0078");
   if (
     expected.some((tag) => !journal.entries.some((entry) => entry.tag === tag))
   )
-    throw new Error("Approved migration 0077 is missing from the candidate journal");
-  const migrationPath = path.join(compose.releaseRoot, "lib/db/drizzle/0077_catalogue_inventory_reconciliation.sql");
-  if (createHash("sha256").update(readFileSync(migrationPath)).digest("hex") !== MIGRATION_0077.sha256)
-    throw new Error("Migration 0077 source checksum differs from the reviewed candidate");
+    throw new Error("Approved migration 0078 is missing from the candidate journal");
+  const migrationPath = path.join(compose.releaseRoot, "lib/db/drizzle/0078_inventory_history_baseline_repair.sql");
+  if (createHash("sha256").update(readFileSync(migrationPath)).digest("hex") !== MIGRATION_0078.sha256)
+    throw new Error("Migration 0078 source checksum differs from the reviewed candidate");
   const validator = run(
     "docker",
     [
@@ -1429,7 +1461,9 @@ function verifyMigration(compose) {
   for (const tag of expected)
     if (!validator.includes(`APPLIED ${tag} `))
       throw new Error(`Post-migration validator did not confirm ${tag}`);
-  if (!validator.includes("recognized lineage preserved: 52/52"))
+  if (!validator.includes(`APPLIED ${MIGRATION_0077.tag} `))
+    throw new Error(`Post-migration validator did not preserve ${MIGRATION_0077.tag}`);
+  if (!validator.includes("recognized lineage preserved: 53/53"))
     throw new Error(
       "Post-migration validator did not confirm the complete candidate migration lineage",
     );
@@ -1472,6 +1506,21 @@ function verifyMigration(compose) {
   `);
   if (reconciliationSchema !== "t")
     throw new Error("Migration 0077 reconciliation schema is absent or structurally invalid");
+  const repairSchema = query(compose, `
+    SELECT
+      to_regclass('public.inventory_history_baseline_repair_events') IS NOT NULL
+      AND to_regprocedure('public.prevent_inventory_history_baseline_repair_mutation()') IS NOT NULL
+      AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='inventory_history_baseline_repair_events')=10
+      AND (SELECT count(*) FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype IN ('p','f','u'))=4
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND conname='inventory_history_baseline_repair_events_pkey' AND contype='p' AND convalidated)
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype='f' AND convalidated AND pg_get_constraintdef(oid,true)='FOREIGN KEY (tenant_id) REFERENCES tenants(id)')
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype='f' AND convalidated AND pg_get_constraintdef(oid,true)='FOREIGN KEY (tenant_id, product_id) REFERENCES catalogue_products(tenant_id, id)')
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.inventory_history_baseline_repair_events'::regclass AND contype='u' AND convalidated AND pg_get_constraintdef(oid,true)='UNIQUE (tenant_id, idempotency_key)')
+      AND (SELECT count(*) FROM pg_trigger WHERE tgname='inventory_history_baseline_repair_events_immutable' AND NOT tgisinternal)=1
+      AND (SELECT count(*) FROM drizzle.__drizzle_migrations WHERE created_at=${MIGRATION_0078.timestamp})=1
+  `);
+  if (repairSchema !== "t")
+    throw new Error("Migration 0078 repair evidence schema is absent or structurally invalid");
   verifyP0Schema(compose);
   const checks = query(
     compose,
@@ -1507,17 +1556,17 @@ export function classifyMigrationLineage(output) {
   ].map((match) => match[1]);
   if (
     JSON.stringify(pending) === JSON.stringify(expected) &&
-    output.includes("recognized lineage preserved: 51/52")
+    output.includes("recognized lineage preserved: 52/53")
   )
     return "pending";
   if (
     pending.length === 0 &&
     expected.every((tag) => output.includes(`APPLIED ${tag} `)) &&
-    output.includes("recognized lineage preserved: 52/52")
+    output.includes("recognized lineage preserved: 53/53")
   )
     return "applied";
   throw new Error(
-    `Production migration state is neither the exact 51-row pre-0077 path nor the verified 52-row applied lineage: ${pending.join(",")}`,
+    `Production migration state is neither the exact 52-row pre-0078 path nor the verified 53-row applied lineage: ${pending.join(",")}`,
   );
 }
 
@@ -1750,7 +1799,7 @@ async function main() {
         );
       });
       if (runtimeAlreadyAdvanced && migrationState !== "applied")
-        throw new Error("Approved runtime image cannot be resumed before the exact 52-row migration lineage is applied");
+        throw new Error("Approved runtime image cannot be resumed before the exact 53-row migration lineage is applied");
       if (migrationState === "applied") migrationStarted = true;
     },
     "verify-writer-inventory": async () => {
@@ -1806,7 +1855,7 @@ async function main() {
     },
     migrate: async () => {
       if (migrationState === "applied") {
-        console.log("production resume: exact 52-row migration lineage is already applied");
+        console.log("production resume: exact 53-row migration lineage is already applied");
         return;
       }
       migrationStarted = true;
@@ -1976,7 +2025,7 @@ async function main() {
     const rehearsal = restoreSnapshotInIsolation(preservedSnapshot);
     console.log("production rehearsal step complete=restore-rehearsal");
     console.log(
-      `production rehearsal result=passed release_sha=${sha} isolated=${rehearsal.isolated} migration_0077=${rehearsal.migration0077} ledger_rows=${rehearsal.ledgerRows}`,
+      `production rehearsal result=passed release_sha=${sha} isolated=${rehearsal.isolated} migration_0077=${rehearsal.migration0077} migration_0078=${rehearsal.migration0078} ledger_rows=${rehearsal.ledgerRows}`,
     );
     return;
   }
