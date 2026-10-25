@@ -33,10 +33,77 @@ import {
   mayRestoreRollbackApi,
   preReleaseSchemaDiagnosticSql,
   requestLoopbackJsonWithHost,
+  readSmokeComposeServiceInventory,
+  readSmokeRecentServiceLogs,
   runSmokeDockerCheck,
   sameWriterInventory,
   selectPreservedSnapshotMetadata,
 } from "./production-release.mjs";
+
+function captureSuccessfulDockerSpawn() {
+  const calls = [];
+  return {
+    calls,
+    spawn(command, args, options) {
+      calls.push({ command, args, options });
+      return { status: 0, signal: null, stdout: "[]", stderr: "" };
+    },
+  };
+}
+
+function assertPinnedSmokeComposeEnvironment(options) {
+  assert.equal(options.encoding, "utf8");
+  assert.equal(options.env.DEPLOY_SHA, APPROVED_RELEASE.sha);
+  assert.equal(
+    options.env.MYORDER_API_IMAGE,
+    `ghcr.io/ldshawver/myorder-api@${APPROVED_RELEASE.manifests.api}`,
+  );
+  assert.equal(
+    options.env.MYORDER_PLATFORM_IMAGE,
+    `ghcr.io/ldshawver/myorder-platform@${APPROVED_RELEASE.manifests.platform}`,
+  );
+  assert.equal(
+    options.env.MYORDER_MIGRATE_IMAGE,
+    `ghcr.io/ldshawver/myorder-migrate@${APPROVED_RELEASE.manifests.migrate}`,
+  );
+  assert.equal(options.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED, "false");
+}
+
+test("production smoke Compose service inventory uses the pinned release environment", () => {
+  const compose = { args: ["compose", "--project-name", PRODUCTION.project] };
+  const capture = captureSuccessfulDockerSpawn();
+  readSmokeComposeServiceInventory(compose, capture.spawn);
+  assert.equal(capture.calls.length, 1);
+  assert.equal(capture.calls[0].command, "docker");
+  assert.deepEqual(capture.calls[0].args, [
+    ...compose.args,
+    "ps",
+    "--format",
+    "json",
+  ]);
+  assertPinnedSmokeComposeEnvironment(capture.calls[0].options);
+});
+
+test("production smoke Compose log review uses the pinned release environment", () => {
+  const compose = { args: ["compose", "--project-name", PRODUCTION.project] };
+  const capture = captureSuccessfulDockerSpawn();
+  readSmokeRecentServiceLogs(compose, capture.spawn);
+  assert.equal(capture.calls.length, 1);
+  assert.equal(capture.calls[0].command, "docker");
+  assert.deepEqual(capture.calls[0].args, [
+    ...compose.args,
+    "logs",
+    "--no-color",
+    "--since",
+    "10m",
+    "--tail",
+    "500",
+    "api",
+    "platform",
+    "nginx",
+  ]);
+  assertPinnedSmokeComposeEnvironment(capture.calls[0].options);
+});
 
 for (const [checkName, label] of Object.entries(
   PRODUCTION_SMOKE_DOCKER_CHECKS,
@@ -105,11 +172,18 @@ test("every final-smoke Docker subprocess uses a specific safe diagnostic label"
   const end = controller.indexOf("\n    },\n  };", start);
   assert.ok(start >= 0 && end > start);
   const smoke = controller.slice(start, end);
-  for (const checkName of Object.keys(PRODUCTION_SMOKE_DOCKER_CHECKS))
+  for (const checkName of [
+    "activeTenantProjection",
+    "catalogueEligibilityProjection",
+    "projectContainerInventory",
+    "containerMetadataInspection",
+  ])
     assert.match(
       smoke,
       new RegExp(`PRODUCTION_SMOKE_DOCKER_CHECKS\\.${checkName}`),
     );
+  assert.match(smoke, /readSmokeComposeServiceInventory\(compose\)/);
+  assert.match(smoke, /readSmokeRecentServiceLogs\(compose\)/);
   assert.doesNotMatch(smoke, /\brun\("docker"/);
 });
 
