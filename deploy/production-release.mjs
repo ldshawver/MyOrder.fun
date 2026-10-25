@@ -627,6 +627,35 @@ export function runSmokeDockerCheck(
   return result.stdout ?? "";
 }
 
+export function readSmokeComposeServiceInventory(compose, spawn = spawnSync) {
+  return runSmokeDockerCheck(
+    PRODUCTION_SMOKE_DOCKER_CHECKS.composeServiceInventory,
+    [...compose.args, "ps", "--format", "json"],
+    { env: releaseComposeEnvironment() },
+    spawn,
+  );
+}
+
+export function readSmokeRecentServiceLogs(compose, spawn = spawnSync) {
+  return runSmokeDockerCheck(
+    PRODUCTION_SMOKE_DOCKER_CHECKS.recentServiceLogReview,
+    [
+      ...compose.args,
+      "logs",
+      "--no-color",
+      "--since",
+      "10m",
+      "--tail",
+      "500",
+      "api",
+      "platform",
+      "nginx",
+    ],
+    { env: releaseComposeEnvironment() },
+    spawn,
+  );
+}
+
 function sha256File(filename) {
   const hash = createHash("sha256");
   const input = createReadStream(filename);
@@ -1999,12 +2028,7 @@ async function main() {
           );
         accessResults.push(`${name}:${response.status}`);
       }
-      const services = runSmokeDockerCheck(PRODUCTION_SMOKE_DOCKER_CHECKS.composeServiceInventory, [
-        ...compose.args,
-        "ps",
-        "--format",
-        "json",
-      ]);
+      const services = readSmokeComposeServiceInventory(compose);
       if (
         !services.includes("api") ||
         !services.includes("platform") ||
@@ -2059,18 +2083,7 @@ async function main() {
         afterByService.get("platform").Config.Image !== approvedImageReference("platform")
       )
         throw new Error("Production API/platform image digest mismatch");
-      const recentLogs = runSmokeDockerCheck(PRODUCTION_SMOKE_DOCKER_CHECKS.recentServiceLogReview, [
-        ...compose.args,
-        "logs",
-        "--no-color",
-        "--since",
-        "10m",
-        "--tail",
-        "500",
-        "api",
-        "platform",
-        "nginx",
-      ]);
+      const recentLogs = readSmokeRecentServiceLogs(compose);
       const secretLikeLogEntries = (
         recentLogs.match(
           /(?:PAYPAL_CLIENT_SECRET|UBER_CLIENT_SECRET|SETTINGS_ENC_KEY|CLERK_SECRET_KEY|PRINT_BRIDGE_API_KEY)\s*[:=]\s*(?!\[REDACTED\])\S+|authorization\s*:\s*bearer\s+\S+/gi,
