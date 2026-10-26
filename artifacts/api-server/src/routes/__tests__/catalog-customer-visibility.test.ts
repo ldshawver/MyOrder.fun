@@ -171,6 +171,40 @@ describe("customer catalogue visibility", () => {
     expect(response.body.items[0].sellableProduct.options.map((option: { id: number; label: string }) => [option.id, option.label]))
       .toEqual([[179, "Small"], [180, "Medium"], [181, "Large"]]);
   });
+
+  it("keeps a missing inventory balance fail-closed without failing the whole catalogue response", async () => {
+    rows.catalog = [catalogRow(185, { name: "Uncounted local item", stockQuantity: null })];
+    rows.products = [{ id: 180, tenantId: 1, name: "Uncounted local item", active: true }];
+    rows.options = [{
+      id: 182,
+      productId: 180,
+      catalogItemId: 185,
+      label: "Standard",
+      price: "25.00",
+      sku: "UNCOUNTED-LOCAL",
+      inventoryStatus: "missing_balance",
+      balanceRowCount: 0,
+      stockOnHand: null,
+      reservedQuantity: null,
+      availableQuantity: null,
+      orderable: false,
+    }];
+
+    const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont");
+
+    expect(response.status, response.text).toBe(200);
+    expect(response.body).toMatchObject({
+      total: 1,
+      items: [{
+        id: 185,
+        sellableProduct: {
+          id: 180,
+          options: [{ inventoryStatus: "missing_balance", orderable: false }],
+        },
+      }],
+    });
+    expect(response.body.items[0]).not.toHaveProperty("stockQuantity");
+  });
   it("returns only the tenant's eligible local catalogue rows without using inventory location or customer identity as a predicate", async () => {
     rows.catalog = [
       catalogRow(1),

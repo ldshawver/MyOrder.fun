@@ -182,6 +182,9 @@ function mapItem(
   const resolvedImageUrl = i.alavontImageUrl ?? i.imageUrl ?? undefined;
   const resolvedLuciferImageUrl = alavontOnly ? null : (i.luciferCruzImageUrl ?? i.imageUrl ?? null);
   const mediaGallery = normalizeMediaGallery(i.mediaGallery, alavontOnly ? resolvedImageUrl : (resolvedLuciferImageUrl ?? resolvedImageUrl));
+  const stockQuantity = linkedInventoryStock !== undefined
+    ? linkedInventoryStock
+    : (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null);
   return {
     id: i.id,
     tenantId: i.tenantId,
@@ -191,9 +194,11 @@ function mapItem(
     sku: i.sku ?? undefined,
     price: parseFloat(i.price as string),
     compareAtPrice: i.compareAtPrice != null ? parseFloat(i.compareAtPrice as string) : null,
-    stockQuantity: linkedInventoryStock !== undefined
-      ? linkedInventoryStock
-      : (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
+    // Missing tracked inventory is intentionally unknown, not zero. The API
+    // contract represents an unknown optional quantity by omitting the field;
+    // the sellable option remains present with inventoryStatus=missing_balance
+    // and orderable=false.
+    ...(stockQuantity == null ? {} : { stockQuantity }),
     isAvailable: i.isAvailable,
     isTaxable: i.isTaxable,
     imageUrl: resolvedImageUrl,
