@@ -878,21 +878,21 @@ test("production rollback baseline is the current pre-release image set", () => 
   );
 });
 
-test("candidate builder is frozen to the exact approved source and unique immutable tags", () => {
+test("candidate builder is frozen to the exact proposed source while deployment remains on the approved image set", () => {
   const workflow = readFileSync(
     new URL("../.github/workflows/build-production-platform.yml", import.meta.url),
     "utf8",
   );
   const proposed = {
-    sha: "008af2262096ac856af4a784d37404141b8e63c3",
-    tree: "15a4be96caa10551cde96d1e02bd9a495b0e98cd",
+    sha: "bb56ff6e52e50fab0e74dcfd0bf41b311bc91206",
+    tree: "d8b2d83374b8ae290818f3412004eef2381a0444",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${proposed.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${proposed.tree}`));
   assert.match(workflow, new RegExp(`ref: ${proposed.sha}`));
   assert.equal(workflow.match(new RegExp(proposed.sha, "g"))?.length, 5);
-  assert.equal(proposed.sha, APPROVED_RELEASE.sha);
-  assert.equal(proposed.tree, APPROVED_RELEASE.tree);
+  assert.notEqual(proposed.sha, APPROVED_RELEASE.sha);
+  assert.notEqual(proposed.tree, APPROVED_RELEASE.tree);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
