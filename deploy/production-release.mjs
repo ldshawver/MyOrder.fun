@@ -28,39 +28,39 @@ export const FROZEN_RELEASE = Object.freeze({
   tree: "5d28e84ac2cf71aa6c99f42b299fedfcde51079f",
 });
 export const APPROVED_RELEASE = Object.freeze({
-  sha: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
-  tree: "e34c23fbe19f1a1813d24298454f0a8abbd1c3ab",
+  sha: "b129ce3113ccabf26a0723355dce2f12ca3cf41e",
+  tree: "0fedf800e58982363d740ad3ef3c945a210e2b26",
   // Production's containerd-backed Docker image store reports the immutable
   // manifest digest as image.Id. Keep registry manifests and their referenced
   // image-config digests separate so neither identity can stand in for the other.
   manifests: Object.freeze({
-    api: "sha256:acf3279c72c6ef2d9cd2f64fa4eab9d36d175a17c63422661996d0152477ad38",
-    platform: "sha256:d81df6632045b3b254b366820cfa33818508b704e478eae9ec2ab7cb32380a52",
-    migrate: "sha256:44a0b92e07012fa773490b034c391534aaabf6d0ed27314823fbe3ecc6cb1fb9",
+    api: "sha256:24b68d3553e57aa63254aeca2e4baa603756c83d911cfb8cb2f20b57fbe5f4dd",
+    platform: "sha256:2082268d64cbbdfcdbf6d610a8cf134eb0d339e567388746aa5af5b42653607f",
+    migrate: "sha256:fd51ed9afc114da542ae5ed13a1bf7e55169b49411455c52aedfd36e7083edaf",
   }),
   configs: Object.freeze({
-    api: "sha256:64453aab7645063ec733c9d9edb3bfec76a5ed812ea8accb75a986da219091d2",
-    platform: "sha256:de229245dc36baf69eff446c81afc709f4dca06028b297e0bf2ac9c95aa09695",
-    migrate: "sha256:3e946f86f89f0c397777b5f1c6d79c016ac6f9c76716c3867b9a0d0da157ee1c",
+    api: "sha256:2b4944af5265f8458a36149882af25c8865fa8d3a6223b44efc2740c4ab84409",
+    platform: "sha256:e2d06676b71433c03a917ff912c4161a2e7a232705500a91183ad9576da0bb4f",
+    migrate: "sha256:762825d40914a549b524f83d37ddde49a04ddbf282b7d467ce41436ad872c332",
   }),
   revisions: Object.freeze({
-    api: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
-    platform: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
-    migrate: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
+    api: "b129ce3113ccabf26a0723355dce2f12ca3cf41e",
+    platform: "b129ce3113ccabf26a0723355dce2f12ca3cf41e",
+    migrate: "b129ce3113ccabf26a0723355dce2f12ca3cf41e",
   }),
   references: Object.freeze({
-    api: "ghcr.io/ldshawver/myorder-api@sha256:acf3279c72c6ef2d9cd2f64fa4eab9d36d175a17c63422661996d0152477ad38",
-    platform: "ghcr.io/ldshawver/myorder-platform@sha256:d81df6632045b3b254b366820cfa33818508b704e478eae9ec2ab7cb32380a52",
-    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:44a0b92e07012fa773490b034c391534aaabf6d0ed27314823fbe3ecc6cb1fb9",
+    api: "ghcr.io/ldshawver/myorder-api@sha256:24b68d3553e57aa63254aeca2e4baa603756c83d911cfb8cb2f20b57fbe5f4dd",
+    platform: "ghcr.io/ldshawver/myorder-platform@sha256:2082268d64cbbdfcdbf6d610a8cf134eb0d339e567388746aa5af5b42653607f",
+    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:fd51ed9afc114da542ae5ed13a1bf7e55169b49411455c52aedfd36e7083edaf",
   }),
 });
 export const PRODUCTION_BASELINE = Object.freeze({
-  apiImage: "sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40",
-  apiRevision: "583d556c8d3a5a094641ea229835d7c3397de1b1",
-  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:78de1a73cf7026cbebe10dab3f2acb16fe70fe0c2e402df261f9954ed31dfb40",
-  platformImage: "sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd",
-  platformRevision: "583d556c8d3a5a094641ea229835d7c3397de1b1",
-  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:fc0d88d9ed9ed5547b9582fed1d9d05cefd139f0606a14675fa3f47c48b889fd",
+  apiImage: "sha256:acf3279c72c6ef2d9cd2f64fa4eab9d36d175a17c63422661996d0152477ad38",
+  apiRevision: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
+  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:acf3279c72c6ef2d9cd2f64fa4eab9d36d175a17c63422661996d0152477ad38",
+  platformImage: "sha256:d81df6632045b3b254b366820cfa33818508b704e478eae9ec2ab7cb32380a52",
+  platformRevision: "e3b71aefbba59c34dd1164e25e1abb8dcc7771db",
+  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:d81df6632045b3b254b366820cfa33818508b704e478eae9ec2ab7cb32380a52",
   nginxImage: "sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a",
   nginxReference: "nginx:alpine",
   databaseImage: "sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229",
