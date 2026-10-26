@@ -64,7 +64,7 @@ test("unknown, missing, reordered and fabricated historical rows fail", () => {
   assert.throws(() => validateAppliedLineage(local, fabricatedId));
 });
 
-test("49-row staging permits only the ordered 0077 and 0078 continuation", () => {
+test("49-row staging permits only the ordered 0077, 0078, and 0079 continuation", () => {
   const before = [...staging];
   for (const index of [39, 40, 41, 42, 46, 47, 48, 49, 50]) {
     before.push({ id: before.length + 1, hash: local[index].hash, created_at: String(local[index].when) });
@@ -73,9 +73,10 @@ test("49-row staging permits only the ordered 0077 and 0078 continuation", () =>
   const verified = validateAppliedLineage(local, before);
   const pending = local.map((_: unknown, index: number) => index)
     .filter((index: number) => !verified.appliedJournalIndices.has(index));
-  assert.deepEqual(pending, [51, 52]);
+  assert.deepEqual(pending, [51, 52, 53]);
   assert.equal(local[51].tag, "0077_catalogue_inventory_reconciliation");
   assert.equal(local[52].tag, "0078_inventory_history_baseline_repair");
+  assert.equal(local[53].tag, "0079_verified_zero_opening_counts");
   assert.deepEqual(historicalStagingInventory.forwardIndices.slice(before.length - 40), pending);
 
   const reconciliation = { id: 50, hash: local[51].hash, created_at: String(local[51].when) };
@@ -85,15 +86,24 @@ test("49-row staging permits only the ordered 0077 and 0078 continuation", () =>
   assert.deepEqual(
     local.map((_: unknown, index: number) => index)
       .filter((index: number) => !reconciliationVerified.appliedJournalIndices.has(index)),
-    [52],
+    [52, 53],
   );
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterReconciliation.length - 40), [52]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterReconciliation.length - 40), [52, 53]);
 
   const repair = { id: 51, hash: local[52].hash, created_at: String(local[52].when) };
   const afterRepair = [...afterReconciliation, repair];
   assert.equal(afterRepair.length, 51);
-  assert.equal(validateAppliedLineage(local, afterRepair).appliedJournalIndices.size, local.length);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterRepair.length - 40), []);
+  assert.deepEqual(
+    local.map((_: unknown, index: number) => index)
+      .filter((index: number) => !validateAppliedLineage(local, afterRepair).appliedJournalIndices.has(index)),
+    [53],
+  );
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterRepair.length - 40), [53]);
+
+  const zeroOpening = { id: 52, hash: local[53].hash, created_at: String(local[53].when) };
+  const afterZeroOpening = [...afterRepair, zeroOpening];
+  assert.equal(validateAppliedLineage(local, afterZeroOpening).appliedJournalIndices.size, local.length);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterZeroOpening.length - 40), []);
 
   assert.throws(() => validateAppliedLineage(local, [...before, { ...reconciliation, hash: "0".repeat(64) }]));
   assert.throws(() => validateAppliedLineage(local, [...before, { ...reconciliation, created_at: String(local[51].when + 1) }]));
@@ -102,4 +112,8 @@ test("49-row staging permits only the ordered 0077 and 0078 continuation", () =>
   assert.throws(() => validateAppliedLineage(local, [...afterReconciliation, { ...repair, created_at: String(local[52].when + 1) }]));
   assert.throws(() => validateAppliedLineage(local, [...afterReconciliation.slice(0, -1), repair]));
   assert.throws(() => validateAppliedLineage(local, [...afterRepair, { ...repair, id: 52 }]));
+  assert.throws(() => validateAppliedLineage(local, [...afterRepair, { ...zeroOpening, hash: "0".repeat(64) }]));
+  assert.throws(() => validateAppliedLineage(local, [...afterRepair, { ...zeroOpening, created_at: String(local[53].when + 1) }]));
+  assert.throws(() => validateAppliedLineage(local, [...afterRepair.slice(0, -1), zeroOpening]));
+  assert.throws(() => validateAppliedLineage(local, [...afterZeroOpening, { ...zeroOpening, id: 53 }]));
 });

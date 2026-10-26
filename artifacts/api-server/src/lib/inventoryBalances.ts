@@ -18,6 +18,7 @@ import {
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "./inventoryHealth";
 import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
 import { logger } from "./logger";
+import { locallyManagedSellableCatalogWhere } from "./localInventoryEligibility";
 
 let inventoryTablesEnsured = false;
 type InventoryDeductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -329,8 +330,9 @@ export interface CatalogInventoryLocationSnapshot {
   type: string;
   csrBoxId: number | null;
   displayOrder: number | null;
-  qty: number;
-  par: number;
+  qty: number | null;
+  par: number | null;
+  hasBalance: boolean;
 }
 
 export interface CatalogInventorySnapshotItem {
@@ -356,6 +358,8 @@ export interface CatalogInventorySnapshotItem {
   inventoryKind: "sellable_catalog";
   locations: CatalogInventoryLocationSnapshot[];
   totalStock: number;
+  inventoryStatus: "ready" | "missing_balance";
+  missingBalanceLocationIds: number[];
 }
 
 
@@ -403,8 +407,9 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
   items: CatalogInventorySnapshotItem[];
   locations: Array<{ id: number; name: string; type: string; csrBoxId: number | null; displayOrder: number | null }>;
 }> {
-  // Inventory/PAR must show only real catalog identities that already have
-  // inventory rows. Safe presentation fields must never synthesize products.
+  // Inventory/PAR lists every locally-managed sellable catalogue identity.
+  // Missing balances remain explicit; they are never materialized or treated
+  // as zero by this read path.
   await ensureStandardLocations(tenantId);
   const [products, locations, balances] = await Promise.all([
     db.select({
@@ -426,19 +431,7 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
       preferredReorderQuantity: catalogItemsTable.preferredReorderQuantity,
       costBasis: catalogItemsTable.costBasis,
     }).from(catalogItemsTable)
-      .where(and(
-        eq(catalogItemsTable.tenantId, tenantId),
-        sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`,
-        sql`coalesce(${catalogItemsTable.isLocalAlavont}, true) = true`,
-        eq(catalogItemsTable.isAvailable, true),
-        sql`coalesce((${catalogItemsTable.metadata}->>'archived')::boolean, false) = false`,
-        sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`,
-        sql`EXISTS (
-          SELECT 1 FROM inventory_balances ib
-          WHERE ib.tenant_id = ${tenantId}
-            AND ib.product_id = ${catalogItemsTable.id}
-        )`
-      ))
+      .where(locallyManagedSellableCatalogWhere(tenantId))
       .orderBy(asc(catalogItemsTable.id)),
     db.select().from(inventoryLocationsTable)
       .where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true)))
@@ -464,12 +457,14 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
         type: loc.type,
         csrBoxId: loc.csrBoxId,
         displayOrder: loc.displayOrder,
-        qty: b ? parseFloat(String(b.quantityOnHand)) : 0,
-        par: b ? parseFloat(String(b.parLevel)) : 0,
+        qty: b ? parseFloat(String(b.quantityOnHand)) : null,
+        par: b ? parseFloat(String(b.parLevel)) : null,
+        hasBalance: Boolean(b),
       };
     });
-    const totalStock = locationBreakdown.reduce((total, loc) => total + loc.qty, 0);
-    const parLevel = locationBreakdown.reduce((total, loc) => total + loc.par, 0);
+    const totalStock = locationBreakdown.reduce((total, loc) => total + (loc.qty ?? 0), 0);
+    const parLevel = locationBreakdown.reduce((total, loc) => total + (loc.par ?? 0), 0);
+    const missingBalanceLocationIds = locationBreakdown.filter(loc => !loc.hasBalance).map(loc => loc.locationId);
     return {
       id: item.id,
       sku: item.sku ?? null,
@@ -493,6 +488,8 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
       inventoryKind: "sellable_catalog",
       locations: locationBreakdown,
       totalStock,
+      inventoryStatus: missingBalanceLocationIds.length === 0 ? "ready" : "missing_balance",
+      missingBalanceLocationIds,
     };
   });
   return { items, locations: locationMeta };

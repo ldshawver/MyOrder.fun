@@ -32,7 +32,7 @@ import {
 import { collectPosIntegrityReport, assertPosIntegrityReport, PosIntegrityError } from "../lib/posIntegrity";
 import { collectInventoryReconcileReport, reconcileInventoryState } from "../lib/inventoryAuthority";
 import { ensureInventoryTransactionLogTable, replayInventoryTransaction } from "../lib/inventoryKernel";
-import { InventoryMovementError, inventoryMovementTypes, normalizedCanonicalDecimal, postInventoryMovement, setCatalogBalanceParProjection, transferInventory } from "../lib/inventoryMovementLedger";
+import { InventoryMovementError, inventoryMovementTypes, normalizedCanonicalDecimal, postCatalogOpeningCount, postInventoryMovement, setCatalogBalanceParProjection, transferInventory } from "../lib/inventoryMovementLedger";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -136,6 +136,15 @@ const transferBody = z.object({
 const receiptBody = z.object({
   entityType: z.enum(["catalog", "non_catalog"]), itemId: z.number().int().positive(), locationId: z.number().int().positive(), quantity: movementDecimal, unitCost: movementDecimal,
   supplierReference: z.string().trim().max(240).optional(), reference: z.string().trim().max(240).optional(), receivedAt: z.string().datetime({ offset: true }).optional(), idempotencyKey: movementText,
+}).strict();
+const openingCountBody = z.object({
+  itemId: z.number().int().positive(),
+  locationId: z.number().int().positive(),
+  quantity: movementDecimal,
+  unitCost: movementDecimal.optional(),
+  reasonText: z.string().trim().min(8).max(1000),
+  evidenceReference: z.string().trim().min(1).max(240).optional(),
+  idempotencyKey: movementText,
 }).strict();
 const catalogReplenishmentBody = z.object({
   locationId: z.number().int().positive().optional(),
@@ -247,6 +256,23 @@ router.post("/admin/inventory/receipts", requirePermission("inventory.manage"), 
     });
     res.status(result.movement.idempotent ? 200 : 201).json(result);
   } catch (error) { res.status(error instanceof InventoryMovementError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Receipt failed" }); }
+});
+
+router.post("/admin/inventory/opening-counts", requirePermission("inventory.manage"), async (req, res): Promise<void> => {
+  const parsed = openingCountBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+  const actor = req.dbUser!;
+  const tenantId = await resolveInventoryTenantId(req);
+  try {
+    const movement = await db.transaction(tx => postCatalogOpeningCount(tx, {
+      tenantId,
+      actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip },
+      ...parsed.data,
+    }));
+    res.status(movement.idempotent ? 200 : 201).json({ movement });
+  } catch (error) {
+    res.status(error instanceof InventoryMovementError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Opening count failed" });
+  }
 });
 
 router.post("/admin/inventory/movements", requirePermission("inventory.manage"), async (req, res): Promise<void> => {

@@ -99,6 +99,7 @@ jobs:
           scripts/migration-lineage.test.ts
           scripts/reconciliation-schema.test.ts
           scripts/tenant-slug-uniqueness.test.ts
+          scripts/verified-zero-opening-migration.test.ts
           scripts/woo-store-url-migration.test.ts
       - name: Run guarded production release orchestration tests
         run: node --test deploy/production-release.test.mjs

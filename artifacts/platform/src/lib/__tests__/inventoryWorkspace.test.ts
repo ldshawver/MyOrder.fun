@@ -29,13 +29,13 @@ describe("inventory workspace loading", () => {
     expect(request).toHaveBeenCalledTimes(8);
   });
 
-  it("keeps location-filtered catalogue rows within the selected location", () => {
+  it("keeps items with missing location balances visible under a location filter", () => {
     const products = [
       { id: 1, locations: [{ locationId: 10 }] },
       { id: 2, locations: [{ locationId: 20 }] },
       { id: 3, locations: [] },
     ];
-    expect(catalogueItemsAtLocation(products, 10).map(row => row.id)).toEqual([1]);
+    expect(catalogueItemsAtLocation(products, 10).map(row => row.id)).toEqual([1, 2, 3]);
     expect(catalogueItemsAtLocation(products, null)).toEqual(products);
   });
 });
