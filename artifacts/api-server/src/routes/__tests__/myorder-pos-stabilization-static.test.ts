@@ -21,8 +21,8 @@ function api(path: string): string {
 
 // Production authorization is independent of the staging-only d69275f candidate.
 const approvedProduction = {
-  sha: "b129ce3113ccabf26a0723355dce2f12ca3cf41e",
-  tree: "0fedf800e58982363d740ad3ef3c945a210e2b26",
+  sha: "1c57b0066d12b1bc3e64d177e9e4cdd1078523a4",
+  tree: "65d00c9dc06c7dd5812c00e07aef22ecad4a4d70",
 };
 
 function productionPinGuard(workflow: string): string {
