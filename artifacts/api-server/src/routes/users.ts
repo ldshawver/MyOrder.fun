@@ -187,6 +187,13 @@ router.use(requireAuth, loadDbUser, requireDbUser);
 //  - /users/me/*      — e.g. /users/me/phone so pending users can add contact info
 // All other /users/* routes (list, role change, status change) require approval.
 router.use((req, res, next) => {
+  // This router is mounted at /api alongside the other feature routers. Do
+  // not let its approval policy intercept catalogue (or any other feature)
+  // before that feature can apply its own, narrower authorization policy.
+  const usersRoute = req.path === "/users" || req.path.startsWith("/users/")
+    || req.path === "/admin/users" || req.path.startsWith("/admin/users/");
+  if (!usersRoute) return next();
+
   const ownerMutation = /^\/admin\/users(?:\/(?:all|pending|waitlist)|\/\d+\/(?:approval|status|reconcile)?|\/waitlist\/[^/]+\/(?:invite|reject))?$/.test(req.path);
   if (
     req.path === "/users/me" ||

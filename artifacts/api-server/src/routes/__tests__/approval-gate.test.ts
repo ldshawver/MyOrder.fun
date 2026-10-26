@@ -225,6 +225,7 @@ function configureDbForUser(user: Record<string, unknown> | null) {
 // Import real routers AFTER mocks are in place
 // ---------------------------------------------------------------------------
 import catalogRouter from "../catalog";
+import catalogueProductsRouter from "../catalogue-products";
 import ordersRouter from "../orders";
 import aiRouter from "../ai";
 import usersRouter from "../users";
@@ -276,6 +277,57 @@ describe("Approval gate — catalog endpoints", () => {
     const app = buildApp(catalogRouter);
     const res = await supertest(app).get("/api/catalog");
     expect(res.status).toBe(200);
+  });
+
+  it.each([
+    "/api/catalog",
+    "/api/catalog/categories?mode=lucifer",
+    "/api/catalogue/products",
+  ])("does not let the users-router provenance gate shadow catalogue access at %s", async (path) => {
+    const legacyCustomer = {
+      ...makeApprovedUser(),
+      clerkId: "test-clerk-id",
+      role: "user",
+      tenantId: 7,
+      approvedByClerkId: null,
+      approvedAt: null,
+      identityStatus: "verified",
+      provisioningStatus: "active",
+    };
+    let lookupCount = 0;
+    (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      lookupCount++;
+      return makeDrizzleChain(lookupCount <= 2 ? [legacyCustomer] : []);
+    });
+
+    const app = buildApp(usersRouter, catalogRouter, catalogueProductsRouter);
+    const res = await supertest(app).get(path);
+
+    expect(res.status, res.text).toBe(200);
+  });
+
+  it("keeps server-derived tenant denial after the users-router handoff", async () => {
+    const legacyCustomer = {
+      ...makeApprovedUser(),
+      clerkId: "test-clerk-id",
+      role: "user",
+      tenantId: 7,
+      approvedByClerkId: null,
+      approvedAt: null,
+      identityStatus: "verified",
+      provisioningStatus: "active",
+    };
+    let lookupCount = 0;
+    (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      lookupCount++;
+      return makeDrizzleChain(lookupCount <= 2 ? [legacyCustomer] : []);
+    });
+
+    const app = buildApp(usersRouter, catalogRouter);
+    const res = await supertest(app).get("/api/catalog?tenantId=8&mode=lucifer");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/tenant assignment does not match/i);
   });
 
   it("rejects unauthenticated requests with 401", async () => {
