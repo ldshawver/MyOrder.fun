@@ -15,7 +15,10 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog 
 import { requirePermission } from "../lib/roles";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+// Keep this router's privileged approval policy scoped to routes it owns.
+// A router-wide middleware without a path also intercepts unrelated routers
+// mounted after this one (including the customer catalogue).
+router.use("/tenants", requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 function mapTenant(t: typeof tenantsTable.$inferSelect) {
   return {

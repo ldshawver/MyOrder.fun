@@ -283,7 +283,7 @@ describe("Approval gate — catalog endpoints", () => {
     "/api/catalog",
     "/api/catalog/categories?mode=lucifer",
     "/api/catalogue/products",
-  ])("does not let the users-router provenance gate shadow catalogue access at %s", async (path) => {
+  ])("does not let an earlier router's provenance gate shadow catalogue access at %s", async (path) => {
     const legacyCustomer = {
       ...makeApprovedUser(),
       clerkId: "test-clerk-id",
@@ -300,7 +300,9 @@ describe("Approval gate — catalog endpoints", () => {
       return makeDrizzleChain(lookupCount <= 2 ? [legacyCustomer] : []);
     });
 
-    const app = buildApp(usersRouter, catalogRouter, catalogueProductsRouter);
+    // Match the relevant production order: tenants is mounted after users and
+    // before both catalogue routers.
+    const app = buildApp(usersRouter, tenantsRouter, catalogRouter, catalogueProductsRouter);
     const res = await supertest(app).get(path);
 
     expect(res.status, res.text).toBe(200);
@@ -323,7 +325,7 @@ describe("Approval gate — catalog endpoints", () => {
       return makeDrizzleChain(lookupCount <= 2 ? [legacyCustomer] : []);
     });
 
-    const app = buildApp(usersRouter, catalogRouter);
+    const app = buildApp(usersRouter, tenantsRouter, catalogRouter);
     const res = await supertest(app).get("/api/catalog?tenantId=8&mode=lucifer");
 
     expect(res.status).toBe(403);
@@ -690,6 +692,23 @@ describe("Approval gate — tenants endpoints", () => {
     const res = await supertest(app).get("/api/tenants");
     expect(res.status).toBe(403);
     expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("keeps approval provenance mandatory on tenant administration routes", async () => {
+    configureDbForUser({
+      ...makeApprovedUser(),
+      role: "user",
+      tenantId: 7,
+      approvedByClerkId: null,
+      approvedAt: null,
+      identityStatus: "verified",
+      provisioningStatus: "active",
+    });
+    const app = buildApp(tenantsRouter);
+    const res = await supertest(app).get("/api/tenants");
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("ACCOUNT_APPROVAL_PROVENANCE_REQUIRED");
   });
 
   it("rejects unauthenticated requests with 401", async () => {
