@@ -308,6 +308,130 @@ export async function postInventoryMovementInTransaction(command: PostInventoryM
   return db.transaction((tx) => postInventoryMovement(tx, command));
 }
 
+export type CatalogOpeningCountCommand = {
+  tenantId: number;
+  actor: InventoryMovementActor;
+  itemId: number;
+  locationId: number;
+  quantity: string;
+  unitCost?: string | null;
+  reasonText: string;
+  evidenceReference?: string | null;
+  idempotencyKey: string;
+};
+
+/**
+ * Establishes a previously-unknown product/location balance through the
+ * immutable inventory ledger. This is intentionally narrower than a general
+ * balance edit: an existing balance must use receipt/adjustment commands.
+ */
+export async function postCatalogOpeningCount(tx: LedgerExecutor, command: CatalogOpeningCountCommand): Promise<PostedInventoryMovement> {
+  assertCanonicalDecimal(command.quantity, "quantity", true);
+  const isZero = /^0(?:\.0+)?$/.test(command.quantity);
+  if (!isZero) {
+    if (command.unitCost == null) throw new InventoryMovementError(422, "A known positive unit cost is required for a positive opening count");
+    assertCanonicalDecimal(command.unitCost, "unitCost");
+  }
+  if (command.reasonText.trim().length < 8) throw new InventoryMovementError(422, "Opening-count reason must contain at least 8 characters");
+  if (!command.idempotencyKey || command.idempotencyKey.length > 120) throw new InventoryMovementError(422, "A valid idempotency key is required");
+
+  const existing = rows<{ id: number; catalogItemId: number | null; locationId: number; quantityDelta: unknown; sourceType: string; preQuantity: unknown; postQuantity: unknown; unitCost: unknown; extendedCost: unknown; preAverage: unknown; postAverage: unknown }>(await tx.execute(sql`
+    SELECT id, catalog_item_id AS "catalogItemId", location_id AS "locationId", quantity_delta AS "quantityDelta",
+      source_type AS "sourceType", pre_quantity AS "preQuantity", post_quantity AS "postQuantity", unit_cost AS "unitCost",
+      extended_cost AS "extendedCost", pre_average_unit_cost AS "preAverage", post_average_unit_cost AS "postAverage"
+    FROM inventory_movements
+    WHERE tenant_id = ${command.tenantId} AND idempotency_key = ${command.idempotencyKey} AND movement_index = 0
+    LIMIT 1
+  `))[0];
+  if (existing) {
+    const sameRequest = existing.sourceType === "verified_opening_count"
+      && Number(existing.catalogItemId) === command.itemId
+      && Number(existing.locationId) === command.locationId
+      && normalizedCanonicalDecimal(String(existing.quantityDelta)) === normalizedCanonicalDecimal(command.quantity);
+    if (!sameRequest) throw new InventoryMovementError(409, "Idempotency key is already in use for a different opening count");
+    return { id: Number(existing.id), quantityDelta: String(existing.quantityDelta), preQuantity: String(existing.preQuantity), postQuantity: String(existing.postQuantity), unitCost: asNullableDecimal(existing.unitCost), extendedCost: asNullableDecimal(existing.extendedCost), preAverageUnitCost: asNullableDecimal(existing.preAverage), postAverageUnitCost: asNullableDecimal(existing.postAverage), idempotent: true };
+  }
+
+  const [eligible] = rows<{ unitOfMeasure: unknown }>(await tx.execute(sql`
+    SELECT COALESCE(stock_unit, unit_measurement, '#') AS "unitOfMeasure"
+    FROM catalog_items
+    WHERE tenant_id = ${command.tenantId} AND id = ${command.itemId}
+      AND is_available = true AND is_local_alavont = true
+      AND COALESCE(metadata->>'archived', 'false') <> 'true'
+      AND COALESCE(metadata->>'complianceHold', 'false') <> 'true'
+      AND COALESCE(metadata->>'safeOnlyDuplicate', 'false') <> 'true'
+      AND metadata->>'mergedIntoCatalogItemId' IS NULL
+    LIMIT 1
+  `));
+  if (!eligible) throw new InventoryMovementError(404, "Locally managed sellable inventory item was not found for this tenant");
+  const [location] = rows(await tx.execute(sql`
+    SELECT id FROM inventory_locations
+    WHERE tenant_id = ${command.tenantId} AND id = ${command.locationId} AND is_active = true
+    LIMIT 1
+  `));
+  if (!location) throw new InventoryMovementError(404, "Active inventory location was not found for this tenant");
+
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(${command.tenantId}, ${command.itemId})`);
+  const [balance] = rows(await tx.execute(sql`
+    SELECT id FROM inventory_balances
+    WHERE tenant_id = ${command.tenantId} AND product_id = ${command.itemId} AND location_id = ${command.locationId}
+    FOR UPDATE
+  `));
+  if (balance) throw new InventoryMovementError(409, "Opening count is allowed only while the location balance is missing; use a receipt or adjustment instead");
+
+  if (!isZero) {
+    return postInventoryMovement(tx, {
+      tenantId: command.tenantId,
+      actor: command.actor,
+      entityType: "catalog",
+      itemId: command.itemId,
+      locationId: command.locationId,
+      movementType: "correction",
+      direction: "increase",
+      quantity: command.quantity,
+      unitCost: command.unitCost,
+      sourceType: "verified_opening_count",
+      sourceId: command.evidenceReference ?? null,
+      reasonCode: "opening_count",
+      reasonText: command.reasonText,
+      idempotencyKey: command.idempotencyKey,
+    });
+  }
+
+  const insertedBalance = rows<{ id: number }>(await tx.execute(sql`
+    INSERT INTO inventory_balances (tenant_id, product_id, location_id, quantity_on_hand, par_level, inventory_kind, is_sellable, updated_at)
+    VALUES (${command.tenantId}, ${command.itemId}, ${command.locationId}, 0, 0, 'sellable_catalog', true, now())
+    ON CONFLICT (tenant_id, product_id, location_id) DO NOTHING
+    RETURNING id
+  `))[0];
+  if (!insertedBalance) throw new InventoryMovementError(409, "Inventory balance changed concurrently; refresh before recording the opening count");
+  const posted = rows<{ id: number }>(await tx.execute(sql`
+    INSERT INTO inventory_movements (
+      tenant_id, inventory_entity_type, catalog_item_id, non_catalog_item_id, location_id, destination_location_id, movement_type,
+      quantity_delta, unit_of_measure, unit_cost, extended_cost, pre_quantity, post_quantity,
+      pre_average_unit_cost, post_average_unit_cost, source_type, source_id, reason_code, reason_text,
+      idempotency_key, movement_index, correlation_id, actor_user_id
+    ) VALUES (
+      ${command.tenantId}, 'catalog', ${command.itemId}, NULL, ${command.locationId}, NULL, 'correction',
+      0, ${String(eligible.unitOfMeasure ?? "#")}, NULL, 0, 0, 0,
+      NULL, NULL, 'verified_opening_count', ${command.evidenceReference ?? null}, 'opening_count', ${command.reasonText},
+      ${command.idempotencyKey}, 0, ${command.idempotencyKey}, ${command.actor.id}
+    ) RETURNING id
+  `))[0];
+  if (!posted) throw new Error("Opening-count movement insert did not return a row");
+  await tx.insert(auditLogsTable).values({
+    tenantId: command.tenantId,
+    actorId: command.actor.id,
+    actorEmail: command.actor.email ?? "",
+    actorRole: command.actor.role,
+    action: "inventory.opening_count_recorded",
+    resourceType: "inventory_movement",
+    resourceId: String(posted.id),
+    metadata: { itemId: command.itemId, locationId: command.locationId, quantity: "0", evidenceReference: command.evidenceReference ?? null },
+  });
+  return { id: Number(posted.id), quantityDelta: "0", preQuantity: "0", postQuantity: "0", unitCost: null, extendedCost: "0", preAverageUnitCost: null, postAverageUnitCost: null, idempotent: false };
+}
+
 /** Converts a legacy absolute import amount into one immutable correction. */
 export async function postImportedInventoryBalanceCorrection(tx: LedgerExecutor, command: Omit<PostInventoryMovementCommand, "movementType" | "quantity" | "direction"> & { targetQuantity: string }): Promise<PostedInventoryMovement | null> {
   assertCanonicalDecimal(command.targetQuantity, "targetQuantity", true);

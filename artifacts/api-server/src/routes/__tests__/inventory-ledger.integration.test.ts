@@ -17,7 +17,9 @@ import inventoryRouter from "../inventory";
 
 const { Client } = pg;
 let client: pg.Client;
+let previousOwnerClerkId: string | undefined;
 let tenant = 0; let tenantB = 0; let admin = 0; let catalog = 0; let catalogB = 0; let nonCatalog = 0; let backstock = 0; let storefront = 0;
+let lube2 = 0; let lube8 = 0; let lube16 = 0; let bodyCare = 0; let dropship = 0; let missingBalance = 0; let positiveOpening = 0;
 
 function app() {
   const instance = express(); instance.use(express.json()); instance.use("/api", inventoryRouter); return supertest(instance);
@@ -28,21 +30,39 @@ const actor = () => ({ id: admin, email: `${identities.admin}@example.test`, rol
 suite("canonical inventory ledger acceptance", () => {
   beforeAll(async () => {
     expect(process.env.DATABASE_URL).toMatch(/127\.0\.0\.1|localhost/);
+    previousOwnerClerkId = process.env.MYORDER_OWNER_CLERK_ID;
+    process.env.MYORDER_OWNER_CLERK_ID = "test-owner";
     client = new Client({ connectionString: process.env.DATABASE_URL, ssl: false }); await client.connect();
     await client.query("ALTER TABLE inventory_movements ENABLE TRIGGER inventory_movements_immutable_trigger");
     const tenants = await client.query("INSERT INTO tenants(name,slug,status) VALUES($1,$2,'active'),($3,$4,'active') RETURNING id,slug", [`${runId} Tenant A`, `${runId}-a`, `${runId} Tenant B`, `${runId}-b`]);
     tenant = tenants.rows.find(row => row.slug === `${runId}-a`).id; tenantB = tenants.rows.find(row => row.slug === `${runId}-b`).id;
-    const users = await client.query("INSERT INTO users(clerk_id,email,normalized_email,role,tenant_id,status,is_active,identity_status,provisioning_status) VALUES($1,$2,$2,'admin',$3,'approved',true,'verified','active'),($4,$5,$5,'user',$3,'approved',true,'verified','active') RETURNING id,clerk_id", [identities.admin, `${identities.admin}@example.test`, tenant, identities.customer, `${identities.customer}@example.test`,]);
+    const users = await client.query("INSERT INTO users(clerk_id,email,normalized_email,role,tenant_id,status,approved_by_clerk_id,approved_at,is_active,identity_status,provisioning_status) VALUES($1,$2,$2,'admin',$3,'approved','test-owner',now(),true,'verified','active'),($4,$5,$5,'user',$3,'approved','test-owner',now(),true,'verified','active') RETURNING id,clerk_id", [identities.admin, `${identities.admin}@example.test`, tenant, identities.customer, `${identities.customer}@example.test`,]);
     admin = users.rows.find(row => row.clerk_id === identities.admin).id;
     const locations = await client.query("INSERT INTO inventory_locations(tenant_id,type,name,is_active) VALUES($1,'backstock',$2,true),($1,'storefront',$3,true),($4,'backstock',$5,true) RETURNING id,tenant_id,name", [tenant, `${runId} Backstock`, `${runId} Storefront`, tenantB, `${runId} Other`]);
     backstock = locations.rows.find(row => row.tenant_id === tenant && row.name === `${runId} Backstock`).id; storefront = locations.rows.find(row => row.tenant_id === tenant && row.name === `${runId} Storefront`).id;
     const products = await client.query("INSERT INTO catalog_items(tenant_id,name,category,sku,price,cost_basis,is_available,is_woo_managed,is_local_alavont) VALUES($1,'Acceptance Product A','Acceptance',$2,10,7,true,false,true),($3,'Other Tenant Product','Acceptance',$4,10,7,true,false,true) RETURNING id,tenant_id", [tenant, `${runId}-ACC-S3-PROD-A`, tenantB, `${runId}-OTHER`]);
     catalog = products.rows.find(row => row.tenant_id === tenant).id; catalogB = products.rows.find(row => row.tenant_id === tenantB).id;
+    const completeness = await client.query(`INSERT INTO catalog_items(tenant_id,name,category,sku,price,cost_basis,is_available,is_woo_managed,is_local_alavont,metadata)
+      VALUES
+        ($1,'Premium Silicone Lube 2 oz','Lubricants & Enhancers','LC-PSL-2OZ',20,5,true,true,true,'{}'),
+        ($1,'Premium Silicone Lube 8 oz','Lubricants & Enhancers','LC-PSL-8OZ',40,10,true,true,true,'{}'),
+        ($1,'Premium Silicone Lube 16 oz','Lubricants & Enhancers','LC-PSL-16OZ',60,15,true,true,true,'{}'),
+        ($1,'Body Linen Spray, Noble Essence 3 oz','Self Care & Ambiance',$2,18,4,true,false,true,'{}'),
+        ($1,'CJ Dropship Fixture','Lubricants & Enhancers',$3,25,3,true,true,false,'{}'),
+        ($1,'Missing Balance Exclusive','Self Care & Ambiance',$4,30,6,true,false,true,'{}'),
+        ($1,'Positive Opening Exclusive','Self Care & Ambiance',$5,32,8,true,false,true,'{}')
+      RETURNING id,sku`, [tenant, `${runId}-BODY`, `${runId}-DROP`, `${runId}-MISSING`, `${runId}-POSITIVE`]);
+    const bySku = new Map(completeness.rows.map(row => [row.sku, row.id]));
+    lube2 = bySku.get("LC-PSL-2OZ"); lube8 = bySku.get("LC-PSL-8OZ"); lube16 = bySku.get("LC-PSL-16OZ");
+    bodyCare = bySku.get(`${runId}-BODY`); dropship = bySku.get(`${runId}-DROP`); missingBalance = bySku.get(`${runId}-MISSING`); positiveOpening = bySku.get(`${runId}-POSITIVE`);
+    await client.query("INSERT INTO inventory_balances(tenant_id,product_id,location_id,quantity_on_hand,par_level) VALUES($1,$2,$3,0,0)", [tenant, lube2, storefront]);
     const sections = await client.query("INSERT INTO non_catalog_inventory_sections(tenant_id,name) VALUES($1,$2) RETURNING id", [tenant, `${runId} Supplies`]);
     const supply = await client.query("INSERT INTO non_catalog_inventory_items(tenant_id,section_id,name,unit_of_measure,unit_cost,is_active) VALUES($1,$2,'Receipt Paper','roll',2.50,true) RETURNING id", [tenant, sections.rows[0].id]); nonCatalog = supply.rows[0].id;
   }, 30_000);
 
   afterAll(async () => {
+    if (previousOwnerClerkId === undefined) delete process.env.MYORDER_OWNER_CLERK_ID;
+    else process.env.MYORDER_OWNER_CLERK_ID = previousOwnerClerkId;
     if (!client) return;
     await client.query("DELETE FROM audit_logs WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
     await client.query("UPDATE inventory_receipts SET movement_id=NULL WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
@@ -68,6 +88,43 @@ suite("canonical inventory ledger acceptance", () => {
     const first = await asAdmin().post("/api/admin/inventory/receipts").send({ entityType: "catalog", itemId: catalog, locationId: backstock, quantity: "10", unitCost: "4.00", supplierReference: "SUP-A", reference: "PO-1", idempotencyKey: `${runId}-receipt-1` }); expect(first.status, first.body.error).toBe(201);
     const second = await asAdmin().post("/api/admin/inventory/receipts").send({ entityType: "catalog", itemId: catalog, locationId: backstock, quantity: "10", unitCost: "6.00", supplierReference: "SUP-A", reference: "PO-2", idempotencyKey: `${runId}-receipt-2` }); expect(second.status, second.body.error).toBe(201);
     const detail = await asAdmin().get(`/api/admin/inventory/catalog/${catalog}/detail`); expect(detail.status).toBe(200); expect(detail.body.item).toMatchObject({ quantityOnHand: "20.000000", lastPurchaseCost: "6.000000000000", weightedAverageCost: "5.000000000000", inventoryValue: "100.000000000000" }); expect(detail.body.purchaseHistory).toHaveLength(2); expect(detail.body.purchaseHistory.map((row: { unitCost: string }) => row.unitCost)).toEqual(expect.arrayContaining(["4.000000000000", "6.000000000000"]));
+  });
+
+  it("lists local lubricant and body-care exclusives with zero and missing balances while excluding dropship stock", async () => {
+    const response = await asAdmin().get("/api/admin/inventory");
+    expect(response.body.error).toBeUndefined();
+    expect(response.status).toBe(200);
+    const byId = new Map(response.body.items.map((item: { id: number }) => [item.id, item]));
+    expect([...byId.keys()]).toEqual(expect.arrayContaining([lube2, lube8, lube16, bodyCare, missingBalance, positiveOpening]));
+    expect(byId.has(dropship)).toBe(false);
+    const zero = byId.get(lube2) as { locations: Array<{ locationId: number; qty: number | null; hasBalance: boolean }> };
+    expect(zero.locations.find(row => row.locationId === storefront)).toMatchObject({ qty: 0, hasBalance: true });
+    const missing = byId.get(missingBalance) as { inventoryStatus: string; locations: Array<{ qty: number | null; hasBalance: boolean }> };
+    expect(missing.inventoryStatus).toBe("missing_balance");
+    expect(missing.locations.every(row => row.qty === null && row.hasBalance === false)).toBe(true);
+  });
+
+  it("records audited zero and positive opening counts only for missing tenant-scoped balances", async () => {
+    const zeroKey = `${runId}-opening-zero`;
+    const zeroPayload = { itemId: missingBalance, locationId: backstock, quantity: "0", reasonText: "Verified shelf count was zero", evidenceReference: "COUNT-SHEET-1", idempotencyKey: zeroKey };
+    const zero = await asAdmin().post("/api/admin/inventory/opening-counts").send(zeroPayload);
+    expect(zero.status, zero.body.error).toBe(201);
+    expect(zero.body.movement).toMatchObject({ quantityDelta: "0", preQuantity: "0", postQuantity: "0" });
+    expect((await asAdmin().post("/api/admin/inventory/opening-counts").send(zeroPayload)).status).toBe(200);
+    expect((await asAdmin().post("/api/admin/inventory/opening-counts").send({ ...zeroPayload, idempotencyKey: `${runId}-opening-zero-again` })).status).toBe(409);
+
+    const positive = await asAdmin().post("/api/admin/inventory/opening-counts").send({ itemId: positiveOpening, locationId: storefront, quantity: "4", unitCost: "8", reasonText: "Verified opening shelf count", evidenceReference: "COUNT-SHEET-2", idempotencyKey: `${runId}-opening-positive` });
+    expect(positive.status, positive.body.error).toBe(201);
+    expect(positive.body.movement).toMatchObject({ quantityDelta: "4", preQuantity: "0.000000", postQuantity: "4.000000" });
+    expect((await asAdmin().post("/api/admin/inventory/opening-counts").send({ itemId: lube8, locationId: storefront, quantity: "2", reasonText: "Verified opening shelf count", idempotencyKey: `${runId}-opening-no-cost` })).status).toBe(422);
+    expect((await asAdmin().post("/api/admin/inventory/opening-counts").send({ ...zeroPayload, itemId: catalogB, idempotencyKey: `${runId}-opening-cross-item` })).status).toBe(404);
+
+    const ledger = await client.query("SELECT quantity_delta,pre_quantity,post_quantity,source_type,reason_code,actor_user_id FROM inventory_movements WHERE tenant_id=$1 AND idempotency_key=$2", [tenant, zeroKey]);
+    expect(ledger.rows).toEqual([{ quantity_delta: "0.000000000000", pre_quantity: "0.000000000000", post_quantity: "0.000000000000", source_type: "verified_opening_count", reason_code: "opening_count", actor_user_id: admin }]);
+    await expect(client.query(`INSERT INTO inventory_movements(tenant_id,inventory_entity_type,catalog_item_id,location_id,movement_type,quantity_delta,unit_of_measure,extended_cost,pre_quantity,post_quantity,source_type,reason_code,reason_text,idempotency_key,correlation_id,actor_user_id)
+      VALUES($1,'catalog',$2,$3,'correction',0,'#',0,0,0,'manual_adjustment','opening_count','Invalid zero fixture',$4,$4,$5)`, [tenant, bodyCare, storefront, `${runId}-invalid-zero`, admin])).rejects.toMatchObject({ code: "23514" });
+    const audit = await client.query("SELECT action,actor_id,metadata FROM audit_logs WHERE tenant_id=$1 AND resource_id=$2 AND action='inventory.opening_count_recorded'", [tenant, String(zero.body.movement.id)]);
+    expect(audit.rows[0]).toMatchObject({ action: "inventory.opening_count_recorded", actor_id: admin, metadata: { itemId: missingBalance, locationId: backstock, quantity: "0" } });
   });
 
   it("posts one sale at recognized cost and keeps COGS stable after default-cost edits", async () => {
@@ -129,8 +186,8 @@ suite("canonical inventory ledger acceptance", () => {
     for (const type of ["vendor_return", "waste", "damage", "shrinkage", "adjustment_decrease"]) { const response = await post(type, type); expect(response.status, response.body.error).toBe(201); }
     const increased = await post("adjustment_increase", "adjustment-increase", { unitCost: "5" }); expect(increased.status, increased.body.error).toBe(201);
     const correction = await post("correction", "correction", { direction: "increase", sourceId: String(saleId) }); expect(correction.status, correction.body.error).toBe(201);
-    const rows = await client.query("SELECT movement_type,reason_code,actor_user_id,location_id FROM inventory_movements WHERE tenant_id=$1 AND idempotency_key LIKE $2 ORDER BY id", [tenant, `${runId}-%`]);
-    const explicit = rows.rows.filter(row => ["customer_return", "vendor_return", "waste", "damage", "shrinkage", "adjustment_decrease", "adjustment_increase", "correction"].includes(row.movement_type));
+    const rows = await client.query("SELECT movement_type,source_type,reason_code,actor_user_id,location_id FROM inventory_movements WHERE tenant_id=$1 AND idempotency_key LIKE $2 ORDER BY id", [tenant, `${runId}-%`]);
+    const explicit = rows.rows.filter(row => row.source_type !== "verified_opening_count" && ["customer_return", "vendor_return", "waste", "damage", "shrinkage", "adjustment_decrease", "adjustment_increase", "correction"].includes(row.movement_type));
     expect(explicit.map(row => row.movement_type)).toEqual(expect.arrayContaining(["customer_return", "vendor_return", "waste", "damage", "shrinkage", "adjustment_decrease", "adjustment_increase", "correction"])); expect(explicit.every(row => row.actor_user_id === admin && row.location_id === backstock)).toBe(true);
   });
 });

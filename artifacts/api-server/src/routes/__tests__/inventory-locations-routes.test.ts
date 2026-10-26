@@ -43,7 +43,7 @@ vi.mock("@workspace/db", () => {
   const catalogItemsTable = cols([
     "id", "name", "alavontName", "isWooManaged", "isLocalAlavont", "isAvailable",
     "alavontCategory", "category", "stockUnit", "inventoryAmount", "stockQuantity",
-    "parLevel", "alavontId", "externalMenuId", "costBasis", "price",
+    "parLevel", "alavontId", "externalMenuId", "costBasis", "price", "metadata",
   ]);
   const csrBoxesTable = cols(["id", "tenantId", "slug", "label", "isActive", "displayOrder", "description", "location"]);
   const inventoryLocationsTable = cols(["id", "tenantId", "name", "type", "csrBoxId", "isActive", "displayOrder", "createdAt", "updatedAt", "inventoryKind", "quarantineStatus", "quarantineReason"]);
@@ -439,18 +439,21 @@ describe("GET /api/shifts/inventory-template?locationId=", () => {
     };
     const csrBox = { id: 1, slug: "sales-box-1", label: "CSR Sales Box 1", isActive: true, displayOrder: 1, description: null, location: null };
     const balance = { productId: 42, qty: "3.000" };
+    const catalogRow = { id: 42, name: "Premium Silicone Lube 2 oz", alavontName: "Premium Silicone Lube 2 oz", category: "Lubricants & Enhancers", alavontCategory: "Lubricants & Enhancers", sku: "LC-PSL-2OZ", price: "25.00", isAvailable: true, isWooManaged: true, isLocalAlavont: true, metadata: {} };
 
     let n = 0;
     (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
       n++;
       if (n === 1) return makeChain([makeAdmin()]);  // user
       if (n === 2) return makeChain([templateRow]);  // ensureClockInInventoryTemplate — existing templates
-      if (n === 3) return makeChain([]);             // catalog rows (none to auto-add)
-      if (n === 4) return makeChain([csrBox]);       // getActiveCsrBoxes
-      if (n === 5) return makeChain([csrBox]);       // ensureInventoryLocations: boxes
+      if (n === 3) return makeChain([catalogRow]);   // eligible local catalogue rows
+      if (n === 4) return makeChain([templateRow]);  // all templates for dedupe
+      if (n === 5) return makeChain([templateRow]);  // refreshed active template
+      if (n === 6) return makeChain([csrBox]);       // getActiveCsrBoxes
+      if (n === 7) return makeChain([csrBox]);       // ensureInventoryLocations: boxes
       // remaining: location existence checks (all empty = already seeded)
-      if (n <= 12) return makeChain([{ id: n }]);
-      if (n === 13) return makeChain([balance]);     // balanceMap query
+      if (n <= 14) return makeChain([{ id: n }]);
+      if (n === 15) return makeChain([balance]);     // balanceMap query
       return makeChain([]);
     });
 
@@ -470,14 +473,16 @@ describe("GET /api/shifts/inventory-template?locationId=", () => {
       menuPrice: null, payoutPrice: null, parLevel: "0", isActive: true,
       tenantId: 1, deductionQuantityPerSale: "1",
     };
+    const catalogRow = { id: 42, name: "Body Linen Spray", alavontName: "Body Linen Spray", category: "Self Care & Ambiance", alavontCategory: "Self Care & Ambiance", price: "20.00", isAvailable: true, isWooManaged: false, isLocalAlavont: true, metadata: {} };
 
     let n = 0;
     (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
       n++;
       if (n === 1) return makeChain([makeAdmin()]);
       if (n === 2) return makeChain([templateRow]);
-      if (n === 3) return makeChain([]);
-      if (n <= 10) return makeChain([{ id: n }]);
+      if (n === 3) return makeChain([catalogRow]);
+      if (n === 4 || n === 5) return makeChain([templateRow]);
+      if (n <= 12) return makeChain([{ id: n }]);
       return makeChain([]);
     });
 

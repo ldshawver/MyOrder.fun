@@ -18,6 +18,8 @@ export async function loadInventoryWorkspace<T>(request: (path: string) => Promi
 }
 
 export function catalogueItemsAtLocation<T extends { locations?: Array<{ locationId: number }> }>(items: T[], locationId: number | null): T[] {
-  if (locationId === null) return items;
-  return items.filter(item => item.locations?.some(location => location.locationId === locationId));
+  // Location selection changes the displayed balance; it must not hide a
+  // locally-managed item whose balance is missing at that location.
+  void locationId;
+  return items;
 }

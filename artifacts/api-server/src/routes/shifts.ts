@@ -29,6 +29,7 @@ import { requirePermission } from "../lib/roles";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
 import { quantityUnits } from "../lib/exactQuantity";
 import { calculateCloseoutFinancials, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents } from "../lib/shiftCloseoutFinancials";
+import { locallyManagedSellableCatalogWhere } from "../lib/localInventoryEligibility";
 import { z } from "zod";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
@@ -709,38 +710,6 @@ router.use(async (_req, res, next) => {
   }
 });
 
-const CSR_INVENTORY_EXCLUDED_NAMES = new Set([
-  "squirting dildo",
-  "real feel deluxe no 7 wallbanger vibrating dildo",
-  "realistic foreskin dildo",
-  "real feel deluxe 11 inch wall banger vibe in black",
-  "silky - intimate gel collection",
-  "aqua - intimate gel collection",
-  "crimson brick condoms",
-  "obsidian edge collection",
-  "sex machine with dildo",
-  "vibrating mechanical dildo",
-  "metal cockrings",
-  "blue cockring",
-  "black cockring",
-  "leather cockrings",
-  "silicone cockrings",
-  "1 morning after pill",
-  "glass vase",
-  "oil burning massage candle",
-  "couples dice games",
-  "midnight lace set",
-  "velvet embrace set",
-  "crimson silk ensemble",
-  "obsidian desire set",
-  "euphoria lace collection",
-  "soft touch satin set",
-]);
-
-function isCsrInventoryExcludedName(name: string | null | undefined): boolean {
-  return typeof name === "string" && CSR_INVENTORY_EXCLUDED_NAMES.has(name.trim().toLowerCase().replace(/\s+/g, " "));
-}
-
 async function ensureClockInInventoryTemplate(tenantId: number): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
   const allTemplateRows = await db
     .select()
@@ -751,20 +720,10 @@ async function ensureClockInInventoryTemplate(tenantId: number): Promise<typeof 
   const catalogRows = await db
     .select()
     .from(catalogItemsTable)
-    .where(
-      and(
-        eq(catalogItemsTable.tenantId, tenantId),
-        eq(catalogItemsTable.isAvailable, true),
-        sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
-        sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
-        sql`LOWER(COALESCE(${catalogItemsTable.name}, '')) NOT LIKE 'safe%'`,
-        sql`LOWER(COALESCE(${catalogItemsTable.alavontName}, '')) NOT LIKE 'safe%'`,
-        sql`LOWER(COALESCE(${catalogItemsTable.displayName}, '')) NOT LIKE 'safe%'`,
-      )
-    )
+    .where(locallyManagedSellableCatalogWhere(tenantId))
     .orderBy(asc(catalogItemsTable.alavontCategory), asc(catalogItemsTable.name));
 
-  if (catalogRows.length === 0) return allTemplateRows.filter(row => !isCsrInventoryExcludedName(row.itemName));
+  if (catalogRows.length === 0) return allTemplateRows.filter(row => row.rowType !== "item");
 
   const allowedCatalogIds = new Set(catalogRows.map(row => row.id));
 
@@ -812,10 +771,8 @@ async function ensureClockInInventoryTemplate(tenantId: number): Promise<typeof 
     .from(inventoryTemplatesTable)
     .where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.isActive, true)))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
-  const filtered = updatedRows.filter(row => {
-    const name = String(row.itemName ?? "").trim().toLowerCase();
-    return !name.startsWith("safe") && !isCsrInventoryExcludedName(row.itemName) && (row.catalogItemId == null || allowedCatalogIds.has(row.catalogItemId));
-  });
+  const filtered = updatedRows.filter(row => row.rowType !== "item"
+    || (row.catalogItemId != null && allowedCatalogIds.has(row.catalogItemId)));
 
   // Deduplicate by catalogItemId — keep the lowest-displayOrder row per product.
   // This removes LC/customer-facing duplicate rows that reference the same catalog item.

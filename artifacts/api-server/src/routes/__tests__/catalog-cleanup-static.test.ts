@@ -9,6 +9,7 @@ const platform = (path: string) => readFileSync(resolve(root, "artifacts/platfor
 const catalog = api("routes/catalog.ts");
 const ai = api("routes/ai.ts");
 const inventoryBalances = api("lib/inventoryBalances.ts");
+const localInventoryEligibility = api("lib/localInventoryEligibility.ts");
 const app = platform("App.tsx");
 const layout = platform("components/layout.tsx");
 const settings = platform("pages/admin/settings-page.tsx");
@@ -26,12 +27,13 @@ describe("catalog/admin cleanup protections", () => {
   });
 
   it("filters archived Safe-only duplicates from catalog, inventory/par, and Zappy", () => {
-    for (const source of [catalog, ai, inventoryBalances]) {
+    for (const source of [catalog, ai, localInventoryEligibility]) {
       expect(source).toContain("safeOnlyDuplicate");
       expect(source).toContain("archived");
     }
     expect(catalog).toContain("activeProductRows(rows)");
-    expect(inventoryBalances).toContain("eq(catalogItemsTable.isAvailable, true)");
+    expect(inventoryBalances).toContain("locallyManagedSellableCatalogWhere(tenantId)");
+    expect(localInventoryEligibility).toContain("eq(catalogItemsTable.isAvailable, true)");
     expect(ai).toContain("loadAvailableCatalog(tenantId)");
   });
 
