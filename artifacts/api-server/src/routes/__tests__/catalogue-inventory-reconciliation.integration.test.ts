@@ -7,7 +7,7 @@ import supertest from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@workspace/db";
 import { postInventoryMovement } from "../../lib/inventoryMovementLedger";
-import { applyInventoryHistoryBaselineRepair, previewInventoryHistoryBaselineRepair } from "../../lib/inventoryHistoryBaselineRepair";
+import { applyInventoryHistoryBaselineRepair, previewInventoryHistoryBaselineRepair, repairConfirmation } from "../../lib/inventoryHistoryBaselineRepair";
 
 const enabled = process.env.RUN_CATALOGUE_INVENTORY_RECONCILIATION_INTEGRATION === "1";
 const authHeader = "x-reconciliation-user";
@@ -26,6 +26,7 @@ const app = express(); app.use(express.json()); app.use("/api", productRouter, r
 const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => res.status(500).json({ error: String(error) }); app.use(errorHandler);
 const http = supertest(app);
 const requestAs = (who: keyof typeof users) => ({
+  get: (path: string) => http.get(path).set(authHeader, users[who]),
   post: (path: string) => http.post(path).set(authHeader, users[who]),
   patch: (path: string) => http.patch(path).set(authHeader, users[who]),
   put: (path: string) => http.put(path).set(authHeader, users[who]),
@@ -269,15 +270,15 @@ async function snapshot() {
     expect((await client.query("SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantId,local.body.catalogItemId])).rows[0].count).toBe(0);
     const foreignAdminId = Number((await client.query("SELECT id FROM users WHERE clerk_id=$1", [users.foreign])).rows[0].id);
     await expect(applyInventoryHistoryBaselineRepair({ tenantId, productId: local.body.productId, evidence, previewFingerprint: preview.fingerprint,
-      idempotencyKey: randomUUID(), reason: "Attempt a cross-tenant baseline repair", actor: { id: foreignAdminId, role: "admin" } }))
+      confirmedCorrections: preview.corrections.map(repairConfirmation), idempotencyKey: randomUUID(), reason: "Attempt a cross-tenant baseline repair", actor: { id: foreignAdminId, role: "admin" } }))
       .rejects.toMatchObject({ status: 403 });
     expect((await client.query("SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantId,local.body.catalogItemId])).rows[0].count).toBe(0);
     const idempotencyKey = randomUUID();
     const applied = await applyInventoryHistoryBaselineRepair({ tenantId, productId: local.body.productId, evidence, previewFingerprint: preview.fingerprint,
-      idempotencyKey, reason: "Establish reviewed opening history baseline", actor: { id: adminId, role: "admin" } });
+      confirmedCorrections: preview.corrections.map(repairConfirmation), idempotencyKey, reason: "Establish reviewed opening history baseline", actor: { id: adminId, role: "admin" } });
     expect(applied.idempotent).toBe(false); expect(applied.movementIds).toHaveLength(1);
     const repeated = await applyInventoryHistoryBaselineRepair({ tenantId, productId: local.body.productId, evidence, previewFingerprint: preview.fingerprint,
-      idempotencyKey, reason: "Establish reviewed opening history baseline", actor: { id: adminId, role: "admin" } });
+      confirmedCorrections: preview.corrections.map(repairConfirmation), idempotencyKey, reason: "Establish reviewed opening history baseline", actor: { id: adminId, role: "admin" } });
     expect(repeated).toMatchObject({ repairId: applied.repairId, idempotent: true });
     const after = await client.query("SELECT quantity_on_hand::text AS quantity FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2 AND location_id=$3", [tenantId,local.body.catalogItemId,locationId]);
     expect(after.rows).toEqual(before.rows);
@@ -290,6 +291,72 @@ async function snapshot() {
     const crossed = await previewInventoryHistoryBaselineRepair(tenantId, local.body.productId, [{ ...evidence[0], inventoryItemId: foreign.body.inventoryItemId, locationId: Number(foreignLocation.rows[0].id) }]);
     expect(crossed.blockers.join(" ")).toMatch(/not an active balance for this product and tenant/);
     expect((await client.query("SELECT quantity_on_hand::text AS quantity FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2", [foreignTenantId,foreign.body.catalogItemId])).rows[0].quantity).toBe("9.000000");
+  });
+
+  it("guides exact repairs, preserves unknown cost and zero stock, rejects stale or crossed evidence, and is idempotent", async () => {
+    const created = await requestAs("admin").post("/api/admin/catalogue/products").send({ name: `Guided ${suffix}`, category: "Test", price: "10.00", inventoryModel: "SEPARATE_VARIANTS", baseUnit: "each", consumptionQuantity: "1.000000" });
+    expect(created.status, created.text).toBe(201);
+    const adminId = Number((await client.query("SELECT id FROM users WHERE clerk_id=$1", [users.admin])).rows[0].id);
+    await client.query("INSERT INTO inventory_balances(tenant_id,product_id,location_id,quantity_on_hand,par_level) VALUES($1,$2,$3,0,0)", [tenantId, created.body.catalogItemId, locationId]);
+    const seeded = await client.query(`INSERT INTO inventory_movements
+      (tenant_id,inventory_entity_type,catalog_item_id,location_id,movement_type,quantity_delta,unit_of_measure,
+       pre_quantity,post_quantity,source_type,source_id,reason_code,reason_text,idempotency_key,correlation_id,actor_user_id)
+      VALUES($1,'catalog',$2,$3,'sale',-1,'each',1,0,'guided_test','zero','sale','Disposable zero-stock fixture',$4,$4,$5) RETURNING id`,
+    [tenantId, created.body.catalogItemId, locationId, `guided-zero-${suffix}`, adminId]);
+    const route = `/api/admin/catalogue/products/${created.body.productId}/inventory-history-repair`;
+    expect((await requestAs("other").get(route)).status).toBe(403);
+    process.env.MYORDER_OWNER_CLERK_ID = users.foreign;
+    expect((await requestAs("foreign").get(route)).status).toBe(404);
+    process.env.MYORDER_OWNER_CLERK_ID = users.admin;
+    const discovered = await requestAs("admin").get(route);
+    expect(discovered.status, discovered.text).toBe(200);
+    expect(discovered.body.discrepancies).toEqual([expect.objectContaining({ inventoryItemId: created.body.inventoryItemId,
+      locationId, storedPhysicalQuantity: "0.000000", ledgerQuantity: "-1.000000", bridgeQuantityDelta: "1.000000" })]);
+    expect((await requestAs("admin").post(`${route}/preview`).send({ evidence: [] })).status).toBe(400);
+    const foreignLocation = await client.query("SELECT id FROM inventory_locations WHERE tenant_id=$1 ORDER BY id LIMIT 1", [foreignTenantId]);
+    const crossed = await requestAs("admin").post(`${route}/preview`).send({ evidence: [{ inventoryItemId: created.body.inventoryItemId,
+      locationId: Number(foreignLocation.rows[0].id), verifiedPhysicalQuantity: "0", documentedUnitCost: null,
+      physicalCountNote: "Witnessed physical zero", costBasisNote: "Historical cost document unavailable" }] });
+    expect(crossed.status, crossed.text).toBe(200);
+    expect(crossed.body.blockers.join(" ")).toMatch(/not an active balance for this product and tenant/);
+    const evidence = [{ inventoryItemId: created.body.inventoryItemId, locationId, verifiedPhysicalQuantity: "0", documentedUnitCost: null,
+      physicalCountNote: "Witnessed physical zero", costBasisNote: "Historical cost document unavailable" }];
+    const preview = await requestAs("admin").post(`${route}/preview`).send({ evidence });
+    expect(preview.status, preview.text).toBe(200);
+    expect(preview.body).toMatchObject({ blockers: [], unresolvedCosts: [{ inventoryItemId: created.body.inventoryItemId }],
+      corrections: [{ verifiedPhysicalQuantity: "0", bridgeQuantityDelta: "1.000000", documentedUnitCost: null }] });
+    const confirmation = preview.body.corrections.map((row: any) => ({ inventoryItemId: row.inventoryItemId, locationId: row.locationId,
+      verifiedPhysicalQuantity: row.verifiedPhysicalQuantity, bridgeQuantityDelta: row.bridgeQuantityDelta, documentedUnitCost: row.documentedUnitCost }));
+    const badConfirmation = await requestAs("admin").post(`${route}/apply`).send({ evidence, previewFingerprint: preview.body.fingerprint,
+      confirmedCorrections: [{ ...confirmation[0], bridgeQuantityDelta: "2.000000" }], idempotencyKey: randomUUID(), reason: "Repair reviewed zero-stock history" });
+    expect(badConfirmation.status).toBe(409);
+    const idempotencyKey = randomUUID();
+    const applyBody = { evidence, previewFingerprint: preview.body.fingerprint, confirmedCorrections: confirmation,
+      idempotencyKey, reason: "Repair reviewed zero-stock history" };
+    const applied = await requestAs("admin").post(`${route}/apply`).send(applyBody);
+    expect(applied.status, applied.text).toBe(201);
+    const repeated = await requestAs("admin").post(`${route}/apply`).send(applyBody);
+    expect(repeated.status, repeated.text).toBe(200); expect(repeated.body).toMatchObject({ repairId: applied.body.repairId, idempotent: true });
+    const repaired = await client.query("SELECT quantity_delta::text,unit_cost,extended_cost,post_quantity::text FROM inventory_movements WHERE id=$1", [applied.body.movementIds[0]]);
+    expect(repaired.rows[0]).toEqual({ quantity_delta: "1.000000000000", unit_cost: null, extended_cost: null, post_quantity: "0.000000000000" });
+    expect((await client.query("SELECT quantity_on_hand::text AS quantity FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2 AND location_id=$3", [tenantId,created.body.catalogItemId,locationId])).rows[0].quantity).toBe("0.000000");
+    expect((await client.query("SELECT count(*)::int AS count FROM inventory_valuation_states WHERE tenant_id=$1 AND catalog_item_id=$2 AND cost_status='known'", [tenantId,created.body.catalogItemId])).rows[0].count).toBe(0);
+    await expect(client.query("UPDATE inventory_movements SET quantity_delta=99 WHERE id=$1", [seeded.rows[0].id])).rejects.toMatchObject({ code: "P0001" });
+
+    const staleProduct = await requestAs("admin").post("/api/admin/catalogue/products").send({ name: `Stale ${suffix}`, category: "Test", price: "10.00", inventoryModel: "SEPARATE_VARIANTS", baseUnit: "each", consumptionQuantity: "1.000000" });
+    await client.query("INSERT INTO inventory_balances(tenant_id,product_id,location_id,quantity_on_hand,par_level) VALUES($1,$2,$3,2,0)", [tenantId, staleProduct.body.catalogItemId, locationId]);
+    const staleRoute = `/api/admin/catalogue/products/${staleProduct.body.productId}/inventory-history-repair`;
+    const staleEvidence = [{ inventoryItemId: staleProduct.body.inventoryItemId, locationId, verifiedPhysicalQuantity: "2", documentedUnitCost: "3.25",
+      physicalCountNote: "Witnessed physical count", costBasisNote: "Supplier invoice reviewed" }];
+    const stalePreview = await requestAs("admin").post(`${staleRoute}/preview`).send({ evidence: staleEvidence });
+    expect(stalePreview.status, stalePreview.text).toBe(200);
+    await client.query("UPDATE inventory_balances SET quantity_on_hand=3,updated_at=now() WHERE tenant_id=$1 AND product_id=$2 AND location_id=$3", [tenantId,staleProduct.body.catalogItemId,locationId]);
+    const staleConfirmation = stalePreview.body.corrections.map((row: any) => ({ inventoryItemId: row.inventoryItemId, locationId: row.locationId,
+      verifiedPhysicalQuantity: row.verifiedPhysicalQuantity, bridgeQuantityDelta: row.bridgeQuantityDelta, documentedUnitCost: row.documentedUnitCost }));
+    const staleApply = await requestAs("admin").post(`${staleRoute}/apply`).send({ evidence: staleEvidence,
+      previewFingerprint: stalePreview.body.fingerprint, confirmedCorrections: staleConfirmation, idempotencyKey: randomUUID(), reason: "Reject stale guided repair preview" });
+    expect(staleApply.status).toBe(409);
+    expect((await client.query("SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantId,staleProduct.body.catalogItemId])).rows[0].count).toBe(0);
   });
 
 });

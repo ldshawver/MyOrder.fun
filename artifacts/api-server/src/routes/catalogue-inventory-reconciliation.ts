@@ -4,11 +4,18 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { auditLogsTable, db } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
+import { requirePermission } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
 import { convertQuantity, convertUnitCost, reconciliationFingerprint } from "../lib/catalogueInventoryReconciliation";
 import { ledgerQuantityUnits, quantityText, quantityUnits } from "../lib/exactQuantity";
 import { logger } from "../lib/logger";
+import {
+  applyInventoryHistoryBaselineRepair,
+  InventoryHistoryRepairError,
+  listInventoryHistoryDiscrepancies,
+  previewInventoryHistoryBaselineRepair,
+} from "../lib/inventoryHistoryBaselineRepair";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -27,6 +34,28 @@ const applySchema = z.object({
   reason: z.string().trim().min(10).max(500),
   manualUnitCost: z.string().regex(/^(?:0|[1-9]\d*)(?:\.\d{1,12})?$/).refine(value => !/^0(?:\.0+)?$/.test(value), "Cost must be positive").optional(),
   costBasisNote: z.string().trim().min(8).max(500).optional(),
+}).strict();
+const historyEvidenceSchema = z.object({
+  inventoryItemId: positiveId,
+  locationId: positiveId,
+  verifiedPhysicalQuantity: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,6})?$/),
+  documentedUnitCost: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,12})?$/).nullable(),
+  physicalCountNote: z.string().trim().min(8).max(500),
+  costBasisNote: z.string().trim().min(8).max(500),
+}).strict();
+const historyConfirmationSchema = z.object({
+  inventoryItemId: positiveId,
+  locationId: positiveId,
+  verifiedPhysicalQuantity: z.string(),
+  bridgeQuantityDelta: z.string(),
+  documentedUnitCost: z.string().nullable(),
+}).strict();
+const historyPreviewSchema = z.object({ evidence: z.array(historyEvidenceSchema).min(1).max(200) }).strict();
+const historyApplySchema = historyPreviewSchema.extend({
+  previewFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  confirmedCorrections: z.array(historyConfirmationSchema).min(1).max(200),
+  idempotencyKey: z.string().uuid(),
+  reason: z.string().trim().min(10).max(500),
 }).strict();
 
 // SQL rows have different projections; the route validates and normalizes each field before use.
@@ -61,6 +90,40 @@ function publicFailure(input: unknown, fallbackCode: string, fallbackMessage: st
   }
   return { status: 409, code: fallbackCode, message: fallbackMessage };
 }
+
+function historyFailure(res: import("express").Response, input: unknown): void {
+  if (input instanceof InventoryHistoryRepairError) {
+    fail(res, input.status, input.status === 403 ? "HISTORY_REPAIR_FORBIDDEN" : input.status === 404 ? "HISTORY_REPAIR_SCOPE_NOT_FOUND" :
+      input.status === 422 ? "HISTORY_REPAIR_EVIDENCE_INVALID" : "HISTORY_REPAIR_STALE", input.message);
+    return;
+  }
+  logger.error({ errorType: input instanceof Error ? input.name : typeof input }, "Guided inventory history repair failed");
+  fail(res, 409, "HISTORY_REPAIR_FAILED", "Inventory history repair failed; no changes were saved. Refresh and review a new preview.");
+}
+
+router.get("/admin/catalogue/products/:productId/inventory-history-repair", requirePermission("inventory.manage"), async (req, res): Promise<void> => {
+  const productId = Number(req.params.productId);
+  if (!Number.isInteger(productId) || productId <= 0) { fail(res, 400, "INVALID_PRODUCT", "Provide a valid product identifier."); return; }
+  try { res.json(await listInventoryHistoryDiscrepancies(req.authorizedTenantId!, productId)); }
+  catch (error) { historyFailure(res, error); }
+});
+
+router.post("/admin/catalogue/products/:productId/inventory-history-repair/preview", requirePermission("inventory.manage"), async (req, res): Promise<void> => {
+  const productId = Number(req.params.productId); const parsed = historyPreviewSchema.safeParse(req.body);
+  if (!Number.isInteger(productId) || productId <= 0 || !parsed.success) { fail(res, 400, "INVALID_HISTORY_REPAIR_PREVIEW", "Provide valid physical-count and cost evidence."); return; }
+  try { res.json(await previewInventoryHistoryBaselineRepair(req.authorizedTenantId!, productId, parsed.data.evidence)); }
+  catch (error) { historyFailure(res, error); }
+});
+
+router.post("/admin/catalogue/products/:productId/inventory-history-repair/apply", requirePermission("inventory.manage"), async (req, res): Promise<void> => {
+  const productId = Number(req.params.productId); const parsed = historyApplySchema.safeParse(req.body);
+  if (!Number.isInteger(productId) || productId <= 0 || !parsed.success) { fail(res, 400, "INVALID_HISTORY_REPAIR_APPLY", "Provide the reviewed preview and confirm every exact repair."); return; }
+  try {
+    const result = await applyInventoryHistoryBaselineRepair({ tenantId: req.authorizedTenantId!, productId, ...parsed.data,
+      actor: { id: req.dbUser!.id, email: req.dbUser!.email, role: req.dbUser!.role, ipAddress: req.ip } });
+    res.status(result.idempotent ? 200 : 201).json(result);
+  } catch (error) { historyFailure(res, error); }
+});
 
 async function snapshot(executor: ReconciliationExecutor, tenantId: number, productId: number, target: z.infer<typeof targetSchema>) {
   const product = rows(await executor.execute(sql`
