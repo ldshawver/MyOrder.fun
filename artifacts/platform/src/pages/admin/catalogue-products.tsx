@@ -17,6 +17,11 @@ type InventoryPreview = { product: { id: number; name: string; inventoryModel: s
   locations: Array<{ locationId: number; locationName: string; sourceBalances: Array<{ catalogItemId: number; locationId: number; quantity: string; ledgerQuantity: string; movementCount: number }>; proposedSharedBalance: string }>;
   orderHistory: Array<{ optionId: number; orderLineCount: number }>; committed: Array<{ optionId: number; label: string; orderId: number; status: string; committedConsumption: string; orderLineCount: number }>;
   issues: string[]; costRequired: boolean; fingerprint: string };
+type HistoryDiscrepancy = { inventoryItemId: number; catalogItemId: number; itemName: string; baseUnit: string; locationId: number; locationName: string;
+  storedPhysicalQuantity: string; ledgerQuantity: string; bridgeQuantityDelta: string; costStatus: string };
+type HistoryEvidence = { inventoryItemId: number; locationId: number; verifiedPhysicalQuantity: string; documentedUnitCost: string | null; physicalCountNote: string; costBasisNote: string };
+type HistoryCorrection = HistoryEvidence & { catalogItemId: number; locationName: string; ledgerQuantity: string; bridgeQuantityDelta: string };
+type HistoryRepairPreview = { blockers: string[]; corrections: HistoryCorrection[]; unresolvedCosts: Array<{ inventoryItemId: number; catalogItemId: number; reason: string }>; fingerprint: string };
 
 type ProductForm = { name: string; category: string; price: string; sku: string; firstOptionLabel: string;
   inventoryModel: Product["inventoryModel"]; locationEvaluation: Product["locationEvaluation"]; baseUnit: string; consumptionQuantity: string };
@@ -66,6 +71,79 @@ function OptionEditor({ option, save, selectItem }: { option: Option; save: (val
             : `On hand ${option.stockOnHand}; reserved ${option.reservedQuantity}; available ${option.availableQuantity}`}
       </span></div>
   </div>;
+}
+
+function GuidedHistoryRepair({ productId, request, onApplied }: { productId: number; request: (path: string, init?: RequestInit) => Promise<unknown>; onApplied: () => Promise<void> }) {
+  const [discrepancies, setDiscrepancies] = useState<HistoryDiscrepancy[]>([]);
+  const [evidence, setEvidence] = useState<Record<string, { quantity: string; unitCost: string; countNote: string; costNote: string }>>({});
+  const [preview, setPreview] = useState<HistoryRepairPreview | null>(null);
+  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
+  const [reason, setReason] = useState("");
+  const [idempotencyKey, setIdempotencyKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const key = (row: { inventoryItemId: number; locationId: number }) => `${row.inventoryItemId}:${row.locationId}`;
+  const load = useCallback(async () => {
+    setError(""); setPreview(null); setConfirmed({});
+    try {
+      const result = await request(`/api/admin/catalogue/products/${productId}/inventory-history-repair`) as { discrepancies: HistoryDiscrepancy[] };
+      const found = result.discrepancies ?? [];
+      setDiscrepancies(found);
+      setEvidence(Object.fromEntries(found.map(row => [key(row), { quantity: "", unitCost: "", countNote: "", costNote: "" }])));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load history discrepancies"); }
+  }, [productId, request]);
+  useEffect(() => { void load(); }, [load]);
+  const payloadEvidence = (): HistoryEvidence[] => discrepancies.map(row => {
+    const value = evidence[key(row)];
+    return { inventoryItemId: row.inventoryItemId, locationId: row.locationId, verifiedPhysicalQuantity: value?.quantity ?? "",
+      documentedUnitCost: value?.unitCost ? value.unitCost : null, physicalCountNote: value?.countNote ?? "", costBasisNote: value?.costNote ?? "" };
+  });
+  async function createPreview() {
+    setBusy(true); setError(""); setPreview(null); setConfirmed({});
+    try {
+      const result = await request(`/api/admin/catalogue/products/${productId}/inventory-history-repair/preview`, {
+        method: "POST", body: JSON.stringify({ evidence: payloadEvidence() }),
+      }) as HistoryRepairPreview;
+      setPreview(result); setIdempotencyKey(crypto.randomUUID());
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not preview history repair"); }
+    finally { setBusy(false); }
+  }
+  async function apply() {
+    if (!preview) return;
+    setBusy(true); setError("");
+    try {
+      const confirmedCorrections = preview.corrections.map(row => ({ inventoryItemId: row.inventoryItemId, locationId: row.locationId,
+        verifiedPhysicalQuantity: row.verifiedPhysicalQuantity, bridgeQuantityDelta: row.bridgeQuantityDelta, documentedUnitCost: row.documentedUnitCost }));
+      await request(`/api/admin/catalogue/products/${productId}/inventory-history-repair/apply`, { method: "POST", body: JSON.stringify({
+        evidence: payloadEvidence(), previewFingerprint: preview.fingerprint, confirmedCorrections, idempotencyKey, reason,
+      }) });
+      await load(); await onApplied();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "History repair was not saved"); }
+    finally { setBusy(false); }
+  }
+  if (!discrepancies.length && !error) return <section className="rounded border border-emerald-500/30 p-3"><h3 className="font-semibold">Inventory history</h3><p className="text-sm text-muted-foreground">Every active variant balance reconciles with its append-only ledger.</p></section>;
+  return <section className="rounded border border-amber-500/40 p-3 space-y-3" aria-label="Guided inventory history repair">
+    <div><h3 className="font-semibold">Guided inventory-history repair</h3><p className="text-sm text-muted-foreground">This appends an audited history bridge. It never edits balances or prior ledger entries. Physically count each location; do not copy the stored quantity unless the count independently verifies it.</p></div>
+    {error && <div role="alert" className="rounded border border-red-500 p-2 text-sm">{error}</div>}
+    {discrepancies.map(row => { const value = evidence[key(row)] ?? { quantity: "", unitCost: "", countNote: "", costNote: "" }; return <div key={key(row)} className="rounded border p-3 space-y-2">
+      <p className="font-medium">{row.itemName} · inventory #{row.inventoryItemId} · {row.locationName}</p>
+      <p className="text-xs">Stored balance {row.storedPhysicalQuantity} {row.baseUnit}; ledger {row.ledgerQuantity}; proposed bridge after verification {row.bridgeQuantityDelta}.</p>
+      <p className="text-xs font-medium text-amber-600">Required physical count to use this repair: {row.storedPhysicalQuantity}. If the actual count differs, use the normal audited adjustment flow first and refresh.</p>
+      <div className="grid gap-2 md:grid-cols-2"><label>Verified physical count<Input aria-label={`Verified count ${key(row)}`} value={value.quantity} onChange={event => setEvidence(current => ({ ...current, [key(row)]: { ...value, quantity: event.target.value } }))} /></label>
+        <label>Physical-count evidence<Input aria-label={`Count evidence ${key(row)}`} value={value.countNote} onChange={event => setEvidence(current => ({ ...current, [key(row)]: { ...value, countNote: event.target.value } }))} placeholder="Count sheet, witness, date, or reference" /></label>
+        <label>Documented unit cost (optional)<Input aria-label={`Documented cost ${key(row)}`} value={value.unitCost} onChange={event => setEvidence(current => ({ ...current, [key(row)]: { ...value, unitCost: event.target.value } }))} /></label>
+        <label>Cost evidence or why unknown<Input aria-label={`Cost evidence ${key(row)}`} value={value.costNote} onChange={event => setEvidence(current => ({ ...current, [key(row)]: { ...value, costNote: event.target.value } }))} placeholder="Invoice/reference, or explain why cost remains unknown" /></label></div>
+    </div>; })}
+    <Button disabled={busy || !discrepancies.length} onClick={() => void createPreview()}>{busy ? "Working…" : "Preview exact ledger entries"}</Button>
+    {preview && <div className="space-y-3 rounded bg-muted/30 p-3"><h4 className="font-medium">Reviewed preview</h4>
+      {preview.blockers.length > 0 && <div role="alert"><strong>Blocking issues</strong><ul>{preview.blockers.map(item => <li key={item}>{item}</li>)}</ul></div>}
+      {preview.corrections.map(row => <label key={key(row)} className="block rounded border p-2 text-sm"><span className="flex items-start gap-2"><input type="checkbox" checked={Boolean(confirmed[key(row)])} onChange={event => setConfirmed(current => ({ ...current, [key(row)]: event.target.checked }))} />
+        <span>Confirm inventory #{row.inventoryItemId}, {row.locationName}: append {row.bridgeQuantityDelta}; ledger {row.ledgerQuantity} → {row.verifiedPhysicalQuantity}; unit cost {row.documentedUnitCost ?? "unknown"}. Evidence: {row.physicalCountNote}; cost source/status: {row.costBasisNote}.</span></span></label>)}
+      {preview.unresolvedCosts.length > 0 && <p className="text-sm font-medium text-amber-600">Quantity history can be repaired, but valuation remains unknown for inventory item(s) {preview.unresolvedCosts.map(row => `#${row.inventoryItemId}`).join(", ")}.</p>}
+      <label>Repair reason<Input aria-label="Inventory history repair reason" value={reason} onChange={event => setReason(event.target.value)} /></label>
+      <Button disabled={busy || preview.blockers.length > 0 || reason.trim().length < 10 || preview.corrections.some(row => !confirmed[key(row)])} onClick={() => void apply()}>Apply confirmed append-only repair</Button>
+    </div>}
+  </section>;
 }
 
 export default function AdminCatalogueProducts() {
@@ -228,6 +306,7 @@ export default function AdminCatalogueProducts() {
           {product.name}<span className="block text-xs text-muted-foreground">{product.options.length} option{product.options.length === 1 ? "" : "s"}</span>
         </button>)}</aside>
       {selected && <main className="space-y-5">
+        {selected.inventoryModel === "SEPARATE_VARIANTS" && <GuidedHistoryRepair productId={selected.id} request={request} onApplied={refresh} />}
         <section className="rounded-xl border p-4 space-y-3">
           <h2 className="font-semibold">{selected.name}</h2>
           <div className="flex gap-2"><label className="flex-1">Product name<Input value={editName} onChange={event => setEditName(event.target.value)} /></label>

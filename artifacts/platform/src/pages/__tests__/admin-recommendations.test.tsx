@@ -154,3 +154,47 @@ it("saves an eligible Shared model and shows it after the settings reload", asyn
   expect(inputValues).toContain("2.500000");
   expect(inputValues).toContain("17.50");
 });
+
+it("guides an explicit per-row append-only history repair and preserves unknown cost", async () => {
+  let repaired = false;
+  type GuidedBody = { evidence?: Array<{ costBasisNote?: string; documentedUnitCost?: string | null; physicalCountNote?: string }>;
+    confirmedCorrections?: Array<Record<string, unknown>> };
+  const requests: Array<{ path: string; method?: string; body?: GuidedBody }> = [];
+  const product = { id: 7, name: "Tina", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", options: [
+    { id: 9, catalogItemId: 417, label: "Ball Tina", optionValues: {}, sku: null, price: "12.00", active: true, isAvailable: true,
+      inventoryItemId: 417, baseUnit: "each", consumptionQuantity: "3.5", complianceHold: false, complianceReason: null,
+      inventoryStatus: "ready", balanceRowCount: 1, stockOnHand: "5", reservedQuantity: "0", availableQuantity: "5", orderable: true },
+  ] };
+  vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+    const path = String(input); const body = init?.body ? JSON.parse(String(init.body)) as GuidedBody : undefined; requests.push({ path, method: init?.method, body });
+    if (path === "/api/admin/catalogue/products") return new Response(JSON.stringify({ products: [product] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path === "/api/admin/catalogue/recommendations") return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path === "/api/admin/catalogue/inventory/417/locations") return new Response(JSON.stringify({ locations: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.endsWith("/inventory-history-repair") && !init?.method) return new Response(JSON.stringify({ discrepancies: repaired ? [] : [{ inventoryItemId: 417, catalogItemId: 417, itemName: "Ball Tina", baseUnit: "each", locationId: 3, locationName: "CSR Sales Box 1", storedPhysicalQuantity: "5.000000", ledgerQuantity: "1.000000", bridgeQuantityDelta: "4.000000", costStatus: "unknown_baseline" }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.endsWith("/inventory-history-repair/preview")) return new Response(JSON.stringify({ blockers: [], fingerprint: "a".repeat(64), unresolvedCosts: [{ inventoryItemId: 417, catalogItemId: 417, reason: body!.evidence![0].costBasisNote }], corrections: [{ ...body!.evidence![0], catalogItemId: 417, locationName: "CSR Sales Box 1", ledgerQuantity: "1.000000", bridgeQuantityDelta: "4.000000" }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.endsWith("/inventory-history-repair/apply")) { repaired = true; return new Response(JSON.stringify({ repairId: "00000000-0000-4000-8000-000000000001", movementIds: [99], idempotent: false }), { status: 201, headers: { "Content-Type": "application/json" } }); }
+    return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400, headers: { "Content-Type": "application/json" } });
+  }));
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(createElement(AdminCatalogueProducts)));
+  await vi.waitFor(() => expect(host?.textContent).toContain("Tina"));
+  await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent?.includes("Tina"))!.click());
+  await vi.waitFor(() => expect(host?.textContent).toContain("Required physical count to use this repair: 5.000000"));
+  const enter = async (label: string, value: string) => { const input = host!.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement; await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+  }); };
+  await enter("Verified count 417:3", "5");
+  await enter("Count evidence 417:3", "Witnessed count sheet 2026-10-26");
+  await enter("Cost evidence 417:3", "Historical invoice unavailable");
+  await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent === "Preview exact ledger entries")!.click());
+  await vi.waitFor(() => expect(host?.textContent).toContain("append 4.000000"));
+  expect(host?.textContent).toContain("unit cost unknown");
+  const confirm = host!.querySelector('section[aria-label="Guided inventory history repair"] input[type="checkbox"]') as HTMLInputElement;
+  await act(async () => confirm.click());
+  await enter("Inventory history repair reason", "Repair witnessed opening history");
+  await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent === "Apply confirmed append-only repair")!.click());
+  await vi.waitFor(() => expect(host?.textContent).toContain("Every active variant balance reconciles"));
+  const apply = requests.find(request => request.path.endsWith("/inventory-history-repair/apply"));
+  expect(apply?.body?.confirmedCorrections).toEqual([{ inventoryItemId: 417, locationId: 3, verifiedPhysicalQuantity: "5", bridgeQuantityDelta: "4.000000", documentedUnitCost: null }]);
+  expect(apply?.body?.evidence?.[0]).toMatchObject({ documentedUnitCost: null, physicalCountNote: "Witnessed count sheet 2026-10-26", costBasisNote: "Historical invoice unavailable" });
+});

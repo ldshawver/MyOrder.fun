@@ -4,6 +4,7 @@ import { db } from "@workspace/db";
 import {
   applyInventoryHistoryBaselineRepair,
   INVENTORY_HISTORY_BASELINE_REPAIR,
+  repairConfirmation,
   type InventoryHistoryCountEvidence,
   previewInventoryHistoryBaselineRepair,
 } from "../lib/inventoryHistoryBaselineRepair";
@@ -33,5 +34,5 @@ if (!actor?.id || !actor.role) throw new Error("Active tenant repair actor was n
 const idempotencyKey = argument("idempotency-key");
 if (!idempotencyKey) throw new Error("Execution requires --idempotency-key=<uuid>");
 const result = await applyInventoryHistoryBaselineRepair({ tenantId, productId, evidence, previewFingerprint: fingerprint,
-  idempotencyKey, reason, actor: { id: Number(actor.id), role: actor.role } });
+  confirmedCorrections: preview.corrections.map(repairConfirmation), idempotencyKey, reason, actor: { id: Number(actor.id), role: actor.role } });
 console.log(JSON.stringify({ mode: "executed", ...result }, null, 2));
