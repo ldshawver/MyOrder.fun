@@ -845,18 +845,18 @@ test("production rollback baseline is the current pre-release image set", () => 
   assert.equal(PRESERVED_SNAPSHOT.rehearsalWorkflowRun, "39771000177");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.manifests).sort(), ["api", "migrate", "platform"]);
   assert.deepEqual(Object.keys(APPROVED_RELEASE.configs).sort(), ["api", "migrate", "platform"]);
-  assert.equal(APPROVED_RELEASE.manifests.api, "sha256:626ff098eccd96e78a5269fb54b0dbec490912eaf0f39b4ce3d65d1a30e45197");
-  assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:06ca7875eb2ab7f70610d28611027c44f36d0dcd76a50a27d4c46a771c092e57");
-  assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:f4a63fb9e4a23eefba08a8a7e07f5995a47888e63446a566d93e8710f1bc6d9b");
-  assert.equal(APPROVED_RELEASE.configs.api, "sha256:8266cbe1c7bb61ed947c58dfe1f069f4af59521339ecb21910a6337c09377988");
-  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:72688745db1710bb6ca83b2def42ca51692f2480eb8a4b5a598f7dece11329e0");
-  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:b8733ae4ef761346609b2fc81b571220626ab8c7faa2d0487775086c48640561");
+  assert.equal(APPROVED_RELEASE.manifests.api, "sha256:031c4808774da734cd3bb94a12708f6f9cdd0e248455a0991a3aa71800af47c0");
+  assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:d9914a9de63b1dbf1afe3ae41384e7f49b5ae052fe6d8fece506c31709e6c94f");
+  assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:dca78cac9ba8a0cc3a021337fdf1ef434b85d3b8a225b86d0f0f992ce3924d1e");
+  assert.equal(APPROVED_RELEASE.configs.api, "sha256:33f345ff602983ea3d52ffdf9280f122b2f8cce71bc4429ba96f665b2308ae1f");
+  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:99842c62f7acd8c9984fb469a103b5bcb3e3defa57eaf38a09a7a9889299b1a5");
+  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:a2e759d53ee15b21de950046817876d42be68a768242abfb9ed538e96c8b80f0");
   assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.platform, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.migrate, APPROVED_RELEASE.sha);
-  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:626ff098eccd96e78a5269fb54b0dbec490912eaf0f39b4ce3d65d1a30e45197");
-  assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:06ca7875eb2ab7f70610d28611027c44f36d0dcd76a50a27d4c46a771c092e57");
-  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:f4a63fb9e4a23eefba08a8a7e07f5995a47888e63446a566d93e8710f1bc6d9b");
+  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:031c4808774da734cd3bb94a12708f6f9cdd0e248455a0991a3aa71800af47c0");
+  assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:d9914a9de63b1dbf1afe3ae41384e7f49b5ae052fe6d8fece506c31709e6c94f");
+  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:dca78cac9ba8a0cc3a021337fdf1ef434b85d3b8a225b86d0f0f992ce3924d1e");
   assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, ["0079_verified_zero_opening_counts"]);
   assert.equal(MIGRATION_0077.timestamp, "1792440000000");
   assert.equal(MIGRATION_0077.sha256, "29b98289bd97b1c4781495a93d3d034f03a0daa503a96adfda035d2a3aeecd6b");
@@ -878,7 +878,7 @@ test("production rollback baseline is the current pre-release image set", () => 
   );
 });
 
-test("candidate builder is frozen to the exact proposed source while deployment remains on the approved image set", () => {
+test("candidate builder and deployment approval are frozen to the exact verified source", () => {
   const workflow = readFileSync(
     new URL("../.github/workflows/build-production-platform.yml", import.meta.url),
     "utf8",
@@ -891,8 +891,8 @@ test("candidate builder is frozen to the exact proposed source while deployment 
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${proposed.tree}`));
   assert.match(workflow, new RegExp(`ref: ${proposed.sha}`));
   assert.equal(workflow.match(new RegExp(proposed.sha, "g"))?.length, 5);
-  assert.notEqual(proposed.sha, APPROVED_RELEASE.sha);
-  assert.notEqual(proposed.tree, APPROVED_RELEASE.tree);
+  assert.equal(proposed.sha, APPROVED_RELEASE.sha);
+  assert.equal(proposed.tree, APPROVED_RELEASE.tree);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
@@ -1123,8 +1123,8 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
   const globalEnv = workflow.match(/^env:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
-  assert.equal(APPROVED_RELEASE.sha, "bb56ff6e52e50fab0e74dcfd0bf41b311bc91206");
-  assert.equal(APPROVED_RELEASE.tree, "d8b2d83374b8ae290818f3412004eef2381a0444");
+  assert.equal(APPROVED_RELEASE.sha, "68edc6a4e64876c146c82c21ca47f8abcf6b392f");
+  assert.equal(APPROVED_RELEASE.tree, "015b406605eaa070c5f13f50dea5ce9f925ef5ab");
   for (const [key, value] of [["SHA", APPROVED_RELEASE.sha], ["TREE", APPROVED_RELEASE.tree]]) {
     const pin = `PINNED_RELEASE_${key}`;
     assert.deepEqual(globalEnv.match(new RegExp(`^  ${pin}: ([a-f0-9]{40})$`, "gm")), [`  ${pin}: ${value}`]);
