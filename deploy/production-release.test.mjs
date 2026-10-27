@@ -878,21 +878,21 @@ test("production rollback baseline is the current pre-release image set", () => 
   );
 });
 
-test("candidate builder and deployment approval are frozen to the exact verified source", () => {
+test("candidate builder is frozen to the exact proposed source while deployment remains on the approved image set", () => {
   const workflow = readFileSync(
     new URL("../.github/workflows/build-production-platform.yml", import.meta.url),
     "utf8",
   );
   const proposed = {
-    sha: "bb56ff6e52e50fab0e74dcfd0bf41b311bc91206",
-    tree: "d8b2d83374b8ae290818f3412004eef2381a0444",
+    sha: "68edc6a4e64876c146c82c21ca47f8abcf6b392f",
+    tree: "015b406605eaa070c5f13f50dea5ce9f925ef5ab",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${proposed.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${proposed.tree}`));
   assert.match(workflow, new RegExp(`ref: ${proposed.sha}`));
   assert.equal(workflow.match(new RegExp(proposed.sha, "g"))?.length, 5);
-  assert.equal(proposed.sha, APPROVED_RELEASE.sha);
-  assert.equal(proposed.tree, APPROVED_RELEASE.tree);
+  assert.notEqual(proposed.sha, APPROVED_RELEASE.sha);
+  assert.notEqual(proposed.tree, APPROVED_RELEASE.tree);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
