@@ -28,7 +28,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, evaluateAccountApp
 import { requirePermission } from "../lib/roles";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
 import { quantityUnits } from "../lib/exactQuantity";
-import { calculateCloseoutFinancials, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents } from "../lib/shiftCloseoutFinancials";
+import { calculateCloseoutFinancials, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents, sumCommissionableDiscountedProductSales, sumCustomerTipsForShift } from "../lib/shiftCloseoutFinancials";
 import { locallyManagedSellableCatalogWhere } from "../lib/localInventoryEligibility";
 import { z } from "zod";
 
@@ -887,10 +887,14 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
     Object.entries(paymentTotalsCents).map(([method, cents]) => [method, moneyNumber(cents)]),
   ) as Record<string, number>;
   const totalRevenue = moneyNumber(Object.values(paymentTotalsCents).reduce((total, cents) => total + cents, 0n));
+  const commissionSalesBase = moneyNumber(sumCommissionableDiscountedProductSales(shiftOrders));
+  const customerTips = moneyNumber(sumCustomerTipsForShift(shiftOrders));
 
   return {
     orderCount: shiftOrders.length,
     totalRevenue,
+    commissionSalesBase,
+    customerTips,
     cashSales: paymentTotals.cash,
     cardSales: paymentTotals.card,
     compSales: paymentTotals.comp,
@@ -2230,15 +2234,27 @@ router.post(
         cashBankEndReported: lockedShift.cashBankEndReported,
         differenceAmount,
         tipPercent,
+        commissionSalesBase: stats.commissionSalesBase,
+        customerTips: stats.customerTips,
+        csrDeliveryEarnings: lockedShift.csrDeliveryEarnings,
       });
       const checkout = {
         shiftId, tenantId: shift.tenantId, csrUserId: lockedShift.techId,
-        eligibleSalesBase: financials.eligibleSalesBase, tipPercent, tipAmount: financials.tipAmount,
+        eligibleSalesBase: financials.eligibleSalesBase, commissionSalesBase: financials.commissionSalesBase,
+        tipPercent, tipAmount: financials.tipAmount,
+        customerTips: financials.customerTips, csrDeliveryEarnings: financials.csrDeliveryEarnings,
+        totalCsrPayout: financials.totalCsrPayout,
         differenceAmount: financials.differenceAmount, finalTip: financials.finalTip,
         cashBankStart: financials.cashBankStart, cashBankEndReported: financials.cashBankEndReported,
         depositAmount: financials.depositAmount, newCashBalance: financials.newCashBalance,
         paymentTotals: stats.paymentTotals, employeeDiscountSales,
-        commissionRule: { kind: "supervisor_selected_percentage", rate: tipPercent / 100, exclusions: ["comp", "employee_discount"], shortageDeduction: differenceAmount },
+        commissionRule: {
+          kind: "supervisor_selected_percentage",
+          rate: tipPercent / 100,
+          base: "paid_discounted_product_sales",
+          exclusions: ["comp", "employee_discount", "general_queue", "delivery_fee", "tax", "customer_tip"],
+          shortageDeduction: differenceAmount,
+        },
         inventory, flaggedItems: inventory.filter(i => i.isFlagged), orderCount: stats.orderCount,
       };
       const [pkg] = await tx.insert(shiftCloseoutPackagesTable).values({

@@ -88,6 +88,7 @@ import {
   shouldSendNotificationChannel,
 } from "../lib/notificationPrefs";
 import { decideRouting, reassignOrder, listActiveCsrs, isShiftOrderRoutable, inventoryLocationNameForBoxAssignment } from "../lib/orderRouting";
+import { calculateCsrDeliveryShareCents, formatMoneyCents } from "../lib/shiftCloseoutFinancials";
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 import {
   createUberDeliveryQuote,
@@ -1465,14 +1466,6 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     metadata: { routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, promisedMinutes: routing.promisedMinutes },
     ipAddress: req.ip,
   });
-
-  // CSR delivery earnings: atomically increment shift csrDeliveryEarnings (fire-and-forget)
-  if (isCsrDelivery && assignedShiftId && csrDeliveryFee > 0) {
-    db.update(labTechShiftsTable)
-      .set({ csrDeliveryEarnings: sql`coalesce(${labTechShiftsTable.csrDeliveryEarnings}, 0) + ${String(csrDeliveryFee.toFixed(2))}` })
-      .where(eq(labTechShiftsTable.id, assignedShiftId))
-      .catch(err => logger.warn({ err, shiftId: assignedShiftId, csrDeliveryFee }, "Failed to update csrDeliveryEarnings"));
-  }
 
   const customerName = `${actor.firstName ?? ""} ${actor.lastName ?? ""}`.trim() || actor.email || "Customer";
 
@@ -2923,21 +2916,56 @@ router.post("/orders/:id/delivery/handoff-complete", requireRole("global_admin",
   const actor = req.dbUser!;
   const orderId = Number(req.params.id);
   if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
-  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
-  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-  if (order.handoffCompletedAt) { res.status(409).json({ error: "Handoff already completed" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const actorRole = normalizeRole(actor.role);
   const now = new Date();
-  const [updated] = await db.update(ordersTable)
-    .set({ handoffCompletedAt: now, handoffCompletedByUserId: actor.id })
-    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)))
-    .returning();
+  const result = await db.transaction(async tx => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${orderId})`);
+    const [order] = await tx.select().from(ordersTable)
+      .where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId)))
+      .for("update").limit(1);
+    if (!order) return { status: 404 as const, error: "Order not found" };
+    if (order.handoffCompletedAt) return { status: 409 as const, error: "Handoff already completed" };
+
+    let csrDeliveryShare: string | null = null;
+    if (order.deliveryMethod === "csr_delivery") {
+      if (order.paymentStatus !== "paid" || !await paymentReadyForCompletion(tenantId, order)) {
+        return { status: 409 as const, error: "CSR delivery handoff requires a fully settled order" };
+      }
+      if (order.assignedCsrUserId == null || order.assignedShiftId == null) {
+        return { status: 409 as const, error: "CSR delivery earnings require an assigned CSR shift" };
+      }
+      if (actorRole === "csr" && order.assignedCsrUserId !== actor.id) {
+        return { status: 403 as const, error: "Only the assigned CSR may complete this delivery" };
+      }
+      const [shift] = await tx.select({ id: labTechShiftsTable.id }).from(labTechShiftsTable).where(and(
+        eq(labTechShiftsTable.tenantId, tenantId),
+        eq(labTechShiftsTable.id, order.assignedShiftId),
+        eq(labTechShiftsTable.techId, order.assignedCsrUserId),
+        eq(labTechShiftsTable.status, "active"),
+      )).for("update").limit(1);
+      if (!shift) return { status: 409 as const, error: "The assigned CSR shift is not active; resolve the delivery assignment before handoff" };
+      csrDeliveryShare = formatMoneyCents(calculateCsrDeliveryShareCents(order.deliveryFee));
+      await tx.update(labTechShiftsTable).set({
+        csrDeliveryEarnings: sql`coalesce(${labTechShiftsTable.csrDeliveryEarnings}, 0) + ${csrDeliveryShare}::numeric`,
+      }).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, shift.id)));
+    }
+
+    const [updated] = await tx.update(ordersTable)
+      .set({ handoffCompletedAt: now, handoffCompletedByUserId: actor.id })
+      .where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), isNull(ordersTable.handoffCompletedAt)))
+      .returning();
+    if (!updated) return { status: 409 as const, error: "Handoff already completed" };
+    return { status: 200 as const, updated, csrDeliveryShare };
+  });
+  if (result.status !== 200) { res.status(result.status).json({ error: result.error }); return; }
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
     action: "DELIVERY_HANDOFF_COMPLETE",
     resourceType: "order", resourceId: String(orderId),
-    metadata: { handoffCompletedAt: now.toISOString() }, ipAddress: req.ip,
+    metadata: { handoffCompletedAt: now.toISOString(), csrDeliveryShare: result.csrDeliveryShare }, ipAddress: req.ip,
   });
-  res.json({ handoffCompletedAt: updated.handoffCompletedAt, handoffCompletedByUserId: updated.handoffCompletedByUserId });
+  res.json({ handoffCompletedAt: result.updated.handoffCompletedAt, handoffCompletedByUserId: result.updated.handoffCompletedByUserId, csrDeliveryShare: result.csrDeliveryShare });
 });
 
 export default router;

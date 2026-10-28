@@ -55,6 +55,41 @@ export function requiredNonNegativeMoneyCents(value: unknown, field: string): bi
   return nonNegative(requiredMoneyCents(value, field), field);
 }
 
+type ShiftPayoutOrder = {
+  paymentStatus?: string | null;
+  paymentMethod?: string | null;
+  routeSource?: string | null;
+  subtotal?: unknown;
+  checkoutConversionSnapshot?: unknown;
+};
+
+/** Orders passed here are already tenant- and shift-scoped by the caller. */
+export function sumCommissionableDiscountedProductSales(orders: readonly ShiftPayoutOrder[]): bigint {
+  return orders.reduce((total, order) => {
+    const method = String(order.paymentMethod ?? "").toLowerCase().replace(/[\s-]+/g, "_");
+    if (order.paymentStatus !== "paid" || order.routeSource === "general_account" || method.split(/[+,]/).includes("comp")) return total;
+    return total + requiredNonNegativeMoneyCents(order.subtotal, "commissionableProductSubtotal");
+  }, 0n);
+}
+
+/** Customer tips are passed through at 100%; they are not commission sales. */
+export function sumCustomerTipsForShift(orders: readonly ShiftPayoutOrder[]): bigint {
+  return orders.reduce((total, order) => {
+    if (order.paymentStatus !== "paid" || order.routeSource === "general_account") return total;
+    const snapshot = order.checkoutConversionSnapshot && typeof order.checkoutConversionSnapshot === "object"
+      ? order.checkoutConversionSnapshot as Record<string, unknown>
+      : {};
+    const tip = snapshot.tip && typeof snapshot.tip === "object" ? snapshot.tip as Record<string, unknown> : {};
+    return total + (tip.amount == null ? 0n : requiredNonNegativeMoneyCents(tip.amount, "customerTip"));
+  }, 0n);
+}
+
+/** The retained CSR share is exactly 80% of the server-recorded fee. */
+export function calculateCsrDeliveryShareCents(deliveryFee: unknown): bigint {
+  const feeCents = requiredNonNegativeMoneyCents(deliveryFee, "deliveryFee");
+  return (feeCents * 80n + 50n) / 100n;
+}
+
 export function formatMoneyCents(cents: bigint): string {
   const negative = cents < 0n;
   const unsigned = negative ? -cents : cents;
@@ -77,6 +112,12 @@ export type CloseoutFinancialInput = {
   cashBankEndReported: unknown;
   differenceAmount: unknown;
   tipPercent: unknown;
+  /** Paid discounted merchandise only; excludes General Queue, fees, tax, and customer tips. */
+  commissionSalesBase?: unknown;
+  /** Customer tips owed to the CSR at closeout. */
+  customerTips?: unknown;
+  /** CSR delivery share already accrued for completed paid handoffs. */
+  csrDeliveryEarnings?: unknown;
 };
 
 export type CloseoutFinancials = {
@@ -86,6 +127,10 @@ export type CloseoutFinancials = {
   employeeDiscountSales: number;
   qualifyingSales: number;
   eligibleSalesBase: number;
+  commissionSalesBase: number;
+  customerTips: number;
+  csrDeliveryEarnings: number;
+  totalCsrPayout: number;
   tipPercent: number;
   tipAmount: number;
   differenceAmount: number;
@@ -127,22 +172,32 @@ export function calculateCloseoutFinancials(input: CloseoutFinancialInput): Clos
   const cashBankEndReported = nonNegative(requiredMoneyCents(input.cashBankEndReported, "cashBankEndReported"), "cashBankEndReported");
   const differenceAmount = nonNegative(requiredMoneyCents(input.differenceAmount, "differenceAmount"), "differenceAmount");
   const tipPercent = tipPercentValue(input.tipPercent);
+  const commissionSalesBase = input.commissionSalesBase == null
+    ? totalRevenue - compSales
+    : nonNegative(requiredMoneyCents(input.commissionSalesBase, "commissionSalesBase"), "commissionSalesBase");
+  const customerTips = nonNegative(aggregateMoneyCents(input.customerTips, "customerTips"), "customerTips");
+  const csrDeliveryEarnings = nonNegative(aggregateMoneyCents(input.csrDeliveryEarnings, "csrDeliveryEarnings"), "csrDeliveryEarnings");
 
-  const qualifyingSales = totalRevenue - compSales;
-  if (qualifyingSales < 0n) throw new ShiftCloseoutFinancialError("compSales cannot exceed totalRevenue");
-  const eligibleSalesBase = qualifyingSales - employeeDiscountSales;
+  const qualifyingSales = commissionSalesBase;
+  const eligibleSalesBase = input.commissionSalesBase == null
+    ? qualifyingSales - employeeDiscountSales
+    : commissionSalesBase;
+  if (input.commissionSalesBase == null && qualifyingSales < 0n) throw new ShiftCloseoutFinancialError("compSales cannot exceed totalRevenue");
   if (eligibleSalesBase < 0n) throw new ShiftCloseoutFinancialError("employeeDiscountSales cannot exceed qualifying sales");
   // The legacy rule rounds the percentage result to the nearest cent.
   const tipAmount = (eligibleSalesBase * BigInt(tipPercent) + 50n) / 100n;
   const finalTip = tipAmount > differenceAmount ? tipAmount - differenceAmount : 0n;
-  const depositBase = cashSales - finalTip - cashBankStart;
+  const totalCsrPayout = finalTip + customerTips + csrDeliveryEarnings;
+  const depositBase = cashSales - totalCsrPayout - cashBankStart;
   const depositAmount = depositBase > 0n ? depositBase : 0n;
-  const newCashBalance = finalTip - differenceAmount;
+  const newCashBalance = totalCsrPayout;
 
   const financials = {
     totalRevenue: moneyNumber(totalRevenue), cashSales: moneyNumber(cashSales), compSales: moneyNumber(compSales),
     employeeDiscountSales: moneyNumber(employeeDiscountSales), qualifyingSales: moneyNumber(qualifyingSales),
-    eligibleSalesBase: moneyNumber(eligibleSalesBase), tipPercent, tipAmount: moneyNumber(tipAmount),
+    eligibleSalesBase: moneyNumber(eligibleSalesBase), commissionSalesBase: moneyNumber(commissionSalesBase),
+    customerTips: moneyNumber(customerTips), csrDeliveryEarnings: moneyNumber(csrDeliveryEarnings),
+    totalCsrPayout: moneyNumber(totalCsrPayout), tipPercent, tipAmount: moneyNumber(tipAmount),
     differenceAmount: moneyNumber(differenceAmount), finalTip: moneyNumber(finalTip), cashBankStart: moneyNumber(cashBankStart),
     cashBankEndReported: moneyNumber(cashBankEndReported), depositAmount: moneyNumber(depositAmount), newCashBalance: moneyNumber(newCashBalance),
     persistence: {

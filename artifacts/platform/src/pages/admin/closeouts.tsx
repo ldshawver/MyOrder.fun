@@ -15,14 +15,14 @@ type PendingShift = {
 };
 type ActiveShift = { shiftId: number; techId: number; techName: string; techEmail: string; boxAssignmentId?: string | null; clockedInAt: string; cashBankStart: number };
 
-const TIP_OPTIONS = [15, 16, 17, 18] as const;
+const COMMISSION_OPTIONS = [15, 16, 17, 18] as const;
 
 export default function AdminCloseouts() {
   const { getToken } = useAuth();
   const [shifts, setShifts] = useState<PendingShift[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tipById, setTipById] = useState<Record<number, number>>({});
+  const [commissionPercentById, setCommissionPercentById] = useState<Record<number, number>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const [activeShifts, setActiveShifts] = useState<ActiveShift[]>([]);
@@ -46,7 +46,7 @@ export default function AdminCloseouts() {
       const active: ActiveShift[] = activeData.activeTechs ?? [];
       setActiveShifts(active);
       setCashEndById(prev => Object.fromEntries(active.map(s => [s.shiftId, prev[s.shiftId] ?? String(s.cashBankStart)])));
-      setTipById(prev => {
+      setCommissionPercentById(prev => {
         const next = { ...prev };
         for (const s of list) {
           if (next[s.shiftId] === undefined) next[s.shiftId] = 17;
@@ -93,7 +93,7 @@ export default function AdminCloseouts() {
     setError(null);
     setResultMessage(null);
     try {
-      const tipPercent = tipById[shiftId] ?? 17;
+      const tipPercent = commissionPercentById[shiftId] ?? 17;
       const token = await getToken();
       const res = await fetch(`/api/shifts/${shiftId}/supervisor-checkout`, {
         method: "POST",
@@ -108,8 +108,8 @@ export default function AdminCloseouts() {
         throw new Error(`Approve failed (HTTP ${res.status}): ${errMsg}`);
       }
       setShifts(prev => prev.filter(s => s.shiftId !== shiftId));
-      const checkout = (body as { checkout?: { finalTip?: number; depositAmount?: number } }).checkout ?? {};
-      setResultMessage(`Shift #${shiftId} finalized — tip $${(checkout.finalTip ?? 0).toFixed(2)}, deposit $${(checkout.depositAmount ?? 0).toFixed(2)}.`);
+      const checkout = (body as { checkout?: { totalCsrPayout?: number; customerTips?: number; csrDeliveryEarnings?: number; depositAmount?: number } }).checkout ?? {};
+      setResultMessage(`Shift #${shiftId} finalized — CSR payout $${(checkout.totalCsrPayout ?? 0).toFixed(2)} (tips $${(checkout.customerTips ?? 0).toFixed(2)}, CSR delivery $${(checkout.csrDeliveryEarnings ?? 0).toFixed(2)}), deposit $${(checkout.depositAmount ?? 0).toFixed(2)}.`);
       setTimeout(() => setResultMessage(null), 6000);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Approve failed");
@@ -132,7 +132,7 @@ export default function AdminCloseouts() {
         <div>
           <h1 className="text-xl font-bold">Shift Closeouts</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Shifts waiting on supervisor checkout. Pick a tip percent and approve to finalize.
+            Shifts waiting on supervisor checkout. Select a 15–18% commission rate on discounted product sales, then approve to finalize.
           </p>
         </div>
         <Button onClick={load} variant="outline" size="sm" className="gap-1.5 rounded-xl" data-testid="button-closeouts-reload">
@@ -196,14 +196,14 @@ export default function AdminCloseouts() {
 
                 <div className="mt-4 flex items-center justify-between flex-wrap gap-3">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-muted-foreground mr-1">Tip %:</span>
-                    {TIP_OPTIONS.map(opt => (
+                    <span className="text-xs text-muted-foreground mr-1">Commission %:</span>
+                    {COMMISSION_OPTIONS.map(opt => (
                       <button
                         key={opt}
-                        onClick={() => setTipById(prev => ({ ...prev, [s.shiftId]: opt }))}
-                        data-testid={`button-tip-${s.shiftId}-${opt}`}
+                        onClick={() => setCommissionPercentById(prev => ({ ...prev, [s.shiftId]: opt }))}
+                        data-testid={`button-commission-${s.shiftId}-${opt}`}
                         className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all ${
-                          tipById[s.shiftId] === opt
+                          commissionPercentById[s.shiftId] === opt
                             ? "border-primary/50 bg-primary/15 text-primary"
                             : "border-border/40 bg-background/60 text-muted-foreground hover:text-foreground"
                         }`}
