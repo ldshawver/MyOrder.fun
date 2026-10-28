@@ -32,8 +32,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PINNED_RELEASE_SHA: 68edc6a4e64876c146c82c21ca47f8abcf6b392f
-  PINNED_RELEASE_TREE: 015b406605eaa070c5f13f50dea5ce9f925ef5ab
+  PINNED_RELEASE_SHA: 5c68c81600f31fd9781bcf2d47746d64b10ae81e
+  PINNED_RELEASE_TREE: a765b25f0636a44d117353652ed82fd4316348c2
 
 jobs:
   test:
@@ -42,8 +42,8 @@ jobs:
     timeout-minutes: 15
 
     env:
-      RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || '68edc6a4e64876c146c82c21ca47f8abcf6b392f' }}
-      RELEASE_TREE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tree || '015b406605eaa070c5f13f50dea5ce9f925ef5ab' }}
+      RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || '5c68c81600f31fd9781bcf2d47746d64b10ae81e' }}
+      RELEASE_TREE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tree || 'a765b25f0636a44d117353652ed82fd4316348c2' }}
 
     steps:
       - name: Checkout code
@@ -153,9 +153,9 @@ jobs:
       # separate, empty database volume and would collide with the live nginx
       # loopback port.
       COMPOSE_PROJECT_NAME: deploy
-      REPLACEMENT_API_REFERENCE: ghcr.io/ldshawver/myorder-api@sha256:031c4808774da734cd3bb94a12708f6f9cdd0e248455a0991a3aa71800af47c0
-      REPLACEMENT_MIGRATE_REFERENCE: ghcr.io/ldshawver/myorder-migrate@sha256:d9914a9de63b1dbf1afe3ae41384e7f49b5ae052fe6d8fece506c31709e6c94f
-      REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:dca78cac9ba8a0cc3a021337fdf1ef434b85d3b8a225b86d0f0f992ce3924d1e
+      REPLACEMENT_API_REFERENCE: ghcr.io/ldshawver/myorder-api@sha256:7d51b579936c623cdf711c96001b707de561391ade3719a546ada0a0b4f8e791
+      REPLACEMENT_MIGRATE_REFERENCE: ghcr.io/ldshawver/myorder-migrate@sha256:6f39211f7a0490141f1481c6ee8128c8985d55117384f9838059e954da9caafe
+      REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:c1296e3484b9c5fcdf3f360bde7bae74a2a0f61c99125efede1a90a2d5188dd5
 
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
 
@@ -304,24 +304,24 @@ jobs:
              api_id=\"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_API_REFERENCE}')\"; \
              api_config=\"\$(docker manifest inspect '${REPLACEMENT_API_REFERENCE}' | node -p 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).config.digest')\"; \
              printf 'Pulled API manifest identity: %s; config identity: %s\\n' \"\$api_id\" \"\$api_config\"; \
-             test \"\$api_id\" = 'sha256:031c4808774da734cd3bb94a12708f6f9cdd0e248455a0991a3aa71800af47c0'; \
-             test \"\$api_config\" = 'sha256:33f345ff602983ea3d52ffdf9280f122b2f8cce71bc4429ba96f665b2308ae1f'; \
+             test \"\$api_id\" = 'sha256:7d51b579936c623cdf711c96001b707de561391ade3719a546ada0a0b4f8e791'; \
+             test \"\$api_config\" = 'sha256:d64a1851542eab3c34058bd56f653e4075d737e9697689d90449317083706b50'; \
              docker pull '${REPLACEMENT_MIGRATE_REFERENCE}'; \
              migrate_id=\"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_MIGRATE_REFERENCE}')\"; \
              migrate_config=\"\$(docker manifest inspect '${REPLACEMENT_MIGRATE_REFERENCE}' | node -p 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).config.digest')\"; \
              printf 'Pulled migrator manifest identity: %s; config identity: %s\\n' \"\$migrate_id\" \"\$migrate_config\"; \
-             test \"\$migrate_id\" = 'sha256:d9914a9de63b1dbf1afe3ae41384e7f49b5ae052fe6d8fece506c31709e6c94f'; \
-             test \"\$migrate_config\" = 'sha256:99842c62f7acd8c9984fb469a103b5bcb3e3defa57eaf38a09a7a9889299b1a5'; \
+             test \"\$migrate_id\" = 'sha256:6f39211f7a0490141f1481c6ee8128c8985d55117384f9838059e954da9caafe'; \
+             test \"\$migrate_config\" = 'sha256:83be7e9e99886542163ee700868113071d7e16d817c934418c494bdb2e5f34ce'; \
              docker pull '${REPLACEMENT_PLATFORM_REFERENCE}'; \
              platform_id=\"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_PLATFORM_REFERENCE}')\"; \
              platform_config=\"\$(docker manifest inspect '${REPLACEMENT_PLATFORM_REFERENCE}' | node -p 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).config.digest')\"; \
              printf 'Pulled Platform manifest identity: %s; config identity: %s\\n' \"\$platform_id\" \"\$platform_config\"; \
-             test \"\$platform_id\" = 'sha256:dca78cac9ba8a0cc3a021337fdf1ef434b85d3b8a225b86d0f0f992ce3924d1e'; \
-             test \"\$platform_config\" = 'sha256:a2e759d53ee15b21de950046817876d42be68a768242abfb9ed538e96c8b80f0'; \
+             test \"\$platform_id\" = 'sha256:c1296e3484b9c5fcdf3f360bde7bae74a2a0f61c99125efede1a90a2d5188dd5'; \
+             test \"\$platform_config\" = 'sha256:22c258c07af018c6dd5c0571491afba3c2933ef2a01d2ffb2bf7b70c7304fb6f'; \
              for ref in '${REPLACEMENT_API_REFERENCE}' '${REPLACEMENT_MIGRATE_REFERENCE}' '${REPLACEMENT_PLATFORM_REFERENCE}'; do \
                test \"\$(docker image inspect --format '{{.Os}}/{{.Architecture}}' \"\$ref\")\" = 'linux/amd64'; \
-               docker image inspect --format '{{.Config.Labels}}' \"\$ref\" | grep -Fq 'org.opencontainers.image.revision:68edc6a4e64876c146c82c21ca47f8abcf6b392f'; \
-               docker image inspect --format '{{.Config.Labels}}' \"\$ref\" | grep -Fq 'com.myorder.deploy-sha:68edc6a4e64876c146c82c21ca47f8abcf6b392f'; \
+               docker image inspect --format '{{.Config.Labels}}' \"\$ref\" | grep -Fq 'org.opencontainers.image.revision:5c68c81600f31fd9781bcf2d47746d64b10ae81e'; \
+               docker image inspect --format '{{.Config.Labels}}' \"\$ref\" | grep -Fq 'com.myorder.deploy-sha:5c68c81600f31fd9781bcf2d47746d64b10ae81e'; \
                docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \"\$ref\" | grep -Fx \"\$ref\" >/dev/null; \
              done"
 
