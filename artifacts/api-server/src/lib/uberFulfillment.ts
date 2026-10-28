@@ -66,14 +66,20 @@ export async function requestUberDelivery(tenantId: number, orderId: number): Pr
       if (!config) throw new Error("configuration_required");
       const refreshed = await createUberDeliveryQuote({ pickupAddress: quote.pickupAddress as UberAddress, dropoffAddress: quote.dropoffAddress as UberAddress, manifestItems: quote.manifestItems as UberManifestItem[], pickupAction: getUberPickupAction() }, config);
       const expires = refreshed.expires ? new Date(refreshed.expires) : null;
-      if (!refreshed.id || !expires || Number.isNaN(expires.getTime()) || expires <= new Date() || !Number.isSafeInteger(refreshed.fee)
+      const dropoffEta = refreshed.dropoff_eta ? new Date(refreshed.dropoff_eta) : null;
+      const durationSeconds = refreshed.duration == null ? null : Number(refreshed.duration);
+      const pickupDurationSeconds = refreshed.pickup_duration == null ? null : Number(refreshed.pickup_duration);
+      if (!refreshed.id || !expires || Number.isNaN(expires.getTime()) || expires <= new Date()
+        || !dropoffEta || Number.isNaN(dropoffEta.getTime()) || dropoffEta <= new Date() || !Number.isSafeInteger(refreshed.fee)
+        || (durationSeconds != null && (!Number.isSafeInteger(durationSeconds) || durationSeconds < 0))
+        || (pickupDurationSeconds != null && (!Number.isSafeInteger(pickupDurationSeconds) || pickupDurationSeconds < 0))
         || refreshed.fee !== quote.feeCents || String(refreshed.currency_type ?? "").toUpperCase() !== quote.currency) {
         await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "manual_reconciliation_required", lastSanitizedError: "requote_price_or_currency_mismatch", updatedAt: new Date() }).where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "staff_requesting")));
         return "manual_reconciliation_required";
       }
       nextQuoteId = randomUUID();
       await db.transaction(async tx => {
-        await tx.insert(uberDeliveryQuotesTable).values({ id: nextQuoteId, tenantId, customerId: order.customerId, providerQuoteId: refreshed.id, cartFingerprint: quote.cartFingerprint, pickupAddress: quote.pickupAddress, dropoffAddress: quote.dropoffAddress, manifestItems: quote.manifestItems, feeCents: refreshed.fee!, currency: quote.currency, providerCreatedAt: refreshed.created ? new Date(refreshed.created) : null, expiresAt: expires, status: "consumed", consumedAt: new Date() });
+        await tx.insert(uberDeliveryQuotesTable).values({ id: nextQuoteId, tenantId, customerId: order.customerId, providerQuoteId: refreshed.id, cartFingerprint: quote.cartFingerprint, pickupAddress: quote.pickupAddress, dropoffAddress: quote.dropoffAddress, manifestItems: quote.manifestItems, feeCents: refreshed.fee!, currency: quote.currency, dropoffEta, durationSeconds, pickupDurationSeconds, providerCreatedAt: refreshed.created ? new Date(refreshed.created) : null, expiresAt: expires, status: "consumed", consumedAt: new Date() });
         await tx.update(uberDeliveryFulfillmentsTable).set({ quoteId: nextQuoteId, updatedAt: new Date() }).where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "staff_requesting")));
         await tx.update(ordersTable).set({ deliveryQuoteId: nextQuoteId, updatedAt: new Date() }).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.deliveryQuoteId, quote.id)));
       });

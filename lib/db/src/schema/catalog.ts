@@ -36,6 +36,9 @@ export const catalogItemsTable = pgTable("catalog_items", {
   stockQuantity: numeric("stock_quantity", { precision: 10, scale: 2 }).default("0"),
   isAvailable: boolean("is_available").notNull().default(true),
   isTaxable: boolean("is_taxable").notNull().default(true),
+  // Explicit operator classification. Unclassified products fail closed and
+  // earn no CSR commission until reviewed; memberships must use "membership".
+  commissionEligibility: text("commission_eligibility").notNull().default("unclassified"),
   imageUrl: text("image_url"),
   mediaGallery: jsonb("media_gallery").default([]),
   tags: text("tags").array().default([]),

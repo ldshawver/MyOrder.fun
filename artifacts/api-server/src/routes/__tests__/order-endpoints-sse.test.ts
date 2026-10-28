@@ -102,7 +102,7 @@ vi.mock("../../lib/uberDirect", () => {
     getUberPickupAction: () => "default",
     createUberDeliveryQuote: async (input: { manifestItems: unknown[] }) => {
       uberQuoteCalls.push({ manifestItems: input.manifestItems });
-      return { id: "quote_safe_1", fee: 599, currency_type: "USD", pickup_action: "default", expires: new Date(Date.now() + 15 * 60_000).toISOString() };
+      return { id: "quote_safe_1", fee: 599, currency_type: "USD", pickup_action: "default", dropoff_eta: new Date(Date.now() + 30 * 60_000).toISOString(), duration: 1800, pickup_duration: 300, expires: new Date(Date.now() + 15 * 60_000).toISOString() };
     },
     normalizeUberAddress: (value: string) => ({ street_address: [value], city: "Test City", state: "CA", zip_code: "94105", country: "US" }),
     formatUberAddress: () => "500 Test Street, Test City, CA 94105, US",

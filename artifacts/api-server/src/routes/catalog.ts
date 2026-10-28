@@ -51,8 +51,12 @@ const createCatalogItemRequest = CreateCatalogItemBody.extend({
   alavontImageUrl: nullableBlankHttpUrl,
   luciferCruzImageUrl: nullableBlankHttpUrl,
   showCatalogueStockIndicator: z.boolean().optional(),
+  commissionEligibility: z.enum(["eligible", "membership", "excluded", "unclassified"]).optional(),
 });
-const updateCatalogItemRequest = UpdateCatalogItemBody.strict().extend({ showCatalogueStockIndicator: z.boolean().optional() }).strict();
+const updateCatalogItemRequest = UpdateCatalogItemBody.strict().extend({
+  showCatalogueStockIndicator: z.boolean().optional(),
+  commissionEligibility: z.enum(["eligible", "membership", "excluded", "unclassified"]).optional(),
+}).strict();
 const catalogDisplayUpdateSchema = z.object({
   displayName: z.string().trim().max(160).nullable().optional(),
   displayDescription: z.string().trim().max(4000).nullable().optional(),
@@ -209,6 +213,7 @@ function mapItem(
     showCatalogueStockIndicator,
     isAvailable: i.isAvailable,
     isTaxable: i.isTaxable,
+    commissionEligibility: alavontOnly ? undefined : i.commissionEligibility,
     imageUrl: resolvedImageUrl,
     mediaGallery,
     tags: i.tags ?? [],
