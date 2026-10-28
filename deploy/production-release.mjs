@@ -55,12 +55,12 @@ export const APPROVED_RELEASE = Object.freeze({
   }),
 });
 export const PRODUCTION_BASELINE = Object.freeze({
-  apiImage: "sha256:626ff098eccd96e78a5269fb54b0dbec490912eaf0f39b4ce3d65d1a30e45197",
-  apiRevision: "bb56ff6e52e50fab0e74dcfd0bf41b311bc91206",
-  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:626ff098eccd96e78a5269fb54b0dbec490912eaf0f39b4ce3d65d1a30e45197",
-  platformImage: "sha256:f4a63fb9e4a23eefba08a8a7e07f5995a47888e63446a566d93e8710f1bc6d9b",
-  platformRevision: "bb56ff6e52e50fab0e74dcfd0bf41b311bc91206",
-  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:f4a63fb9e4a23eefba08a8a7e07f5995a47888e63446a566d93e8710f1bc6d9b",
+  apiImage: "sha256:031c4808774da734cd3bb94a12708f6f9cdd0e248455a0991a3aa71800af47c0",
+  apiRevision: "68edc6a4e64876c146c82c21ca47f8abcf6b392f",
+  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:031c4808774da734cd3bb94a12708f6f9cdd0e248455a0991a3aa71800af47c0",
+  platformImage: "sha256:dca78cac9ba8a0cc3a021337fdf1ef434b85d3b8a225b86d0f0f992ce3924d1e",
+  platformRevision: "68edc6a4e64876c146c82c21ca47f8abcf6b392f",
+  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:dca78cac9ba8a0cc3a021337fdf1ef434b85d3b8a225b86d0f0f992ce3924d1e",
   nginxImage: "sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a",
   nginxReference: "nginx:alpine",
   databaseImage: "sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229",
