@@ -17,6 +17,15 @@ const fixture = vi.hoisted(() => ({
   insertCalls: [] as Array<{ table: string; row: Record<string, any> }>,
   updateCalls: [] as Array<{ table: string; row: Record<string, any> }>,
   selectCalls: [] as string[],
+  failUserInsert: false,
+}));
+
+vi.mock("../../lib/profileImageStore", () => ({
+  assertTemporaryProfileImage: vi.fn(async () => undefined),
+  cleanupTemporaryProfileImages: vi.fn(async () => undefined),
+  finalizeProfileImage: vi.fn(async () => undefined),
+  readProfileImage: vi.fn(async () => Buffer.from("safe-image")),
+  storeTemporaryProfileImage: vi.fn(async () => "f2862f21-4f21-48f2-8cad-79bde3f2c2c3"),
 }));
 
 vi.mock("../../lib/auth", () => {
@@ -79,6 +88,8 @@ vi.mock("@workspace/db", () => {
       let inserted: Record<string, any>[];
       if (table === tenantsTable) { const tenant = { id: 30 + fixture.tenants.length, createdAt: new Date(), ...row }; fixture.tenants.push(tenant); inserted = [tenant]; }
       else if (table === auditLogsTable) { fixture.audits.push({ id: fixture.audits.length + 1, createdAt: new Date(), ...row }); inserted = [fixture.audits.at(-1)!]; }
+      else if (table === onboardingRequestsTable) { const request = { id: 400 + fixture.onboarding.length, createdAt: new Date(), updatedAt: new Date(), ...row }; fixture.onboarding.push(request); inserted = [request]; }
+      else if (table === usersTable) { if (fixture.failUserInsert) throw new Error("fixture provisioning failure"); const user = { id: 100 + fixture.users.length, ...row }; fixture.users.push(user); inserted = [user]; }
       else inserted = [row];
       return { returning: async () => inserted, then: (resolve: (rows: any[]) => unknown, reject: (error: unknown) => unknown) => Promise.resolve(inserted).then(resolve, reject) };
     } }),
@@ -89,7 +100,14 @@ vi.mock("@workspace/db", () => {
       Object.assign(target, row);
       return [target];
     } }) }) }),
-    transaction: async (work: (tx: any) => Promise<any>) => work(db),
+    transaction: async (work: (tx: any) => Promise<any>) => {
+      const snapshots = [fixture.users, fixture.onboarding, fixture.audits].map((rows) => structuredClone(rows));
+      try { return await work(db); }
+      catch (err) {
+        [fixture.users, fixture.onboarding, fixture.audits].forEach((rows, index) => { rows.splice(0, rows.length, ...snapshots[index]!); });
+        throw err;
+      }
+    },
   };
   return { db, tenantsTable, usersTable, ordersTable, orderItemsTable, labTechShiftsTable, onboardingRequestsTable, auditLogsTable };
 });
@@ -157,6 +175,7 @@ beforeEach(() => {
   fixture.onboarding = [{ id: 202, companyName: "Tenant B Confidential LLC", contactName: "B Contact", contactEmail: "contact-b@private.invalid", businessType: "retail", status: "submitted", tenantId: null, createdAt: new Date(), updatedAt: new Date() }];
   fixture.audits = [{ id: 1, createdAt: new Date(), tenantId: 2, actorId: 2, actorEmail: "b-person@private.invalid", actorRole: "admin", action: "tenant-b-private-action", resourceType: "order", resourceId: "201", metadata: { privateMarker: "TENANT_B_SECRET" }, ipAddress: "203.0.113.20" }];
   fixture.insertCalls = []; fixture.updateCalls = []; fixture.selectCalls = [];
+  fixture.failUserInsert = false;
 });
 
 describe("platform-only authorization boundary", () => {
@@ -246,5 +265,59 @@ describe("onboarding tenant approval stays separate from account approval", () =
     expect(response.status).toBe(403);
     expect(fixture.tenants).toHaveLength(2);
     expect(fixture.updateCalls).toHaveLength(0);
+  });
+});
+
+describe("verified member registration provisioning", () => {
+  const email = "new-member@test.invalid";
+  const body = {
+    companyName: "Individual", contactName: "New Member", contactEmail: email,
+    businessType: "customer", profileImageUploadId: "f2862f21-4f21-48f2-8cad-79bde3f2c2c3",
+  };
+
+  beforeEach(() => {
+    fixture.actor = { id: 50, clerkId: "clerk-new-member", email, role: "user", tenantId: null, status: "pending" };
+    fixture.users = [];
+    fixture.onboarding = [];
+  });
+
+  it("creates the pending user and access request on first verified submission", async () => {
+    const response = await supertest(app(onboardingRouter)).post("/api/onboarding/request").send(body);
+    expect(response.status).toBe(200);
+    expect(fixture.onboarding).toHaveLength(1);
+    expect(fixture.users).toHaveLength(1);
+    expect(fixture.users[0]).toMatchObject({ email, role: "user", status: "pending", avatarUrl: `/api/profile-images/${body.profileImageUploadId}` });
+  });
+
+  it("treats repeated submissions as idempotent and creates no duplicate account", async () => {
+    const server = app(onboardingRouter);
+    const first = await supertest(server).post("/api/onboarding/request").send(body);
+    const second = await supertest(server).post("/api/onboarding/request").send(body);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body.id).toBe(first.body.id);
+    expect(fixture.onboarding).toHaveLength(1);
+    expect(fixture.users).toHaveLength(1);
+  });
+
+  it("rolls back interrupted provisioning and recovers on retry", async () => {
+    fixture.failUserInsert = true;
+    const server = app(onboardingRouter);
+    expect((await supertest(server).post("/api/onboarding/request").send(body)).status).toBe(500);
+    expect(fixture.onboarding).toHaveLength(0);
+    expect(fixture.users).toHaveLength(0);
+    fixture.failUserInsert = false;
+    expect((await supertest(server).post("/api/onboarding/request").send(body)).status).toBe(200);
+    expect(fixture.onboarding).toHaveLength(1);
+    expect(fixture.users).toHaveLength(1);
+  });
+
+  it("does not provision an unauthenticated or different-email identity", async () => {
+    fixture.actor = { id: 51, clerkId: "another-member", email: "different@test.invalid", role: "user", tenantId: null, status: "pending" };
+    expect((await supertest(app(onboardingRouter)).post("/api/onboarding/request").send(body)).status).toBe(403);
+    fixture.authenticated = false;
+    expect((await supertest(app(onboardingRouter)).post("/api/onboarding/request").send(body)).status).toBe(401);
+    expect(fixture.onboarding).toHaveLength(0);
+    expect(fixture.users).toHaveLength(0);
   });
 });

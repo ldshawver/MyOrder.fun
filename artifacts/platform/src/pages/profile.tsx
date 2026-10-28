@@ -43,10 +43,9 @@ function validatePhone(value: string): string | null {
 
 function validateAvatar(value: string): string | null {
   if (!value) return null;
-  return /^https?:\/\//i.test(value) ||
-    /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(value)
+  return /^\/api\/profile-images\/[0-9a-f-]{36}$/i.test(value)
     ? null
-    : "Must be an image URL or uploaded image.";
+    : "Choose an image using the secure upload control.";
 }
 
 export default function Profile() {
@@ -188,23 +187,25 @@ export default function Profile() {
     });
   }
 
-  function uploadAvatar(file: File | null) {
+  async function uploadAvatar(file: File | null) {
     if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setAvatarError("Choose an image file.");
+    if (file.size > 3_000_000) {
+      setAvatarError("Choose a PNG, JPEG, or WebP image up to 3 MB.");
       return;
     }
-    if (file.size > 1_000_000) {
-      setAvatarError("Avatar image must be under 1 MB.");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      setAvatarUrl(String(reader.result ?? ""));
+    try {
+      const token = await getToken();
+      const data = new FormData();
+      data.set("email", user?.email ?? "");
+      data.set("file", file);
+      const response = await fetch(`${import.meta.env.BASE_URL}api/profile-images`, { method: "POST", headers: token ? { Authorization: `Bearer ${token}` } : {}, body: data });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || typeof body.uploadId !== "string") throw new Error(body.error ?? "Profile picture upload failed.");
+      setAvatarUrl(`/api/profile-images/${body.uploadId}`);
       setAvatarError(null);
-    };
-    reader.onerror = () => setAvatarError("Could not read avatar image.");
-    reader.readAsDataURL(file);
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : "Profile picture upload failed.");
+    }
   }
 
   const initials =
@@ -246,29 +247,13 @@ export default function Profile() {
                 <AvatarFallback>{initials}</AvatarFallback>
               </Avatar>
               <div className="flex-1">
-                <Label
-                  htmlFor="avatarUrl"
-                  className="text-xs uppercase tracking-wider text-muted-foreground"
-                >
-                  Avatar URL
-                </Label>
-                <Input
-                  id="avatarUrl"
-                  value={avatarUrl}
-                  onChange={(e) => {
-                    setAvatarUrl(e.target.value);
-                    setAvatarError(null);
-                  }}
-                  placeholder="https://example.com/me.jpg"
-                  className="rounded-sm font-mono text-sm h-9 mt-1"
-                  data-testid="input-avatar-url"
-                />
+                <span className="text-xs uppercase tracking-wider text-muted-foreground">Profile picture</span>
                 <label className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-primary hover:underline cursor-pointer mt-2">
                   <Upload size={12} />
                   Upload image
                   <input
                     type="file"
-                    accept="image/png,image/jpeg,image/gif,image/webp"
+                    accept="image/png,image/jpeg,image/webp"
                     className="sr-only"
                     onChange={(e) => uploadAvatar(e.target.files?.[0] ?? null)}
                     data-testid="input-avatar-file"

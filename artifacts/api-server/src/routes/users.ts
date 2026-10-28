@@ -13,16 +13,14 @@ import { isKnownRole, type CanonicalRole } from "../lib/roles";
 import { logger } from "../lib/logger";
 import { z } from "zod/v4";
 import { clerkClient } from "@clerk/express";
-import { syncUserToClerk, syncProfileToClerk, syncAvatarToClerk } from "../lib/clerkSync";
+import { syncUserToClerk, syncProfileToClerk } from "../lib/clerkSync";
 import { ensureProvisioningSchema, normalizeEmail, fetchAndProvisionClerkUser } from "../lib/userProvisioning";
 import { normalizeNotificationPreferences, notificationPreferencesSchema } from "../lib/notificationPrefs";
+import { assertTemporaryProfileImage, finalizeProfileImage } from "../lib/profileImageStore";
 
 // E.164-ish: optional leading +, then digits/spaces/dashes, total 7–20 chars.
 const PHONE_REGEX = /^\+?[\d\s-]{7,20}$/;
 
-// Unknown fields are stripped by Zod (the schema is not `.strict()`),
-// so callers may send extra keys (e.g. legacy form fields) without the
-// request failing — only the allowed fields below are ever persisted.
 const UpdateCurrentUserBody = z.object({
   firstName: z.string().trim().max(100).nullish(),
   lastName: z.string().trim().max(100).nullish(),
@@ -33,16 +31,10 @@ const UpdateCurrentUserBody = z.object({
       message: "Invalid phone number — use E.164 or +? digits/spaces/dashes (7–20 chars)",
     })
     .nullish(),
-  avatarUrl: z
-    .string()
-    .trim()
-    .max(1_500_000)
-    .refine((v) => v === "" || /^https?:\/\//i.test(v) || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(v), {
-      message: "avatarUrl must be an http(s) URL or uploaded image",
-    })
-    .nullish(),
+  avatarUrl: z.string().trim().regex(/^\/api\/profile-images\/[0-9a-f-]{36}$/i, "Choose a validated profile image upload.").nullish(),
+  profileImageUploadId: z.string().uuid().optional(),
   notificationPreferences: notificationPreferencesSchema.nullish(),
-});
+}).strict();
 
 const router: IRouter = Router();
 let usersListSchemaEnsured = false;
@@ -73,6 +65,12 @@ function hasRealClerkUserId(clerkId: string | null | undefined): clerkId is stri
 
 const RoleValue = z.string().refine((value) => isKnownRole(value), { message: "Invalid role" }).transform((value) => normalizeRole(value));
 const RoleBody = z.object({ role: RoleValue });
+const UpdateMemberProfileBody = z.object({
+  firstName: z.string().trim().max(100).nullish(),
+  lastName: z.string().trim().max(100).nullish(),
+  contactPhone: z.string().trim().refine((v) => v === "" || PHONE_REGEX.test(v)).nullish(),
+  profileImageUploadId: z.string().uuid().optional(),
+}).strict();
 
 function roleRank(role: ValidRole): number {
   return { user: 0, csr: 1, supervisor: 2, admin: 3, global_admin: 4 }[role];
@@ -99,6 +97,15 @@ function canManageUserInTenant(actor: typeof usersTable.$inferSelect, target: ty
   if (actorRole === "supervisor" && !["user", "csr"].includes(targetRole)) return false;
   if (actorRole === "admin" && targetRole === "global_admin") return false;
   return true;
+}
+
+function canEditMemberProfile(actor: typeof usersTable.$inferSelect, target: typeof usersTable.$inferSelect): boolean {
+  const actorRole = normalizeRole(actor.role);
+  if (actor.id === target.id) return false;
+  if (actorRole === "global_admin") return true;
+  if (!(["admin", "supervisor"] as string[]).includes(actorRole)) return false;
+  if (actor.tenantId == null || target.tenantId !== actor.tenantId) return false;
+  return roleRank(actorRole) > roleRank(normalizeRole(target.role));
 }
 
 async function ensureUsersListSchema(): Promise<void> {
@@ -230,6 +237,57 @@ router.get("/users/me", async (req, res): Promise<void> => {
   res.json(serializeUser(req.dbUser!));
 });
 
+// Profile-only administration is deliberately separate from role/approval
+// workflows. It cannot accept tenant, role, status, or organization fields.
+router.patch("/admin/users/:id/profile", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) { res.status(400).json({ error: "Invalid user id" }); return; }
+  const body = UpdateMemberProfileBody.safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  if (!canEditMemberProfile(actor, target)) { res.status(403).json({ error: "Forbidden" }); return; }
+  const profileImageUrl = body.data.profileImageUploadId ? `/api/profile-images/${body.data.profileImageUploadId}` : null;
+  if (body.data.profileImageUploadId && target.avatarUrl !== profileImageUrl) {
+    try { await assertTemporaryProfileImage(body.data.profileImageUploadId, target.email ?? ""); }
+    catch (err) { res.status(400).json({ error: err instanceof Error ? err.message : "Please upload the image again." }); return; }
+  }
+  const updates: Partial<typeof usersTable.$inferInsert> = {};
+  if ("firstName" in body.data) updates.firstName = body.data.firstName || null;
+  if ("lastName" in body.data) updates.lastName = body.data.lastName || null;
+  if ("contactPhone" in body.data) updates.contactPhone = body.data.contactPhone || null;
+  if (profileImageUrl) updates.avatarUrl = profileImageUrl;
+  if (!Object.keys(updates).length) { res.json(serializeUser(target)); return; }
+  const updated = await db.transaction(async (tx) => {
+    const [saved] = await tx.update(usersTable).set(updates).where(eq(usersTable.id, id)).returning();
+    if (!saved) throw new Error("Member profile changed while it was being saved.");
+    await tx.insert(auditLogsTable).values({
+      actorId: actor.id,
+      actorEmail: actor.email ?? "",
+      actorRole: normalizeRole(actor.role),
+      action: "UPDATE_MEMBER_PROFILE",
+      tenantId: target.tenantId,
+      resourceType: "user",
+      resourceId: String(target.id),
+      metadata: { fields: Object.keys(updates) },
+      ipAddress: req.ip ?? null,
+    });
+    return saved;
+  });
+  if (body.data.profileImageUploadId) await finalizeProfileImage(body.data.profileImageUploadId);
+  if (hasRealClerkUserId(updated.clerkId) && ("firstName" in updates || "lastName" in updates || "contactPhone" in updates)) {
+    try {
+      await syncProfileToClerk(updated.clerkId, {
+        firstName: "firstName" in updates ? updated.firstName : undefined,
+        lastName: "lastName" in updates ? updated.lastName : undefined,
+        phoneNumber: "contactPhone" in updates ? updated.contactPhone : undefined,
+      });
+    } catch { logger.warn("Clerk profile mirror failed after audited member profile update"); }
+  }
+  res.json(serializeUser(updated));
+});
+
 // PATCH /api/users/me — current user updates their own profile
 router.patch("/users/me", async (req, res): Promise<void> => {
   const user = req.dbUser!;
@@ -237,6 +295,17 @@ router.patch("/users/me", async (req, res): Promise<void> => {
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
+  }
+  const avatarUrlUploadId = body.data.avatarUrl?.match(/^\/api\/profile-images\/([0-9a-f-]{36})$/i)?.[1];
+  if (body.data.profileImageUploadId && avatarUrlUploadId && body.data.profileImageUploadId !== avatarUrlUploadId) {
+    res.status(400).json({ error: "Choose one profile image upload per update." });
+    return;
+  }
+  const avatarUploadId = body.data.profileImageUploadId ?? avatarUrlUploadId;
+  const profileImageUrl = avatarUploadId ? `/api/profile-images/${avatarUploadId}` : null;
+  if (avatarUploadId && user.avatarUrl !== profileImageUrl) {
+    try { await assertTemporaryProfileImage(avatarUploadId, user.email ?? ""); }
+    catch (err) { res.status(400).json({ error: err instanceof Error ? err.message : "Please upload the image again." }); return; }
   }
 
   // Build the DB update set ONLY from fields the client actually sent. This
@@ -255,10 +324,8 @@ router.patch("/users/me", async (req, res): Promise<void> => {
     const v = body.data.contactPhone;
     updates.contactPhone = v == null || v === "" ? null : v;
   }
-  if ("avatarUrl" in body.data) {
-    const v = body.data.avatarUrl;
-    updates.avatarUrl = v == null || v === "" ? null : v;
-  }
+  if ("avatarUrl" in body.data && body.data.avatarUrl === null) updates.avatarUrl = null;
+  if (avatarUploadId) updates.avatarUrl = profileImageUrl;
   if ("notificationPreferences" in body.data && body.data.notificationPreferences) {
     updates.notificationPreferences = body.data.notificationPreferences;
   }
@@ -289,10 +356,7 @@ router.patch("/users/me", async (req, res): Promise<void> => {
     });
   }
 
-  // Mirror avatar to Clerk via updateUserProfileImage when it changes.
-  if ("avatarUrl" in updates && hasRealClerkId) {
-    await syncAvatarToClerk(updated.clerkId, updates.avatarUrl ?? null);
-  }
+  if (avatarUploadId) await finalizeProfileImage(avatarUploadId);
 
   await writeAuditLog({
     actorId: user.id,
