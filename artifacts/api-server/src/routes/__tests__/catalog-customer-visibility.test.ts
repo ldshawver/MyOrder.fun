@@ -1,5 +1,6 @@
 import express from "express";
 import supertest from "supertest";
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const actor = vi.hoisted(() => ({ tenantId: 1, role: "customer" }));
@@ -158,7 +159,7 @@ describe("customer catalogue visibility", () => {
       catalogRow(183, { name: "T-Shirt Medium", price: "22.00" }),
       catalogRow(184, { name: "T-Shirt Large", price: "24.00" })];
     rows.products = [{ id: 179, tenantId: 1, name: "T-Shirt", active: true }];
-    const ready = { inventoryStatus: "ready", balanceRowCount: 1, stockOnHand: "3.000000", reservedQuantity: "0", availableQuantity: "3.000000", orderable: true };
+    const ready = { isAvailable: true, showCatalogueStockIndicator: true, inventoryStatus: "ready", balanceRowCount: 1, stockOnHand: "3.000000", reservedQuantity: "0", availableQuantity: "3.000000", orderable: true };
     rows.options = [
       { id: 179, productId: 179, catalogItemId: 182, label: "Small", price: "20.00", sku: null, ...ready },
       { id: 180, productId: 179, catalogItemId: 183, label: "Medium", price: "22.00", sku: null, ...ready },
@@ -172,6 +173,32 @@ describe("customer catalogue visibility", () => {
       .toEqual([[179, "Small"], [180, "Medium"], [181, "Large"]]);
   });
 
+  it.each([true, false])("keeps an unavailable item visible when its stock indicator is %s", async (showIndicator) => {
+    rows.catalog = [catalogRow(186, { isAvailable: false, metadata: { showCatalogueStockIndicator: showIndicator } })];
+    rows.products = [{ id: 181, tenantId: 1, name: "Tina", active: true }];
+    rows.options = [{ id: 183, productId: 181, catalogItemId: 186, label: "Quarter", price: "10.00", sku: null,
+      isAvailable: false, showCatalogueStockIndicator: showIndicator, inventoryStatus: "ready", balanceRowCount: 1,
+      stockOnHand: "100", reservedQuantity: "0", availableQuantity: "100", orderable: false }];
+
+    const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont");
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.items).toHaveLength(1);
+    expect(response.body.items[0].isAvailable).toBe(false);
+    const [option] = response.body.items[0].sellableProduct.options;
+    expect(option).toMatchObject({ isAvailable: false, orderable: false, showCatalogueStockIndicator: showIndicator });
+    if (showIndicator) expect(option).toMatchObject({ stockOnHand: "100", availableQuantity: "100" });
+    else expect(option).not.toHaveProperty("availableQuantity");
+  });
+
+  it("does not use the stock indicator preference as a product visibility or sale predicate", async () => {
+    const source = readFileSync(new URL("../../lib/catalogueSellable.ts", import.meta.url), "utf8");
+    const query = source.slice(source.indexOf("SELECT co.id"), source.indexOf("ORDER BY co.product_id"));
+    expect(query).toContain("ci.is_available AS \"isAvailable\"");
+    expect(query).toContain("ci.is_available IS NOT TRUE");
+    expect(query).not.toMatch(/WHERE[\s\S]*?(?:is_available|showCatalogueStockIndicator|alavont_in_stock)/i);
+    expect(query).toContain("COALESCE((ci.metadata->>'showCatalogueStockIndicator')::boolean,true)");
+  });
+
   it("keeps a missing inventory balance fail-closed without failing the whole catalogue response", async () => {
     rows.catalog = [catalogRow(185, { name: "Uncounted local item", stockQuantity: null })];
     rows.products = [{ id: 180, tenantId: 1, name: "Uncounted local item", active: true }];
@@ -181,6 +208,8 @@ describe("customer catalogue visibility", () => {
       catalogItemId: 185,
       label: "Standard",
       price: "25.00",
+      isAvailable: true,
+      showCatalogueStockIndicator: true,
       sku: "UNCOUNTED-LOCAL",
       inventoryStatus: "missing_balance",
       balanceRowCount: 0,
@@ -219,8 +248,8 @@ describe("customer catalogue visibility", () => {
     const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont");
 
     expect(response.status, response.text).toBe(200);
-    expect(response.body.total).toBe(1);
-    expect(response.body.items.map((item: { id: number }) => item.id)).toEqual([1]);
+    expect(response.body.total).toBe(2);
+    expect(response.body.items.map((item: { id: number }) => item.id)).toEqual([1, 3]);
   });
 
   it("serves the tenant-scoped base catalog when the optional 0070 schema is wholly absent", async () => {
@@ -283,7 +312,7 @@ describe("customer catalogue visibility", () => {
 
     expect(response.status, response.text).toBe(200);
     expect(response.body.items.map((item: { id: number; lifecycleStatus: string }) => [item.id, item.lifecycleStatus]))
-      .toEqual([[1, "customer_visible"], [2, "unavailable_hidden"], [3, "compliance_hold"], [4, "archived"]]);
+      .toEqual([[1, "customer_visible"], [2, "customer_visible"], [3, "compliance_hold"], [4, "archived"]]);
     expect(response.body.items.find((item: { id: number }) => item.id === 4)?.isAvailable).toBe(true);
   });
 
@@ -305,7 +334,6 @@ describe("customer catalogue visibility", () => {
 const restrictedStates = [
   { state: "archived", patch: { metadata: { archived: true } } },
   { state: "compliance hold", patch: { metadata: { complianceHold: true } } },
-  { state: "not for sale", patch: { isAvailable: false } },
   { state: "merged", patch: { metadata: { mergedIntoCatalogItemId: 99 } } },
 ];
 

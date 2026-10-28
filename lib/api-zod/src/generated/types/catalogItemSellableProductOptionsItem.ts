@@ -12,11 +12,12 @@ export type CatalogItemSellableProductOptionsItem = {
   catalogItemId: number;
   label: string;
   price: string;
+  isAvailable: boolean;
+  showCatalogueStockIndicator: boolean;
   sku?: string | null;
   inventoryStatus: CatalogItemSellableProductOptionsItemInventoryStatus;
-  balanceRowCount: number;
-  stockOnHand: string | null;
-  reservedQuantity: string | null;
-  availableQuantity: string | null;
+  stockOnHand?: string | null;
+  reservedQuantity?: string | null;
+  availableQuantity?: string | null;
   orderable: boolean;
 };

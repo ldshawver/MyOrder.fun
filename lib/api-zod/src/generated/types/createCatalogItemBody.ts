@@ -49,6 +49,7 @@ export interface CreateCatalogItemBody {
   alavontCategory?: string | null;
   alavontImageUrl?: string | null;
   alavontInStock?: boolean | null;
+  showCatalogueStockIndicator?: boolean;
   displayName?: string | null;
   displayDescription?: string | null;
   displayCategory?: string | null;

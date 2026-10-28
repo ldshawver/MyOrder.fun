@@ -3,14 +3,16 @@ export type SellableOption = {
   catalogItemId: number;
   label: string;
   price: string;
+  isAvailable: boolean;
+  showCatalogueStockIndicator: boolean;
   sku?: string | null;
   optionValues?: Record<string, string>;
   barcode?: string | null;
   inventoryStatus: "ready" | "missing_identity" | "missing_balance";
-  balanceRowCount: number;
-  stockOnHand: string | null;
-  reservedQuantity: string | null;
-  availableQuantity: string | null;
+  balanceRowCount?: number;
+  stockOnHand?: string | null;
+  reservedQuantity?: string | null;
+  availableQuantity?: string | null;
   orderable: boolean;
 };
 

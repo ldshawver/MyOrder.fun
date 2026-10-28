@@ -21,7 +21,7 @@ import Catalog from "../catalog";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-type Option = { id: number; catalogItemId: number; label: string; price: string; sku: string | null; optionValues?: Record<string, string>; inventoryStatus?: "ready" | "missing_identity" | "missing_balance"; balanceRowCount?: number; stockOnHand?: string | null; reservedQuantity?: string | null; availableQuantity?: string | null; orderable?: boolean };
+type Option = { id: number; catalogItemId: number; label: string; price: string; sku: string | null; optionValues?: Record<string, string>; isAvailable?: boolean; showCatalogueStockIndicator?: boolean; inventoryStatus?: "ready" | "missing_identity" | "missing_balance"; balanceRowCount?: number; stockOnHand?: string | null; reservedQuantity?: string | null; availableQuantity?: string | null; orderable?: boolean };
 const shirtOptions: Option[] = [
   { id: 179, catalogItemId: 182, label: "Small", price: "20.00", sku: "TS-S" },
   { id: 180, catalogItemId: 183, label: "Medium", price: "22.00", sku: "TS-M" },
@@ -40,12 +40,12 @@ afterEach(async () => {
 });
 
 async function renderCustomerCatalogue(options: Option[]) {
-  const normalizedOptions = options.map(option => ({ inventoryStatus: "ready" as const, balanceRowCount: 1, stockOnHand: "3.000000", reservedQuantity: "0.000000", availableQuantity: "3.000000", orderable: true, ...option }));
+  const normalizedOptions = options.map(option => ({ isAvailable: true, showCatalogueStockIndicator: true, inventoryStatus: "ready" as const, balanceRowCount: 1, stockOnHand: "3.000000", reservedQuantity: "0.000000", availableQuantity: "3.000000", orderable: true, ...option }));
   const product = { id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", active: true, options: normalizedOptions };
   const items = normalizedOptions.map(option => ({
     id: option.catalogItemId, name: `T-Shirt ${option.label}`, alavontName: `T-Shirt ${option.label}`,
-    category: "Apparel", price: Number(option.price), isAvailable: true, isTaxable: true,
-    imageUrl: null, stockQuantity: 3, sellableProduct: product,
+    category: "Apparel", price: Number(option.price), isTaxable: true,
+    imageUrl: null, stockQuantity: 3, showCatalogueStockIndicator: option.showCatalogueStockIndicator, isAvailable: option.isAvailable, sellableProduct: product,
   }));
   const requests: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string) => {
@@ -105,8 +105,30 @@ describe("actual customer catalogue card", () => {
   it("shows missing inventory setup and blocks the affected option", async () => {
     const page = await renderCustomerCatalogue([{ id: 179, catalogItemId: 182, label: "Standard", price: "20.00", sku: null,
       inventoryStatus: "missing_balance", balanceRowCount: 0, stockOnHand: null, reservedQuantity: null, availableQuantity: null, orderable: false }]);
-    expect(page.textContent).toContain("Inventory setup incomplete");
+    expect(page.textContent).toContain("Inventory availability can't be confirmed, so this option can't be ordered.");
     expect((page.querySelector('[data-testid="link-buy-now-182"]') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it.each([
+    { available: true, indicator: true, orderable: true, stockText: "3.000000 available" },
+    { available: true, indicator: false, orderable: true, stockText: "Available to order." },
+    { available: false, indicator: true, orderable: false, stockText: "This option is not currently available for ordering." },
+    { available: false, indicator: false, orderable: false, stockText: "This option is not currently available for ordering." },
+  ])("keeps visibility and purchase eligibility independent (available=$available, indicator=$indicator)", async ({ available, indicator, orderable, stockText }) => {
+    const page = await renderCustomerCatalogue([{ id: 190, catalogItemId: 200, label: "Standard", price: "8.00", sku: null,
+      isAvailable: available, showCatalogueStockIndicator: indicator, orderable, availableQuantity: "3.000000" }]);
+    expect(page.querySelector('[data-testid="card-product-200"]')).toBeTruthy();
+    const add = page.querySelector('[data-testid="link-buy-now-200"]') as HTMLButtonElement;
+    expect(add.disabled).toBe(!orderable);
+    expect(page.textContent).toContain(stockText);
+    expect(page.textContent?.includes("3 avail")).toBe(indicator);
+    if (orderable) {
+      await act(async () => add.click());
+      expect(state.addItem).toHaveBeenCalledWith(expect.objectContaining({ id: 200, optionId: 190 }));
+    } else {
+      await act(async () => add.click());
+      expect(state.addItem).not.toHaveBeenCalled();
+    }
   });
 
   it("requires Color and Size and adds the matching stable variant identity to cart", async () => {

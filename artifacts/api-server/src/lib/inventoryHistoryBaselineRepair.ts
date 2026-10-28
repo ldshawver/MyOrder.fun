@@ -50,6 +50,8 @@ export type InventoryHistoryRepairPreview = {
   productId: number;
   productName: string;
   blockers: string[];
+  blockingReservations: Array<{ reservationId: number; orderId: number; inventoryItemId: number; locationId: number; locationName: string; status: string; quantity: string; orderStatus: string }>;
+  blockingOrders: Array<{ orderId: number; orderItemId: number; inventoryItemId: number; status: string; quantity: string }>;
   corrections: Array<InventoryHistoryCountEvidence & {
     catalogItemId: number;
     locationName: string;
@@ -189,25 +191,35 @@ export async function previewInventoryHistoryBaselineRepair(
     costs.set(correction.inventoryItemId, normalized);
   }
   const catalogIds = [...new Set(state.map(row => Number(row.catalogItemId)))];
+  let blockingReservations: InventoryHistoryRepairPreview["blockingReservations"] = [];
+  let blockingOrders: InventoryHistoryRepairPreview["blockingOrders"] = [];
   if (catalogIds.length) {
-    const active = rows(await executor.execute(sql`
-      SELECT r.id FROM inventory_reservations r JOIN orders o ON o.id=r.order_id AND o.tenant_id=${tenantId}
+    blockingReservations = rows(await executor.execute(sql`
+      SELECT r.id AS "reservationId",r.order_id AS "orderId",r.catalog_item_id AS "inventoryItemId",
+        r.location_id AS "locationId",COALESCE(l.name,'Unknown location') AS "locationName",lower(r.status) AS status,
+        r.quantity::text AS quantity,lower(o.status) AS "orderStatus"
+      FROM inventory_reservations r JOIN orders o ON o.id=r.order_id AND o.tenant_id=${tenantId}
+      LEFT JOIN inventory_locations l ON l.tenant_id=o.tenant_id AND l.id=r.location_id
       WHERE r.catalog_item_id=ANY(${sql`ARRAY[${sql.join(catalogIds.map(id => sql`${id}`), sql`, `)}]::int[]`})
-        AND lower(r.status) IN ('reserved','committed','pending') LIMIT 1
+        AND lower(r.status) IN ('reserved','committed','pending')
+      ORDER BY r.location_id,r.order_id,r.id
     `));
-    if (active.length) blockers.push("Active reservations must resolve through the normal order lifecycle before history repair.");
-    const open = rows(await executor.execute(sql`
-      SELECT oi.id FROM order_items oi JOIN orders o ON o.id=oi.order_id AND o.tenant_id=${tenantId}
+    if (blockingReservations.length) blockers.push("Active reservations must resolve through the normal order lifecycle before history repair.");
+    blockingOrders = rows(await executor.execute(sql`
+      SELECT o.id AS "orderId",oi.id AS "orderItemId",oi.inventory_item_id AS "inventoryItemId",
+        lower(o.status) AS status,oi.quantity::text AS quantity
+      FROM order_items oi JOIN orders o ON o.id=oi.order_id AND o.tenant_id=${tenantId}
       WHERE oi.inventory_item_id=ANY(${sql`ARRAY[${sql.join(state.map(row => sql`${Number(row.inventoryItemId)}`), sql`, `)}]::int[]`})
-        AND lower(o.status) IN ('pending','submitted','in_progress','preparing','ready') AND o.purged_at IS NULL LIMIT 1
+        AND lower(o.status) IN ('pending','submitted','in_progress','preparing','ready') AND o.purged_at IS NULL
+      ORDER BY o.id,oi.id
     `));
-    if (open.length) blockers.push("Open orders with committed variant stock must resolve before history repair.");
+    if (blockingOrders.length) blockers.push("Open orders with committed variant stock must resolve before history repair.");
   }
   if (!corrections.length && !blockers.length) blockers.push("No ledger/history mismatch requires repair.");
   const unresolvedCosts = [...new Map(corrections.filter(row => row.documentedUnitCost == null).map(row => [row.inventoryItemId,
     { inventoryItemId: row.inventoryItemId, catalogItemId: row.catalogItemId, reason: row.costBasisNote }])).values()];
   const fingerprint = reconciliationFingerprint({ tenantId, productId, state, evidence: [...evidence].sort((a,b) => a.inventoryItemId-b.inventoryItemId || a.locationId-b.locationId), blockers });
-  return { tenantId, productId, productName, blockers: [...new Set(blockers)], corrections, unresolvedCosts, fingerprint };
+  return { tenantId, productId, productName, blockers: [...new Set(blockers)], blockingReservations, blockingOrders, corrections, unresolvedCosts, fingerprint };
 }
 
 export function repairConfirmation(correction: InventoryHistoryRepairPreview["corrections"][number]): InventoryHistoryRepairConfirmation {

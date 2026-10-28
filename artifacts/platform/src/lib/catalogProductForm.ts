@@ -71,7 +71,7 @@ export function createCatalogProductPayload(form: CatalogProductDraft): Record<s
     homiePrice: optionalNumber(form, "homiePrice"),
     imageUrl: optionalText(form, "imageUrl"),
     alavontImageUrl: String(form.alavontImageUrl || "").trim() || null,
-    alavontInStock: form.alavontInStock !== false,
+    showCatalogueStockIndicator: form.showCatalogueStockIndicator !== false,
     labName: String(form.labName || "").trim() || null,
     sku: optionalText(form, "sku"),
     isAvailable: form.isAvailable !== false,

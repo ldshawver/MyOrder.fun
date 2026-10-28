@@ -11,7 +11,7 @@ type Location = { locationId: number; name: string; quantityOnHand: string; par:
 type Recommendation = { inventoryItemId: number; productName: string; baseUnit: string; recommendations: Array<{ locationId: number; locationName: string; internalTransfers: Array<{ fromLocationId: number; quantity: string }>; externalPurchaseQuantity: string }> };
 type InventoryPreview = { product: { id: number; name: string; inventoryModel: string; locationEvaluation: string }; target: { inventoryItemId?: number; create?: { name: string; baseUnit: string } }; targetUnit: string;
   variants: Array<{ optionId: number; label: string; optionValues: Record<string,string>; inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number; baseUnit: string; consumptionQuantity: string; proposedConsumption: string; price: string; sku: string | null; barcode: string | null }>;
-  reservations: Array<{ catalogItemId: number; locationId: number; locationName: string; status: string; quantity: string; expiresAt: string; orderId: number }>;
+  reservations: Array<{ reservationId: number; catalogItemId: number; locationId: number; locationName: string; status: string; quantity: string; expiresAt: string; orderId: number; orderStatus: string }>;
   costs: Array<{ inventoryItemId: number; catalogItemId: number; baseUnit: string; onHand: string; costStatus: string; averageUnitCost: string | null; inventoryValue: string | null; reliable: boolean; convertedUnitCost: string | null }>;
   legacyHistory: Array<{ catalogItemId: number; locationId: number | null; transactionCount: number; netQuantityChange: string }>;
   locations: Array<{ locationId: number; locationName: string; sourceBalances: Array<{ catalogItemId: number; locationId: number; quantity: string; ledgerQuantity: string; movementCount: number }>; proposedSharedBalance: string }>;
@@ -21,7 +21,7 @@ type HistoryDiscrepancy = { inventoryItemId: number; catalogItemId: number; item
   storedPhysicalQuantity: string; ledgerQuantity: string; bridgeQuantityDelta: string; costStatus: string };
 type HistoryEvidence = { inventoryItemId: number; locationId: number; verifiedPhysicalQuantity: string; documentedUnitCost: string | null; physicalCountNote: string; costBasisNote: string };
 type HistoryCorrection = HistoryEvidence & { catalogItemId: number; locationName: string; ledgerQuantity: string; bridgeQuantityDelta: string };
-type HistoryRepairPreview = { blockers: string[]; corrections: HistoryCorrection[]; unresolvedCosts: Array<{ inventoryItemId: number; catalogItemId: number; reason: string }>; fingerprint: string };
+type HistoryRepairPreview = { blockers: string[]; blockingReservations: Array<{ reservationId: number; orderId: number; inventoryItemId: number; locationId: number; locationName: string; status: string; quantity: string; orderStatus: string }>; blockingOrders: Array<{ orderId: number; orderItemId: number; inventoryItemId: number; status: string; quantity: string }>; corrections: HistoryCorrection[]; unresolvedCosts: Array<{ inventoryItemId: number; catalogItemId: number; reason: string }>; fingerprint: string };
 
 type ProductForm = { name: string; category: string; price: string; sku: string; firstOptionLabel: string;
   inventoryModel: Product["inventoryModel"]; locationEvaluation: Product["locationEvaluation"]; baseUnit: string; consumptionQuantity: string };
@@ -118,7 +118,10 @@ function GuidedHistoryRepair({ productId, request, onApplied }: { productId: num
         evidence: payloadEvidence(), previewFingerprint: preview.fingerprint, confirmedCorrections, idempotencyKey, reason,
       }) });
       await load(); await onApplied();
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "History repair was not saved"); }
+    } catch (cause) {
+      setPreview(null); setConfirmed({});
+      setError(`${cause instanceof Error ? cause.message : "History repair was not saved"} Refresh the preview after the blocking conditions are resolved.`);
+    }
     finally { setBusy(false); }
   }
   if (!discrepancies.length && !error) return <section className="rounded border border-emerald-500/30 p-3"><h3 className="font-semibold">Inventory history</h3><p className="text-sm text-muted-foreground">Every active variant balance reconciles with its append-only ledger.</p></section>;
@@ -129,14 +132,17 @@ function GuidedHistoryRepair({ productId, request, onApplied }: { productId: num
       <p className="font-medium">{row.itemName} · inventory #{row.inventoryItemId} · {row.locationName}</p>
       <p className="text-xs">Stored balance {row.storedPhysicalQuantity} {row.baseUnit}; ledger {row.ledgerQuantity}; proposed bridge after verification {row.bridgeQuantityDelta}.</p>
       <p className="text-xs font-medium text-amber-600">Required physical count to use this repair: {row.storedPhysicalQuantity}. If the actual count differs, use the normal audited adjustment flow first and refresh.</p>
-      <div className="grid gap-2 md:grid-cols-2"><label>Verified physical count<Input aria-label={`Verified count ${key(row)}`} value={value.quantity} onChange={event => setEvidence(current => ({ ...current, [key(row)]: { ...value, quantity: event.target.value } }))} /></label>
-        <label>Physical-count evidence<Input aria-label={`Count evidence ${key(row)}`} value={value.countNote} onChange={event => setEvidence(current => ({ ...current, [key(row)]: { ...value, countNote: event.target.value } }))} placeholder="Count sheet, witness, date, or reference" /></label>
-        <label>Documented unit cost (optional)<Input aria-label={`Documented cost ${key(row)}`} value={value.unitCost} onChange={event => setEvidence(current => ({ ...current, [key(row)]: { ...value, unitCost: event.target.value } }))} /></label>
-        <label>Cost evidence or why unknown<Input aria-label={`Cost evidence ${key(row)}`} value={value.costNote} onChange={event => setEvidence(current => ({ ...current, [key(row)]: { ...value, costNote: event.target.value } }))} placeholder="Invoice/reference, or explain why cost remains unknown" /></label></div>
+      <div className="grid gap-2 md:grid-cols-2"><label>Verified physical count<Input aria-label={`Verified count ${key(row)}`} value={value.quantity} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, quantity: event.target.value } })); }} /></label>
+        <label>Physical-count evidence<Input aria-label={`Count evidence ${key(row)}`} value={value.countNote} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, countNote: event.target.value } })); }} placeholder="Count sheet, witness, date, or reference" /></label>
+        <label>Documented unit cost (optional)<Input aria-label={`Documented cost ${key(row)}`} value={value.unitCost} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, unitCost: event.target.value } })); }} /></label>
+        <label>Cost evidence or why unknown<Input aria-label={`Cost evidence ${key(row)}`} value={value.costNote} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, costNote: event.target.value } })); }} placeholder="Invoice/reference, or explain why cost remains unknown" /></label></div>
     </div>; })}
     <Button disabled={busy || !discrepancies.length} onClick={() => void createPreview()}>{busy ? "Working…" : "Preview exact ledger entries"}</Button>
     {preview && <div className="space-y-3 rounded bg-muted/30 p-3"><h4 className="font-medium">Reviewed preview</h4>
-      {preview.blockers.length > 0 && <div role="alert"><strong>Blocking issues</strong><ul>{preview.blockers.map(item => <li key={item}>{item}</li>)}</ul></div>}
+      {preview.blockers.length > 0 && <div role="alert"><strong>Blocking issues</strong><ul>{preview.blockers.map(item => <li key={item}>{item}</li>)}</ul>
+        {preview.blockingReservations.length > 0 && <div className="mt-2"><strong>Reservations to resolve through the order workflow</strong><ul>{preview.blockingReservations.map(row => <li key={row.reservationId}>Reservation #{row.reservationId}, order #{row.orderId}: {row.status} {row.quantity} at {row.locationName} (location #{row.locationId}); order is {row.orderStatus}. Complete fulfillment or cancel/void the order through its normal workflow so its reservation resolves; do not release it manually.</li>)}</ul></div>}
+        {preview.blockingOrders.length > 0 && <div className="mt-2"><strong>Open committed order lines</strong><ul>{preview.blockingOrders.map(row => <li key={row.orderItemId}>Order #{row.orderId}, line #{row.orderItemId}: {row.status}, inventory item #{row.inventoryItemId}, quantity {row.quantity}. Complete fulfillment or cancel/void the order through its normal workflow.</li>)}</ul></div>}
+      </div>}
       {preview.corrections.map(row => <label key={key(row)} className="block rounded border p-2 text-sm"><span className="flex items-start gap-2"><input type="checkbox" checked={Boolean(confirmed[key(row)])} onChange={event => setConfirmed(current => ({ ...current, [key(row)]: event.target.checked }))} />
         <span>Confirm inventory #{row.inventoryItemId}, {row.locationName}: append {row.bridgeQuantityDelta}; ledger {row.ledgerQuantity} → {row.verifiedPhysicalQuantity}; unit cost {row.documentedUnitCost ?? "unknown"}. Evidence: {row.physicalCountNote}; cost source/status: {row.costBasisNote}.</span></span></label>)}
       {preview.unresolvedCosts.length > 0 && <p className="text-sm font-medium text-amber-600">Quantity history can be repaired, but valuation remains unknown for inventory item(s) {preview.unresolvedCosts.map(row => `#${row.inventoryItemId}`).join(", ")}.</p>}
@@ -355,7 +361,7 @@ export default function AdminCatalogueProducts() {
               <div><strong>Valuation</strong><ul>{preview.costs.map(cost => <li key={cost.inventoryItemId}>Inventory item #{cost.inventoryItemId}: {cost.onHand} {cost.baseUnit}; {cost.reliable ? `recorded ${cost.averageUnitCost} per ${cost.baseUnit} (${cost.convertedUnitCost} per ${preview.targetUnit}), inventory value ${cost.inventoryValue}` : `cost ${cost.costStatus}; documented cost required`}</li>)}</ul>
                 {preview.costRequired && <p>A positive documented unit cost in the shared base unit is required. Retail prices are not inventory cost.</p>}</div>
               {preview.legacyHistory.length > 0 && <div><strong>Legacy inventory history</strong><ul>{preview.legacyHistory.map((row,index) => <li key={`${row.catalogItemId}:${row.locationId}:${index}`}>Catalog item #{row.catalogItemId}, location #{row.locationId ?? "unknown"}: {row.transactionCount} historical transactions; net recorded change {row.netQuantityChange}.</li>)}</ul></div>}
-              <div><strong>Reservations and committed stock</strong>{preview.reservations.length ? <ul>{preview.reservations.map((r,index) => <li key={`${r.catalogItemId}:${r.locationId}:${index}`}>{r.status}: {r.quantity} at {r.locationName}, order #{r.orderId}</li>)}</ul> : <p>No active reservations.</p>}
+              <div><strong>Reservations and committed stock</strong>{preview.reservations.length ? <><ul>{preview.reservations.map(r => <li key={r.reservationId}>Reservation #{r.reservationId}: {r.status} {r.quantity} at {r.locationName} (location #{r.locationId}), order #{r.orderId} ({r.orderStatus}). Complete fulfillment or cancel/void the order through the normal order workflow so its reservation resolves; do not release it manually.</li>)}</ul></> : <p>No active reservations.</p>}
                 {preview.committed.length > 0 && <ul>{preview.committed.map((row,index) => <li key={`${row.optionId}:${row.orderId}:${index}`}>{row.status} order #{row.orderId}, {row.label}: {row.committedConsumption} committed consumption</li>)}</ul>}
                 <p>Historical order lines retained: {preview.orderHistory.reduce((sum,row) => sum + row.orderLineCount, 0)}.</p></div>
               {preview.issues.length > 0 && <div role="alert" className="rounded border border-red-500 p-2"><strong>Blocking issues</strong><ul>{preview.issues.map(issue => <li key={issue}>{issue}</li>)}</ul></div>}
