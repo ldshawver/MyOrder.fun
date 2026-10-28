@@ -19,10 +19,10 @@ function api(path: string): string {
   return readFileSync(resolve(apiRoot, path), "utf8");
 }
 
-// Production authorization is independent of the staging-only d69275f candidate.
+// Production release authorization is pinned to the reviewed candidate identity.
 const approvedProduction = {
-  sha: "68edc6a4e64876c146c82c21ca47f8abcf6b392f",
-  tree: "015b406605eaa070c5f13f50dea5ce9f925ef5ab",
+  sha: "5c68c81600f31fd9781bcf2d47746d64b10ae81e",
+  tree: "a765b25f0636a44d117353652ed82fd4316348c2",
 };
 
 function productionPinGuard(workflow: string): string {
