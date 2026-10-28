@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const state = vi.hoisted(() => ({ addItem: vi.fn(), getToken: vi.fn(async () => "test-token") }));
+const state = vi.hoisted(() => ({ addItem: vi.fn(), getToken: vi.fn(async () => "test-token"), userRole: "customer" }));
 vi.mock("@clerk/react", () => ({ useAuth: () => ({ getToken: state.getToken }) }));
 vi.mock("@/contexts/BrandContext", () => ({ useBrand: () => ({ brand: "alavont", branding: {
   customer: { displayName: "Alavont" }, supplier: { displayName: "Supplier" },
@@ -12,7 +12,7 @@ vi.mock("@/contexts/BrandContext", () => ({ useBrand: () => ({ brand: "alavont",
 vi.mock("@/contexts/CartContext", () => ({ useCart: () => ({ cart: [], itemCount: 0, addItem: state.addItem }) }));
 vi.mock("@/components/CatalogNotice", () => ({ CatalogNotice: () => null }));
 vi.mock("@workspace/api-client-react", () => ({
-  useGetCurrentUser: () => ({ data: { role: "customer" } }),
+  useGetCurrentUser: () => ({ data: { role: state.userRole } }),
   useUpdateCatalogItem: () => ({ mutate: vi.fn(), isPending: false }),
   getListCatalogItemsQueryKey: () => ["listCatalogItems"],
 }));
@@ -37,9 +37,11 @@ afterEach(async () => {
   host = undefined;
   vi.unstubAllGlobals();
   state.addItem.mockClear();
+  state.userRole = "customer";
 });
 
-async function renderCustomerCatalogue(options: Option[]) {
+async function renderCustomerCatalogue(options: Option[], role = "customer") {
+  state.userRole = role;
   const normalizedOptions = options.map(option => ({ isAvailable: true, showCatalogueStockIndicator: true, inventoryStatus: "ready" as const, balanceRowCount: 1, stockOnHand: "3.000000", reservedQuantity: "0.000000", availableQuantity: "3.000000", orderable: true, ...option }));
   const product = { id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", active: true, options: normalizedOptions };
   const items = normalizedOptions.map(option => ({
@@ -151,5 +153,21 @@ describe("actual customer catalogue card", () => {
     await act(async () => add.click());
     expect(state.addItem).toHaveBeenCalledWith(expect.objectContaining({ id: 402, optionId: 302,
       optionValues: { Color: "Red", Size: "L" }, price: 19 }));
+  });
+
+  it("keeps an admin customer preview read-only and requests the customer-filtered list", async () => {
+    const page = await renderCustomerCatalogue(shirtOptions, "admin");
+    const toggle = page.querySelector('[data-testid="toggle-customer-catalog-preview"]') as HTMLButtonElement;
+    expect(toggle).toBeTruthy();
+    await act(async () => toggle.click());
+    await vi.waitFor(() => {
+      expect(page.querySelector('[data-testid="customer-catalog-preview-notice"]')).toBeTruthy();
+      expect(page.querySelector('[data-testid="customer-preview-readonly-182"]')).toBeTruthy();
+    });
+    expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.some(([input]) => String(input).includes("customerPreview=true"))).toBe(true);
+    expect(page.querySelector('[data-testid="catalog-cart-link"]')).toBeNull();
+    expect(page.querySelector('[data-testid="catalog-checkout-link"]')).toBeNull();
+    expect(page.querySelector('[data-testid="link-product-182"]')).toBeNull();
+    expect(state.addItem).not.toHaveBeenCalled();
   });
 });

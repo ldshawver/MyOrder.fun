@@ -147,6 +147,7 @@ function CatalogItemCard({
   product,
   optionsLoading,
   canEdit,
+  customerPreview,
   onEdit,
   menuMode,
 }: {
@@ -154,6 +155,7 @@ function CatalogItemCard({
   product?: GroupedProduct;
   optionsLoading: boolean;
   canEdit: boolean;
+  customerPreview: boolean;
   onEdit: (item: ExtendedCatalogItem) => void;
   menuMode: MenuMode;
 }) {
@@ -236,7 +238,7 @@ function CatalogItemCard({
             <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Not available for ordering</span>
           </div>
         )}
-        {canEdit && (
+        {canEdit && !customerPreview && (
           <button
             onClick={e => { e.preventDefault(); e.stopPropagation(); onEdit(item); }}
             className="absolute top-2 right-2 w-7 h-7 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all hover:bg-background"
@@ -314,7 +316,12 @@ function CatalogItemCard({
                   ? `${selectedOption.availableQuantity} available`
                   : "Available to order."}
         </div>}
-        <div className="grid grid-cols-2 gap-2 mt-1">
+        <div className={`grid ${customerPreview ? "grid-cols-1" : "grid-cols-2"} gap-2 mt-1`}>
+          {customerPreview ? (
+            <button type="button" disabled className="flex items-center justify-center w-full rounded-xl border border-border/50 py-2.5 text-xs font-semibold text-muted-foreground cursor-not-allowed" data-testid={`customer-preview-readonly-${item.id}`}>
+              Customer preview · ordering disabled
+            </button>
+          ) : <>
           <button
             type="button"
             disabled={!selectedOption || !selectedOption.orderable || optionsLoading}
@@ -345,6 +352,7 @@ function CatalogItemCard({
           >
             Details
           </Link>
+          </>}
         </div>
       </div>
     </div>
@@ -891,6 +899,7 @@ export default function Catalog() {
     brand === "lucifer_cruz" ? "lucifer" : "alavont"
   );
   const [editItem, setEditItem] = useState<ExtendedCatalogItem | null>(null);
+  const [customerPreview, setCustomerPreview] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -913,21 +922,24 @@ export default function Catalog() {
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const userRole = normalizeNotificationRole(user?.role);
   const canEdit = userRole === "global_admin" || userRole === "admin";
+  const isCustomerPreview = canEdit && customerPreview;
 
   const { data: categoriesRes } = useQuery({
-    queryKey: ["listCatalogCategories", menuMode],
+    queryKey: ["listCatalogCategories", menuMode, isCustomerPreview],
     queryFn: async (): Promise<{ categories: string[] }> => {
       const token = await getToken();
-      const res = await fetch(`/api/catalog/categories?mode=${menuMode}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+      const preview = isCustomerPreview ? "&customerPreview=true" : "";
+      const res = await fetch(`/api/catalog/categories?mode=${menuMode}${preview}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
       if (!res.ok) throw new Error(`Could not load categories (${res.status})`);
       return res.json() as Promise<{ categories: string[] }>;
     },
   });
   const catalogQuery = useInfiniteQuery({
-    queryKey: ["listCatalogItems", search, category, menuMode],
+    queryKey: ["listCatalogItems", search, category, menuMode, isCustomerPreview],
     initialPageParam: 1,
     queryFn: async ({ pageParam }): Promise<CatalogPage> => {
       const query = new URLSearchParams({ limit: "200", page: String(pageParam), mode: menuMode === "lucifer" ? "lucifer" : "alavont" });
+      if (isCustomerPreview) query.set("customerPreview", "true");
       if (search) query.set("search", search);
       if (category !== "all") query.set("category", category);
       const token = await getToken();
@@ -985,6 +997,16 @@ export default function Catalog() {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
+      {canEdit && (
+        <div className="flex justify-end">
+          <button type="button" aria-pressed={customerPreview} onClick={() => setCustomerPreview(value => !value)} className={`rounded-lg border px-3 py-2 text-xs font-semibold ${customerPreview ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background text-foreground"}`} data-testid="toggle-customer-catalog-preview">
+            {customerPreview ? "Exit customer preview" : "Preview customer catalogue"}
+          </button>
+        </div>
+      )}
+      {isCustomerPreview && <div role="status" className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-xs text-foreground" data-testid="customer-catalog-preview-notice">
+        Read-only customer preview. Customer eligibility filters are applied; ordering and product editing are disabled.
+      </div>}
       {/* Hero/header: banner sits behind the title and brand buttons. */}
       <div className="relative aspect-[3/1] w-full overflow-hidden rounded-3xl border border-border/30 bg-background/95 catalog-hero" data-testid="catalog-hero-banner">
         {!isLC && (
@@ -1005,10 +1027,10 @@ export default function Catalog() {
 
         <div className="relative z-10 flex h-full flex-col justify-start gap-3 p-3 sm:p-4 md:p-5">
           <div className="flex flex-wrap justify-end gap-2">
-            <Link href="/cart" className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-background/85 px-3 py-2 text-xs font-semibold shadow-lg backdrop-blur" data-testid="catalog-cart-link">
+            {!isCustomerPreview && <Link href="/cart" className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-background/85 px-3 py-2 text-xs font-semibold shadow-lg backdrop-blur" data-testid="catalog-cart-link">
               <ShoppingCart size={14} /> My Order{itemCount > 0 ? ` (${itemCount})` : ""}
-            </Link>
-            {itemCount > 0 && <Link href="/checkout" className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-lg" data-testid="catalog-checkout-link">Checkout</Link>}
+            </Link>}
+            {!isCustomerPreview && itemCount > 0 && <Link href="/checkout" className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-lg" data-testid="catalog-checkout-link">Checkout</Link>}
             <div className="relative z-20 inline-flex w-full p-1 rounded-xl border border-border/40 bg-background/70 backdrop-blur-md shadow-xl sm:w-fit">
               <button
                 onClick={() => setMenuMode("alavont")}
@@ -1143,7 +1165,8 @@ export default function Catalog() {
               item={item}
               product={groupByCatalogId.get(item.id)}
               optionsLoading={catalogQuery.isLoading}
-              canEdit={canEdit}
+              canEdit={canEdit && !isCustomerPreview}
+              customerPreview={isCustomerPreview}
               onEdit={setEditItem}
               menuMode={menuMode}
             />

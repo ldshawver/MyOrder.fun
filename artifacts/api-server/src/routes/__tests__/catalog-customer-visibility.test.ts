@@ -316,6 +316,53 @@ describe("customer catalogue visibility", () => {
     expect(response.body.items.find((item: { id: number }) => item.id === 4)?.isAvailable).toBe(true);
   });
 
+  it("uses customer eligibility filters for an authorized admin preview without exposing restricted or admin-only rows", async () => {
+    actor.role = "admin";
+    rows.catalog = [
+      catalogRow(1),
+      catalogRow(2, { isAvailable: false }),
+      catalogRow(3, { metadata: { archived: true } }),
+      catalogRow(4, { metadata: { complianceHold: true } }),
+      catalogRow(5, { metadata: { safeOnlyDuplicate: true } }),
+      catalogRow(6, { metadata: { mergedIntoCatalogItemId: 1 } }),
+      catalogRow(7, { isLocalAlavont: false }),
+      catalogRow(8, { isWooManaged: true, merchantProductSource: "woo", wooProductId: "woo-8" }),
+      catalogRow(9, { alavontInStock: false }),
+    ];
+
+    const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont&customerPreview=true");
+
+    expect(response.status, response.text).toBe(200);
+    expect(rows.selectedIds).toEqual([1, 2, 7, 8, 9]);
+    expect(response.body.items.map((item: { id: number }) => item.id)).toEqual([1, 2]);
+    expect(response.body.items[0].wooProductId).toBeNull();
+  });
+
+  it("keeps customer-preview categories aligned with customer lifecycle and stock visibility", async () => {
+    actor.role = "admin";
+    rows.catalog = [
+      catalogRow(1, { category: "Eligible" }),
+      catalogRow(2, { category: "Held", metadata: { complianceHold: true } }),
+      catalogRow(3, { category: "Archived", metadata: { archived: true } }),
+      catalogRow(4, { category: "Out of stock", alavontInStock: false }),
+    ];
+
+    const response = await supertest(app).get("/api/catalog/categories?customerPreview=true");
+
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.categories).toEqual(["Eligible"]);
+  });
+
+  it("does not let a non-admin customer preview flag reveal admin catalogue rows", async () => {
+    rows.catalog = [catalogRow(1), catalogRow(2, { metadata: { archived: true } })];
+
+    const response = await supertest(app).get("/api/catalog?mode=alavont&customerPreview=true");
+
+    expect(response.status, response.text).toBe(200);
+    expect(rows.selectedIds).toEqual([1]);
+    expect(response.body.items.map((item: { id: number }) => item.id)).toEqual([1]);
+  });
+
   it("keeps the customer catalogue complete across pages and does not apply a second frontend-style filter", async () => {
     rows.catalog = Array.from({ length: 25 }, (_, index) => catalogRow(index + 1));
 

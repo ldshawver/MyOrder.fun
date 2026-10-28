@@ -22,6 +22,10 @@ import { publicCatalogEligibility } from "../lib/catalogEligibility";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireCatalogReadAccess, requireTenantContext);
 
+const listCatalogItemsRequest = ListCatalogItemsQueryParams.extend({
+  customerPreview: z.enum(["true", "false"]).optional().transform(value => value === "true"),
+});
+
 function rows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   return ((result as { rows?: T[] } | undefined)?.rows ?? []);
@@ -356,7 +360,7 @@ async function getShowOutOfStockSetting(tenantId: number): Promise<boolean> {
 // GET /api/catalog
 router.get("/catalog", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const query = ListCatalogItemsQueryParams.safeParse(req.query);
+  const query = listCatalogItemsRequest.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
     return;
@@ -371,11 +375,12 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const actorRole = normalizeRole(actor.role);
   const isAdminActor = (actorRole === "global_admin" || actorRole === "admin")
     && evaluateAccountApproval(req, actor).allowed;
-  const alavontOnly = !isLuciferMode && !isAdminActor;
+  const isCustomerView = !isAdminActor || query.data.customerPreview;
+  const alavontOnly = !isLuciferMode && isCustomerView;
 
   const tenantId = req.authorizedTenantId!;
   let rows = await db.select().from(catalogItemsTable)
-    .where(and(eq(catalogItemsTable.tenantId, tenantId), isAdminActor ? undefined : publicCatalogEligibility()))
+    .where(and(eq(catalogItemsTable.tenantId, tenantId), isCustomerView ? publicCatalogEligibility() : undefined))
     .orderBy(asc(catalogItemsTable.name));
 
   // Eligibility is enforced in SQL before search, counts, and pagination.
@@ -402,7 +407,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const showOutOfStock = await getShowOutOfStockSetting(tenantId);
   if (query.data.available !== undefined) {
     rows = rows.filter(r => r.isAvailable === query.data.available);
-  } else if (!isAdminActor && !showOutOfStock) {
+  } else if (isCustomerView && !showOutOfStock) {
     // This tenant-wide compatibility setting remains independent from the
     // per-item stock-quantity indicator and from the server's sale gate.
     rows = rows.filter(r => r.alavontInStock !== false);
@@ -425,7 +430,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   // Admins see all non-WooCommerce rows (including imported items that may have
   // isLocalAlavont=false/null) so the inventory template dropdown is complete.
   if (!isLuciferMode) {
-    if (isAdminActor) {
+    if (!isCustomerView) {
       rows = rows.filter(r => r.isWooManaged !== true);
     } else {
       rows = rows.filter(r => r.isLocalAlavont !== false && r.isWooManaged !== true);
@@ -459,7 +464,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const paged = rows.slice((page - 1) * limit, page * limit);
 
   req.log.info(
-    { catalogMode, totalInDb: totalBeforeFilters, afterFilters: total, returned: paged.length,
+    { catalogMode, customerPreview: isAdminActor && query.data.customerPreview, totalInDb: totalBeforeFilters, afterFilters: total, returned: paged.length,
       category: query.data.category, search: query.data.search },
     "catalog list"
   );
@@ -678,6 +683,7 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
   const role = normalizeRole(req.dbUser?.role);
   const isAdminActor = (role === "global_admin" || role === "admin")
     && evaluateAccountApproval(req, req.dbUser).allowed;
+  const isCustomerView = !isAdminActor || req.query.customerPreview === "true";
   const rows = await db
     .select({
       alavontCategory: catalogItemsTable.alavontCategory,
@@ -688,13 +694,17 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
       merchantProductSource: catalogItemsTable.merchantProductSource,
       wooProductId: catalogItemsTable.wooProductId,
       metadata: catalogItemsTable.metadata,
+      alavontInStock: catalogItemsTable.alavontInStock,
     })
     .from(catalogItemsTable)
-    .where(and(eq(catalogItemsTable.tenantId, tenantId), isAdminActor ? undefined : publicCatalogEligibility()));
+    .where(and(eq(catalogItemsTable.tenantId, tenantId), isCustomerView ? publicCatalogEligibility() : undefined));
+
+  const showOutOfStock = isCustomerView ? await getShowOutOfStockSetting(tenantId) : true;
 
   const seen = new Set<string>();
   const categories: string[] = [];
   for (const r of activeProductRows(rows)) {
+    if (!showOutOfStock && r.alavontInStock === false) continue;
     if (mode === "lucifer") {
       if (r.isWooManaged !== true || r.merchantProductSource !== "woo" || !r.wooProductId) continue;
     } else if (r.isLocalAlavont === false || r.isWooManaged === true) {
