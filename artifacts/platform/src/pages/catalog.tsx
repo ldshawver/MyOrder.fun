@@ -351,6 +351,27 @@ function CatalogItemCard({
   );
 }
 
+function ImageSlotPreview({ src, label, placement }: { src: string; label: string; placement: string }) {
+  const [loadFailed, setLoadFailed] = useState(false);
+  useEffect(() => setLoadFailed(false), [src]);
+  const normalized = src.trim();
+  return (
+    <div className="rounded-xl border border-border/40 p-3 space-y-2" data-testid={`${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-preview`}>
+      <div className="text-xs font-semibold text-foreground">{label}</div>
+      <p className="text-[11px] text-muted-foreground">{placement}</p>
+      {!normalized ? (
+        <div className="rounded-lg border border-dashed border-border/50 p-5 text-center text-xs text-muted-foreground">No image selected for this slot.</div>
+      ) : loadFailed ? (
+        <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-5 text-center text-xs text-destructive">This image could not be loaded. Check the URL before saving.</div>
+      ) : (
+        <div className="rounded-lg overflow-hidden aspect-square max-h-56 bg-muted/20">
+          <img src={normalized} alt={`${label} preview`} className="w-full h-full object-contain" onError={() => setLoadFailed(true)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
   const fields: Array<{ label: string; key: StringFormKey; type: string; placeholder?: string }> = [
     { label: "Name *", key: "name", type: "text" },
@@ -392,17 +413,7 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
           />
         </div>
       </fieldset>
-      <div className="rounded-xl border border-border/40 p-3 space-y-2" data-testid="main-image-preview">
-        <div className="text-xs font-semibold text-foreground">Main product image</div>
-        <p className="text-[11px] text-muted-foreground">Used on the catalogue card and as the first image on the product details page.</p>
-        {form.imageUrl ? (
-          <div className="rounded-lg overflow-hidden aspect-square max-h-56 bg-muted/20">
-            <img src={form.imageUrl} alt="Main product image preview" className="w-full h-full object-contain" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-          </div>
-        ) : (
-          <div className="rounded-lg border border-dashed border-border/50 p-5 text-center text-xs text-muted-foreground">No main product image selected.</div>
-        )}
-      </div>
+      <ImageSlotPreview src={form.imageUrl} label="Main product image" placement="Used on the Alavont catalogue card and as the first fallback image on product details." />
     </>
   );
 }
@@ -521,7 +532,7 @@ function MediaGalleryFields({ form, setForm }: { form: CatalogItemForm; setForm:
                 {entry.type === "video" ? (
                   <video src={entry.src} muted controls className="h-full w-full object-cover" />
                 ) : (
-                  <img src={entry.src} alt={entry.alt || "media preview"} className="h-full w-full object-cover" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                  <img src={entry.src} alt={entry.alt || `Gallery slot ${index + 1} preview`} className="h-full w-full object-contain" />
                 )}
               </div>
             )}
@@ -636,15 +647,15 @@ function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
 }
 
 function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
-  const alavontStringFields: Array<{ label: string; key: StringFormKey }> = [
+  const alavontStringFields: Array<{ label: string; key: StringFormKey; placement?: string }> = [
     { label: "Alavont Name", key: "alavontName" },
     { label: "Alavont Category", key: "alavontCategory" },
-    { label: "Alavont Image URL", key: "alavontImageUrl" },
+    { label: "Alavont Image URL", key: "alavontImageUrl", placement: "Brand-specific fallback shown in the Alavont catalogue when the main product image is blank." },
   ];
-  const luciferStringFields: Array<{ label: string; key: StringFormKey }> = [
+  const luciferStringFields: Array<{ label: string; key: StringFormKey; placement?: string }> = [
     { label: "Lucifer Cruz Name", key: "luciferCruzName" },
     { label: "Lucifer Cruz Category", key: "luciferCruzCategory" },
-    { label: "Lucifer Cruz Image URL", key: "luciferCruzImageUrl" },
+    { label: "Lucifer Cruz Image URL", key: "luciferCruzImageUrl", placement: "Primary image shown for this item in the Lucifer Cruz supplier catalogue." },
   ];
   const wooStringFields: Array<{ label: string; key: StringFormKey }> = [
     { label: "WooCommerce Product ID", key: "wooProductId" },
@@ -657,10 +668,11 @@ function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm
   return (
     <div className="space-y-3">
       <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400 pt-1">Alavont Display Fields</div>
-      {alavontStringFields.map(({ label, key }) => (
+      {alavontStringFields.map(({ label, key, placement }) => (
         <div key={key}>
-          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
+          <label htmlFor={`catalog-field-${key}`} className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+          <Input id={`catalog-field-${key}`} value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
+          {placement && <div className="mt-2"><ImageSlotPreview src={form[key]} label={label.replace(" URL", "")} placement={placement} /></div>}
         </div>
       ))}
       <div>
@@ -675,10 +687,11 @@ function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm
       </div>
 
       <div className="text-[10px] font-bold uppercase tracking-widest text-red-400 pt-2">Lucifer Cruz Merchant Fields</div>
-      {luciferStringFields.map(({ label, key }) => (
+      {luciferStringFields.map(({ label, key, placement }) => (
         <div key={key}>
-          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
+          <label htmlFor={`catalog-field-${key}`} className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+          <Input id={`catalog-field-${key}`} value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
+          {placement && <div className="mt-2"><ImageSlotPreview src={form[key]} label={label.replace(" URL", "")} placement={placement} /></div>}
         </div>
       ))}
       <div>
@@ -730,8 +743,9 @@ function CheckoutPresentationFields({ form, setForm }: { form: CatalogItemForm; 
       <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">Checkout Presentation</div>
       {fields.map(({ label, key, placeholder }) => (
         <div key={key}>
-          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder={placeholder} />
+          <label htmlFor={`catalog-field-${key}`} className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+          <Input id={`catalog-field-${key}`} value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder={placeholder} />
+          {key === "displayImage" && <div className="mt-2"><ImageSlotPreview src={form.displayImage} label="Converted checkout image" placement="Shown in the converted checkout presentation when this explicit override is set." /></div>}
         </div>
       ))}
       {[
