@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { getCatalogLifecycleStatus, lifecycleMetadataPatch } from "../catalog";
 
 describe("catalog lifecycle metadata", () => {
+  it("does not treat order availability or stock-indicator preference as lifecycle visibility", () => {
+    expect(getCatalogLifecycleStatus({ isAvailable: false, alavontInStock: false, metadata: { showCatalogueStockIndicator: false } }))
+      .toBe("customer_visible");
+  });
+
   it("stores archive state at the canonical metadata root, preserves presentation/history, and is idempotent", () => {
     const original = { presentation: { displayName: "Synthetic product" }, importSource: "staging", auditMarker: "keep" };
     const archived = lifecycleMetadataPatch(original, { archived: true, complianceHold: false, lifecycleReason: "acceptance cleanup" });

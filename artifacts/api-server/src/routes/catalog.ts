@@ -46,7 +46,9 @@ const createCatalogItemRequest = CreateCatalogItemBody.extend({
   imageUrl: optionalBlankHttpUrl,
   alavontImageUrl: nullableBlankHttpUrl,
   luciferCruzImageUrl: nullableBlankHttpUrl,
+  showCatalogueStockIndicator: z.boolean().optional(),
 });
+const updateCatalogItemRequest = UpdateCatalogItemBody.strict().extend({ showCatalogueStockIndicator: z.boolean().optional() }).strict();
 const catalogDisplayUpdateSchema = z.object({
   displayName: z.string().trim().max(160).nullable().optional(),
   displayDescription: z.string().trim().max(4000).nullable().optional(),
@@ -69,13 +71,12 @@ function isArchivedOrSafeDuplicateRow(row: { metadata?: unknown }): boolean {
 export type CatalogLifecycleStatus = "customer_visible" | "unavailable_hidden" | "compliance_hold" | "archived";
 
 /** The admin lifecycle projection is server-owned; UI callers must not infer it from availability. */
-export function getCatalogLifecycleStatus(row: { isAvailable: boolean; alavontInStock: boolean | null; metadata?: unknown }): CatalogLifecycleStatus {
+export function getCatalogLifecycleStatus(row: { metadata?: unknown }): CatalogLifecycleStatus {
   const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
     ? row.metadata as Record<string, unknown>
     : {};
   if (isArchivedOrSafeDuplicateRow({ metadata })) return "archived";
   if (metadata.complianceHold === true) return "compliance_hold";
-  if (row.isAvailable !== true || row.alavontInStock === false) return "unavailable_hidden";
   return "customer_visible";
 }
 
@@ -185,6 +186,8 @@ function mapItem(
   const stockQuantity = linkedInventoryStock !== undefined
     ? linkedInventoryStock
     : (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null);
+  const metadata = i.metadata && typeof i.metadata === "object" && !Array.isArray(i.metadata) ? i.metadata as Record<string, unknown> : {};
+  const showCatalogueStockIndicator = metadata.showCatalogueStockIndicator !== false;
   return {
     id: i.id,
     tenantId: i.tenantId,
@@ -198,7 +201,8 @@ function mapItem(
     // contract represents an unknown optional quantity by omitting the field;
     // the sellable option remains present with inventoryStatus=missing_balance
     // and orderable=false.
-    ...(stockQuantity == null ? {} : { stockQuantity }),
+    ...(stockQuantity == null || (alavontOnly && !showCatalogueStockIndicator) ? {} : { stockQuantity }),
+    showCatalogueStockIndicator,
     isAvailable: i.isAvailable,
     isTaxable: i.isTaxable,
     imageUrl: resolvedImageUrl,
@@ -344,11 +348,8 @@ async function getLinkedInventoryStockByCatalogId(tenantId: number) {
 }
 
 async function getShowOutOfStockSetting(tenantId: number): Promise<boolean> {
-  const [settings] = await db
-    .select({ showOutOfStock: adminSettingsTable.showOutOfStock })
-    .from(adminSettingsTable)
-    .where(eq(adminSettingsTable.tenantId, tenantId))
-    .limit(1);
+  const [settings] = await db.select({ showOutOfStock: adminSettingsTable.showOutOfStock })
+    .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
   return settings?.showOutOfStock === true;
 }
 
@@ -402,6 +403,8 @@ router.get("/catalog", async (req, res): Promise<void> => {
   if (query.data.available !== undefined) {
     rows = rows.filter(r => r.isAvailable === query.data.available);
   } else if (!isAdminActor && !showOutOfStock) {
+    // This tenant-wide compatibility setting remains independent from the
+    // per-item stock-quantity indicator and from the server's sale gate.
     rows = rows.filter(r => r.alavontInStock !== false);
   }
 
@@ -489,7 +492,7 @@ router.get("/admin/product-master", requireRole("global_admin", "admin"), async 
       unavailable: item.isAvailable === false,
       archived: (item.metadata as Record<string, unknown> | null)?.archived === true,
       complianceHold: (item.metadata as Record<string, unknown> | null)?.complianceHold === true,
-      nonSellable: item.isAvailable === false || item.alavontInStock === false,
+      nonSellable: item.isAvailable === false,
     },
     "Regular Price": item.regularPrice != null ? parseFloat(String(item.regularPrice)) : parseFloat(String(item.price ?? "0")),
     "Sale Price": item.compareAtPrice != null ? parseFloat(String(item.compareAtPrice)) : null,
@@ -640,7 +643,7 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
   if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required" }); return; }
   // price is number in the Zod schema but string in the db schema (numeric precision);
   // use double-cast to satisfy drizzle's strict insert overloads
-  const { costBasis, ...createData } = body.data;
+  const { costBasis, showCatalogueStockIndicator, ...createData } = body.data;
   const [row] = await db.insert(catalogItemsTable).values({
     ...(createData as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
     tenantId,
@@ -660,6 +663,7 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
     costBasis: costBasis != null ? String(costBasis) : undefined,
     isAvailable: body.data.isAvailable ?? true,
+    metadata: { showCatalogueStockIndicator: showCatalogueStockIndicator ?? true },
     stockQuantity: "0",
     inventoryAmount: "0",
   } as unknown as typeof catalogItemsTable.$inferInsert).returning();
@@ -773,7 +777,7 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
     return;
   }
   if (alavontOnly) {
-    if (row.alavontInStock === false || row.isWooManaged === true || row.isLocalAlavont === false) {
+    if (row.isWooManaged === true || row.isLocalAlavont === false) {
       res.status(404).json({ error: "Not found" });
       return;
     }
@@ -792,7 +796,7 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
   // Keep the generated field allow-list, and reject rather than silently strip
   // unexpected client input.  This protects catalogue updates from mass
   // assignment while preserving the intentionally supported edit fields.
-  const body = UpdateCatalogItemBody.strict().safeParse(req.body);
+  const body = updateCatalogItemRequest.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
@@ -822,12 +826,16 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     return;
   }
 
-  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, parLevel, moq, preferredReorderQuantity, ...restBodyData } = body.data;
+  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, parLevel, moq, preferredReorderQuantity, showCatalogueStockIndicator, ...restBodyData } = body.data;
   if (stockQuantity !== undefined) {
     res.status(409).json({ error: "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction", use: "/api/admin/bootstrap-inventory" });
     return;
   }
   const updateData: Partial<typeof catalogItemsTable.$inferInsert> = restBodyData as Partial<typeof catalogItemsTable.$inferInsert>;
+  if (showCatalogueStockIndicator !== undefined) {
+    const metadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata) ? existing.metadata as Record<string, unknown> : {};
+    updateData.metadata = { ...metadata, showCatalogueStockIndicator };
+  }
   if (price !== undefined) updateData.price = String(price);
   if (compareAtPrice !== undefined) updateData.compareAtPrice = compareAtPrice != null ? String(compareAtPrice) : null;
   if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;

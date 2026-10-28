@@ -25,7 +25,8 @@ describe("catalogue edit integrity", () => {
 
   it("rejects unknown catalogue update fields instead of silently accepting them", () => {
     const updateHandler = catalogRoute.slice(catalogRoute.indexOf('router.patch("/catalog/:id"'), catalogRoute.indexOf('router.delete("/catalog/:id"'));
-    expect(updateHandler).toContain("UpdateCatalogItemBody.strict().safeParse(req.body)");
+    expect(updateHandler).toContain("updateCatalogItemRequest.safeParse(req.body)");
+    expect(catalogRoute).toContain("UpdateCatalogItemBody.strict().extend");
   });
 
   it("continues loading customer catalogue pages instead of silently truncating after the first 200 rows", () => {

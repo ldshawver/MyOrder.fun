@@ -34,6 +34,7 @@ export interface CatalogItem {
   alavontCategory?: string | null;
   alavontImageUrl?: string | null;
   alavontInStock?: boolean | null;
+  showCatalogueStockIndicator?: boolean;
   luciferCruzName?: string | null;
   luciferCruzImageUrl?: string | null;
   luciferCruzDescription?: string | null;

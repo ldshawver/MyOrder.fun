@@ -181,6 +181,12 @@ async function snapshot() {
       expect(preview.status).toBe(200);
       expect(preview.body.issues.join(" ")).toMatch(/reservations/);
       expect(preview.body.issues.join(" ")).toMatch(/open orders/);
+      expect(preview.body.reservations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ orderId, locationId, status: "reserved", quantity: "1.000000" }),
+      ]));
+      expect(preview.body.committed).toEqual(expect.arrayContaining([
+        expect.objectContaining({ orderId, status: "pending" }),
+      ]));
       expect(await snapshot()).toBe(before);
     } finally {
       await client.query("DELETE FROM inventory_reservations WHERE order_id=$1", [orderId]);
@@ -259,10 +265,19 @@ async function snapshot() {
     const adminId = Number((await client.query("SELECT id FROM users WHERE clerk_id=$1", [users.admin])).rows[0].id);
     const openOrder = await client.query(`INSERT INTO orders(tenant_id,customer_id,subtotal,total,status,payment_status,payment_method)
       VALUES($1,$2,1,1,'pending','unpaid','cash') RETURNING id`, [tenantId,adminId]);
-    await client.query(`INSERT INTO inventory_reservations(order_id,catalog_item_id,location_id,quantity,status,expires_at)
-      VALUES($1,$2,$3,1,'reserved',now()+interval '10 minutes')`, [openOrder.rows[0].id,local.body.catalogItemId,locationId]);
+    await client.query(`INSERT INTO order_items(order_id,catalog_item_id,catalog_item_name,quantity,unit_price,total_price,option_id,inventory_item_id)
+      VALUES($1,$2,'Baseline variant',1,1,1,$3,$4)`, [openOrder.rows[0].id,local.body.catalogItemId,local.body.optionId,local.body.inventoryItemId]);
+    const blockerReservation = await client.query(`INSERT INTO inventory_reservations(order_id,catalog_item_id,location_id,quantity,status,expires_at)
+      VALUES($1,$2,$3,1,'reserved',now()+interval '10 minutes') RETURNING id`, [openOrder.rows[0].id,local.body.catalogItemId,locationId]);
     const blocked = await previewInventoryHistoryBaselineRepair(tenantId, local.body.productId, evidence);
     expect(blocked.blockers.join(" ")).toMatch(/Active reservations/);
+    expect(blocked.blockingReservations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reservationId: blockerReservation.rows[0].id, orderId: openOrder.rows[0].id,
+        inventoryItemId: local.body.catalogItemId, locationId, status: "reserved", orderStatus: "pending" }),
+    ]));
+    expect(blocked.blockingOrders).toEqual(expect.arrayContaining([
+      expect.objectContaining({ orderId: openOrder.rows[0].id, status: "pending" }),
+    ]));
     await client.query("DELETE FROM inventory_reservations WHERE order_id=$1", [openOrder.rows[0].id]);
     await client.query("DELETE FROM orders WHERE id=$1", [openOrder.rows[0].id]);
     const preview = await previewInventoryHistoryBaselineRepair(tenantId, local.body.productId, evidence);

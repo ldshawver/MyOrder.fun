@@ -1,10 +1,9 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, sql } from "drizzle-orm";
 import { catalogItemsTable } from "@workspace/db";
 
 /** Sale eligibility is independent of stock display preferences and menu source. */
 export function publicCatalogEligibility() {
   return and(
-    eq(catalogItemsTable.isAvailable, true),
     sql`coalesce(${catalogItemsTable.metadata}->>'archived', 'false') <> 'true'`,
     sql`coalesce(${catalogItemsTable.metadata}->>'complianceHold', 'false') <> 'true'`,
     sql`coalesce(${catalogItemsTable.metadata}->>'safeOnlyDuplicate', 'false') <> 'true'`,

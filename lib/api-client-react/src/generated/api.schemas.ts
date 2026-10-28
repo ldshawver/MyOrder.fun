@@ -154,12 +154,13 @@ export type CatalogItemSellableProductOptionsItem = {
   catalogItemId: number;
   label: string;
   price: string;
+  isAvailable: boolean;
+  showCatalogueStockIndicator: boolean;
   sku?: string | null;
   inventoryStatus: CatalogItemSellableProductOptionsItemInventoryStatus;
-  balanceRowCount: number;
-  stockOnHand: string | null;
-  reservedQuantity: string | null;
-  availableQuantity: string | null;
+  stockOnHand?: string | null;
+  reservedQuantity?: string | null;
+  availableQuantity?: string | null;
   orderable: boolean;
 };
 
@@ -219,6 +220,7 @@ export interface CatalogItem {
   alavontCategory?: string | null;
   alavontImageUrl?: string | null;
   alavontInStock?: boolean | null;
+  showCatalogueStockIndicator?: boolean;
   luciferCruzName?: string | null;
   luciferCruzImageUrl?: string | null;
   luciferCruzDescription?: string | null;
@@ -303,6 +305,7 @@ export interface CreateCatalogItemBody {
   alavontCategory?: string | null;
   alavontImageUrl?: string | null;
   alavontInStock?: boolean | null;
+  showCatalogueStockIndicator?: boolean;
   displayName?: string | null;
   displayDescription?: string | null;
   displayCategory?: string | null;
@@ -374,6 +377,7 @@ export interface UpdateCatalogItemBody {
   alavontCategory?: string | null;
   alavontImageUrl?: string | null;
   alavontInStock?: boolean | null;
+  showCatalogueStockIndicator?: boolean;
   displayName?: string | null;
   displayDescription?: string | null;
   displayCategory?: string | null;
@@ -655,7 +659,10 @@ export type CreateOrderBodyCheckoutConfirmation = {
   /** @minLength 1 */
   legalDisclaimerText: string;
   paymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
+  /** @minLength 1 */
   checkoutTaxQuoteToken?: string;
+  /** @minimum 0 */
+  customerCreditAmount?: number;
   tipAmount?: number | null;
   tipPercent?: number | null;
 };
@@ -826,7 +833,7 @@ export interface UserProfile {
   tenantName?: string;
   mfaEnabled?: boolean;
   status?: UserProfileStatus;
-  isConfiguredOwner: boolean;
+  isConfiguredOwner?: boolean;
   isActive: boolean;
   contactPhone?: string | null;
   avatarUrl?: string | null;

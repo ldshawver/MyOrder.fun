@@ -231,9 +231,9 @@ function CatalogItemCard({
             FEATURED
           </div>
         )}
-        {!item.isAvailable && !selectedOption && (
+        {!product && !item.isAvailable && !selectedOption && (
           <div className="absolute inset-0 bg-background/60 backdrop-blur-sm flex items-center justify-center">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Unavailable</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Not available for ordering</span>
           </div>
         )}
         {canEdit && (
@@ -280,7 +280,7 @@ function CatalogItemCard({
               onChange={event => setSelectedOptionId(event.target.value ? Number(event.target.value) : null)}
               aria-label={`${product.name} option`}>
               <option value="">Select an option</option>
-              {product.options.map(option => <option key={option.id} value={option.id} disabled={!option.orderable}>{option.label} · ${Number(option.price).toFixed(2)}{option.orderable ? "" : " — unavailable"}</option>)}
+              {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}{option.orderable ? "" : !option.isAvailable ? " — not available to order" : option.inventoryStatus !== "ready" ? " — inventory unavailable" : " — out of stock"}</option>)}
             </select>
           </label>
         )}
@@ -295,7 +295,7 @@ function CatalogItemCard({
                 : `$${parseFloat(String(selectedOption?.price ?? (isLC && item.regularPrice ? item.regularPrice : item.price))).toFixed(2)}`}
             </span>
           </div>
-          {item.stockQuantity !== undefined && item.isAvailable && !isLC && (!product || product.options.length === 1) && (
+          {item.showCatalogueStockIndicator !== false && item.stockQuantity !== undefined && !isLC && (!product || product.options.length === 1) && (
             <span className={`text-[10px] font-mono ${item.stockQuantity === 0 ? "text-red-400" : "text-muted-foreground/70"}`}>
               {item.stockQuantity === 0 ? "OUT" : `${item.stockQuantity} avail`}
             </span>
@@ -303,12 +303,16 @@ function CatalogItemCard({
         </div>
 
         {selectedOption?.sku && <div className="text-[10px] text-muted-foreground">SKU: {selectedOption.sku}</div>}
-        {selectedOption && <div className={`text-[10px] font-mono ${selectedOption.orderable ? "text-muted-foreground" : "text-red-500"}`}>
-          {selectedOption.inventoryStatus !== "ready"
-            ? "Inventory setup incomplete"
-            : selectedOption.orderable
-              ? `${selectedOption.availableQuantity} available after reservations`
-              : "Out of stock"}
+        {selectedOption && <div className={`text-[10px] ${selectedOption.orderable ? "text-muted-foreground" : "text-red-500"}`}>
+          {!selectedOption.isAvailable
+            ? "This option is not currently available for ordering."
+            : selectedOption.inventoryStatus !== "ready"
+              ? "Inventory availability can't be confirmed, so this option can't be ordered."
+              : !selectedOption.orderable
+                ? "Out of stock. Choose another option or check back later."
+                : selectedOption.showCatalogueStockIndicator && selectedOption.availableQuantity != null
+                  ? `${selectedOption.availableQuantity} available`
+                  : "Available to order."}
         </div>}
         <div className="grid grid-cols-2 gap-2 mt-1">
           <button

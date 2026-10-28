@@ -52,9 +52,11 @@ describe("customer product options", () => {
 
   it("queries tenant-scoped active, non-held options", () => {
     const customerQuery = readFileSync(new URL("../../lib/catalogueSellable.ts", import.meta.url), "utf8");
-    for (const predicate of ["co.tenant_id = ${tenantId}", "co.active = true", "option_values AS \"optionValues\"", "ci.is_available = true", "alavont_in_stock IS DISTINCT FROM false", "archived", "safeOnlyDuplicate", "complianceHold"]) {
+    for (const predicate of ["co.tenant_id = ${tenantId}", "co.active = true", "option_values AS \"optionValues\"", "ci.is_available IS NOT TRUE", "showCatalogueStockIndicator", "archived", "safeOnlyDuplicate", "complianceHold"]) {
       expect(customerQuery).toContain(predicate);
     }
+    expect(customerQuery).not.toContain("alavont_in_stock IS DISTINCT FROM false");
+    expect(customerQuery).not.toContain("AND ci.is_available = true");
   });
 
   it("uses the admin Add option path to attach a separate variant to its parent", async () => {

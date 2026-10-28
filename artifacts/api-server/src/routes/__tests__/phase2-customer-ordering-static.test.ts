@@ -10,11 +10,19 @@ const platform = (file: string) => readFileSync(resolve(here, "../../../../platf
 describe("Phase 2 customer ordering boundaries", () => {
   it("does not expose non-customer catalog items by direct id", () => {
     const source = api("catalog.ts");
-    expect(source).toContain("row.isAvailable !== true");
     expect(source).toContain("metadata.archived === true");
     expect(source).toContain('res.status(404).json({ error: "Not found" })');
     expect(source).toContain("internalName: alavontOnly ? null");
     expect(source).toContain("metadata: alavontOnly ? {} : i.metadata");
+    expect(readFileSync(resolve(here, "../../lib/catalogEligibility.ts"), "utf8")).not.toContain("eq(catalogItemsTable.isAvailable, true)");
+  });
+
+  it("enforces ordering availability at cart conversion and checkout, independent of stock display", () => {
+    const orders = api("orders.ts");
+    expect(orders.match(/ci\.is_available = true/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(orders).not.toContain("alavont_in_stock IS DISTINCT FROM false");
+    expect(orders).not.toContain("showCatalogueStockIndicator");
+    expect(readFileSync(resolve(here, "../../lib/catalogueSellable.ts"), "utf8")).toContain("ci.is_available IS NOT TRUE");
   });
 
   it("bounds Zappy cart proposals before the client applies them", () => {

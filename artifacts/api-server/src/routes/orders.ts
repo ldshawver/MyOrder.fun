@@ -296,7 +296,6 @@ router.use(async (req, res, next) => {
       JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
       WHERE co.tenant_id = ${tenantId} AND co.id = ${line.optionId}
         AND co.active = true AND cp.active = true AND ci.is_available = true
-        AND ci.alavont_in_stock IS DISTINCT FROM false
         AND COALESCE((ci.metadata->>'isVisible')::boolean, true) = true
         AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
         AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
@@ -1217,7 +1216,6 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
           WHERE co.tenant_id = ${houseTenantId} AND co.catalog_item_id = ${line.catalog_item_id}
             AND co.active = true AND cp.active = true AND ci.is_available = true
-            AND ci.alavont_in_stock IS DISTINCT FROM false
             AND COALESCE((ci.metadata->>'isVisible')::boolean, true) = true
             AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
             AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false

@@ -165,8 +165,8 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
     ORDER BY b.product_id,b.location_id
   `));
   const reservations = rows(await executor.execute(sql`
-    SELECT r.catalog_item_id AS "catalogItemId", r.location_id AS "locationId", l.name AS "locationName",
-      r.status, r.quantity::text AS quantity, r.expires_at AS "expiresAt", r.order_id AS "orderId"
+    SELECT r.id AS "reservationId",r.catalog_item_id AS "catalogItemId",r.location_id AS "locationId",l.name AS "locationName",
+      lower(r.status) AS status,r.quantity::text AS quantity,r.expires_at AS "expiresAt",r.order_id AS "orderId",lower(o.status) AS "orderStatus"
     FROM inventory_reservations r JOIN orders o ON o.id=r.order_id AND o.tenant_id=${tenantId}
     JOIN inventory_locations l ON l.tenant_id=o.tenant_id AND l.id=r.location_id
     WHERE r.catalog_item_id=ANY(${intArray(catalogIds)}) AND lower(r.status) IN ('reserved','committed','pending')

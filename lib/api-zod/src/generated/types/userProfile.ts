@@ -20,7 +20,7 @@ export interface UserProfile {
   tenantName?: string;
   mfaEnabled?: boolean;
   status?: UserProfileStatus;
-  isConfiguredOwner: boolean;
+  isConfiguredOwner?: boolean;
   isActive: boolean;
   contactPhone?: string | null;
   avatarUrl?: string | null;

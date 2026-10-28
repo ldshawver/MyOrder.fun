@@ -1512,14 +1512,16 @@ components:
                     type: string
                   price:
                     type: string
+                  isAvailable:
+                    type: boolean
+                  showCatalogueStockIndicator:
+                    type: boolean
                   sku:
                     type: string
                     nullable: true
                   inventoryStatus:
                     type: string
                     enum: [ready, missing_identity, missing_balance]
-                  balanceRowCount:
-                    type: integer
                   stockOnHand:
                     type: string
                     nullable: true
@@ -1531,7 +1533,7 @@ components:
                     nullable: true
                   orderable:
                     type: boolean
-                required: [id, catalogItemId, label, price, inventoryStatus, balanceRowCount, stockOnHand, reservedQuantity, availableQuantity, orderable]
+                required: [id, catalogItemId, label, price, isAvailable, showCatalogueStockIndicator, inventoryStatus, orderable]
           required: [id, name, options]
         id:
           type: integer
@@ -1598,6 +1600,8 @@ components:
         alavontInStock:
           type: boolean
           nullable: true
+        showCatalogueStockIndicator:
+          type: boolean
         luciferCruzName:
           type: string
           nullable: true
@@ -1788,6 +1792,8 @@ components:
         alavontInStock:
           type: boolean
           nullable: true
+        showCatalogueStockIndicator:
+          type: boolean
         displayName:
           type: string
           nullable: true
@@ -1950,6 +1956,8 @@ components:
         alavontInStock:
           type: boolean
           nullable: true
+        showCatalogueStockIndicator:
+          type: boolean
         displayName:
           type: string
           nullable: true
@@ -2262,6 +2270,13 @@ components:
             paymentMethod:
               type: string
               enum: [cash, paypal, paypal_card, customer_credit]
+            checkoutTaxQuoteToken:
+              type: string
+              minLength: 1
+            customerCreditAmount:
+              type: number
+              minimum: 0
+              multipleOf: 0.01
             tipAmount:
               type: number
               nullable: true
@@ -2485,6 +2500,8 @@ components:
         status:
           type: string
           enum: [pending, approved, rejected, deactivated]
+        isConfiguredOwner:
+          type: boolean
         isActive:
           type: boolean
         contactPhone:

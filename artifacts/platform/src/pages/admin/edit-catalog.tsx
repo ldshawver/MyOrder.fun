@@ -41,6 +41,7 @@ type CatalogProduct = {
   isLocalAlavont: boolean;
   sku: string | null;
   alavontInStock: boolean | null;
+  showCatalogueStockIndicator: boolean;
   displayName: string | null;
   displayCategory: string | null;
   displayDescription: string | null;
@@ -131,7 +132,7 @@ function EditDialog({
     homiePrice: fieldVal(item?.homiePrice),
     imageUrl: fieldVal(item?.imageUrl),
     alavontImageUrl: fieldVal(item?.alavontImageUrl),
-    alavontInStock: item?.alavontInStock !== false,
+    showCatalogueStockIndicator: item?.showCatalogueStockIndicator !== false,
     luciferCruzImageUrl: fieldVal(item?.luciferCruzImageUrl),
     customerSafeName: fieldVal(item?.customerSafeName),
     customerSafeDescription: fieldVal(item?.customerSafeDescription),
@@ -326,7 +327,7 @@ function EditDialog({
                 <span className="text-sm">Taxable at the transaction location</span>
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={Boolean(form.alavontInStock)} onChange={e => setForm(f => ({ ...f, alavontInStock: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <input type="checkbox" checked={Boolean(form.showCatalogueStockIndicator)} onChange={e => setForm(f => ({ ...f, showCatalogueStockIndicator: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
                 <span className="text-sm">Show catalogue stock indicator</span>
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
