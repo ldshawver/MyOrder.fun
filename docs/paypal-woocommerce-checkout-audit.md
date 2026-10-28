@@ -56,6 +56,46 @@ for this review.
    timeout/reconciliation, partial Woo/CJ line items, and provider webhook
    behavior in a Woo sandbox first.
 
+## Required paid Woo/CJ handoff contract
+
+The current `createWooOrder` helper is not safe to wire into capture as-is. It
+posts a `processing` order without a durable dispatch record, paid-state
+semantics, customer shipping data, or timeout reconciliation. The focused
+implementation should use this contract:
+
+- MyOrder remains merchant of record and is the only customer checkout. A Woo
+  order is created only after MyOrder has durably finalized payment, and only
+  for Woo/CJ lines. It must never redirect the customer to Woo or invoke a Woo
+  payment gateway.
+- Persist a tenant/order-scoped fulfillment outbox row before the network call,
+  with a unique immutable MyOrder order identity, payload fingerprint, attempt
+  state, and eventual Woo order ID. Retries reuse that row. An ambiguous timeout
+  is reconciled by the immutable identity before any further POST; it is never
+  treated as permission to create a second Woo order.
+- Create the Woo order with `set_paid: true`, an explicit external payment
+  method/title such as `myorder` / `Paid in MyOrder`, and a non-secret immutable
+  MyOrder payment reference. `set_paid` records that payment was collected
+  elsewhere; it must not initiate another collection. Send the authoritative
+  shipping recipient/address and the exact Woo product/variation quantities.
+  Do not send credentials, provider tokens, or internal cost data as metadata.
+- Store the immutable identity in a dedicated Woo metadata key and enforce one
+  local handoff per MyOrder order. Before retrying an unconfirmed POST, query
+  Woo for that identity and attach the existing order if present. A conflicting
+  payload or multiple matches is a manual-reconciliation failure, not a retry.
+- Accept signed, tenant-scoped Woo webhooks only for fulfillment/status and
+  tracking changes. Deduplicate by provider event/delivery identity and reject
+  regressions. Woo/CJ fulfillment updates must not mark MyOrder payment paid,
+  create/capture PayPal orders, or alter non-Woo pickup/courier lines.
+- Refund authority remains in MyOrder and its original tender records. A Woo
+  refund or cancellation event may stop/reconcile fulfillment, but must not
+  issue a second customer refund automatically. Partial fulfillment and refund
+  quantities require explicit line-level mapping and idempotency.
+
+The Woo status should advance to the state required by the CJ sandbox only
+after the paid handoff is accepted. That exact status/plugin trigger is an
+external decision that must be confirmed in a disposable Woo/CJ sandbox; do
+not assume every CJ connector consumes the generic `processing` state.
+
 ## Current gate
 
 **Production payment configuration is not proposed.** Sandbox credentials,
