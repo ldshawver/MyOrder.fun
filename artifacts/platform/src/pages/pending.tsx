@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useClerk } from "@clerk/react";
+import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 import { useBrand } from "@/contexts/BrandContext";
 
@@ -11,10 +12,62 @@ interface PendingPageProps {
 
 export default function PendingPage({ status = "pending", userEmail, onCheckStatus }: PendingPageProps) {
   const { signOut } = useClerk();
+  const { getToken } = useAuth();
   const { branding } = useBrand();
   const isRejected = status === "rejected";
   const [isChecking, setIsChecking] = useState(false);
   const [checkResult, setCheckResult] = useState<"still_pending" | "error" | null>(null);
+  const [recoveryRequest, setRecoveryRequest] = useState(() => {
+    try {
+      const value = JSON.parse(sessionStorage.getItem("myorder.pending-access-request") ?? "null") as { name?: string; email?: string; phone?: string; message?: string } | null;
+      return value?.name && value.email ? value : null;
+    } catch { return null; }
+  });
+  const [recoveryFile, setRecoveryFile] = useState<File | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryMessage, setRecoveryMessage] = useState("");
+
+  async function resumeRegistration() {
+    if (!recoveryRequest || recoveryBusy) return;
+    setRecoveryBusy(true);
+    setRecoveryMessage("");
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Your sign-in session expired. Sign in again to finish setup.");
+      let imageId: string | null = null;
+      const me = await fetch(`${import.meta.env.BASE_URL}api/users/me`, { headers: { Authorization: `Bearer ${token}` } });
+      if (me.ok) {
+        const user = await me.json() as { avatarUrl?: string };
+        imageId = user.avatarUrl?.match(/^\/api\/profile-images\/([0-9a-f-]{36})$/i)?.[1] ?? null;
+      }
+      if (!imageId) {
+        if (!recoveryFile) throw new Error("Choose your profile picture again to finish registration.");
+        const form = new FormData();
+        form.set("email", recoveryRequest.email!);
+        form.set("file", recoveryFile);
+        const uploaded = await fetch(`${import.meta.env.BASE_URL}api/profile-images`, { method: "POST", body: form });
+        const result = await uploaded.json().catch(() => ({}));
+        if (!uploaded.ok || typeof result.uploadId !== "string") throw new Error(result.error ?? "Profile picture upload failed.");
+        imageId = result.uploadId;
+      }
+      const response = await fetch(`${import.meta.env.BASE_URL}api/onboarding/request`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyName: "Individual", contactName: recoveryRequest.name, contactEmail: recoveryRequest.email,
+          contactPhone: recoveryRequest.phone || undefined, description: recoveryRequest.message || undefined,
+          businessType: "customer", profileImageUploadId: imageId,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error ?? "Registration setup could not be completed.");
+      sessionStorage.removeItem("myorder.pending-access-request");
+      setRecoveryRequest(null);
+      setRecoveryMessage("Registration setup is complete. Your account remains pending approval.");
+    } catch (err) {
+      setRecoveryMessage(err instanceof Error ? err.message : "Registration setup could not be completed.");
+    } finally { setRecoveryBusy(false); }
+  }
 
   async function handleCheckStatus() {
     if (!onCheckStatus || isChecking) return;
@@ -180,6 +233,15 @@ export default function PendingPage({ status = "pending", userEmail, onCheckStat
                   Unable to check — please try again
                 </p>
               )}
+            </div>
+          )}
+          {!isRejected && recoveryRequest && (
+            <div className="flex flex-col gap-3 border-t border-red-950/40 pt-4 text-left">
+              <p className="text-xs leading-relaxed text-muted-foreground">Finish the access request interrupted during registration. If your profile picture was not saved, choose it again.</p>
+              <label className="text-xs text-muted-foreground" htmlFor="recovery-profile-image">Profile picture if requested</label>
+              <input id="recovery-profile-image" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setRecoveryFile(event.target.files?.[0] ?? null)} className="text-xs text-muted-foreground file:mr-2 file:rounded file:border-0 file:bg-[#8b0000] file:px-2 file:py-1 file:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#dc143c]" />
+              <Button type="button" size="sm" onClick={() => void resumeRegistration()} disabled={recoveryBusy} className="bg-[#8b0000] text-white hover:bg-[#a00020] focus-visible:ring-[#dc143c]">{recoveryBusy ? "Finishing…" : "Finish registration setup"}</Button>
+              {recoveryMessage && <p role="status" aria-live="polite" className="text-xs text-muted-foreground">{recoveryMessage}</p>}
             </div>
           )}
         </div>

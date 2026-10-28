@@ -47,6 +47,7 @@ export default function Account() {
   const [lastName, setLastName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
+  const [profileImageUploadId, setProfileImageUploadId] = useState<string | null>(null);
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(DEFAULT_NOTIFICATION_PREFERENCES);
   const [saving, setSaving] = useState(false);
   const [repairingPush, setRepairingPush] = useState(false);
@@ -59,6 +60,7 @@ export default function Account() {
       setLastName(user.lastName ?? "");
       setContactPhone(user.contactPhone ?? "");
       setAvatarUrl(user.avatarUrl ?? "");
+      setProfileImageUploadId(null);
       const prefs = normalizeNotificationPreferences(user.notificationPreferences);
       setNotificationPreferences(prefs);
       localStorage.setItem("notification_preferences", JSON.stringify(prefs));
@@ -89,7 +91,7 @@ export default function Account() {
     firstName !== (user.firstName ?? "") ||
     lastName !== (user.lastName ?? "") ||
     contactPhone !== (user.contactPhone ?? "") ||
-    avatarUrl !== (user.avatarUrl ?? "");
+    avatarUrl !== (user.avatarUrl ?? "") || profileImageUploadId !== null;
 
   async function save() {
     setSaving(true);
@@ -103,7 +105,7 @@ export default function Account() {
           firstName: firstName.trim() || null,
           lastName: lastName.trim() || null,
           contactPhone: contactPhone.trim() || null,
-          avatarUrl: avatarUrl.trim() || null,
+          ...(profileImageUploadId ? { profileImageUploadId } : {}),
         }),
       });
       if (!res.ok) {
@@ -111,6 +113,7 @@ export default function Account() {
         throw new Error(body?.error ?? "Failed to save");
       }
       await refetch();
+      setProfileImageUploadId(null);
       setMsg({ kind: "ok", text: "Profile saved." });
     } catch (e) {
       setMsg({ kind: "err", text: e instanceof Error ? e.message : "Failed to save" });
@@ -124,26 +127,34 @@ export default function Account() {
     setLastName(user?.lastName ?? "");
     setContactPhone(user?.contactPhone ?? "");
     setAvatarUrl(user?.avatarUrl ?? "");
+    setProfileImageUploadId(null);
     setMsg(null);
   }
 
-  function uploadAvatar(file: File | null) {
+  async function uploadAvatar(file: File | null) {
     if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setMsg({ kind: "err", text: "Choose an image file." });
+    if (file.size > 3_000_000) {
+      setMsg({ kind: "err", text: "Choose a PNG, JPEG, or WebP image up to 3 MB." });
       return;
     }
-    if (file.size > 1_000_000) {
-      setMsg({ kind: "err", text: "Avatar image must be under 1 MB." });
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      setAvatarUrl(String(reader.result ?? ""));
+    try {
+      const token = await getToken();
+      const formData = new FormData();
+      formData.set("file", file);
+      formData.set("email", user?.email ?? "");
+      const response = await fetch(`${import.meta.env.BASE_URL}api/profile-images`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || typeof body.uploadId !== "string") throw new Error(body.error ?? "Profile picture upload failed.");
+      setProfileImageUploadId(body.uploadId);
+      setAvatarUrl(`/api/profile-images/${body.uploadId}`);
       setMsg(null);
-    };
-    reader.onerror = () => setMsg({ kind: "err", text: "Could not read avatar image." });
-    reader.readAsDataURL(file);
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : "Profile picture upload failed." });
+    }
   }
 
   async function saveNotificationPreferences(next: NotificationPreferences) {
@@ -200,21 +211,13 @@ export default function Account() {
                 <AvatarFallback className="rounded-sm font-mono text-sm">{initials}</AvatarFallback>
               </Avatar>
               <div className="flex-1">
-                <Label htmlFor="avatar-url" className="text-[10px] font-mono font-medium text-muted-foreground mb-1 uppercase tracking-widest block">Avatar URL</Label>
-                <Input
-                  id="avatar-url"
-                  value={avatarUrl}
-                  onChange={(e) => setAvatarUrl(e.target.value)}
-                  placeholder="https://…/avatar.png"
-                  className="rounded-sm font-mono text-xs h-8"
-                  data-testid="input-avatar-url"
-                />
+                <span className="text-[10px] font-mono font-medium text-muted-foreground mb-1 uppercase tracking-widest block">Profile picture</span>
                 <label className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-primary hover:underline cursor-pointer mt-2">
                   <Upload size={12} />
                   Upload image
                   <input
                     type="file"
-                    accept="image/png,image/jpeg,image/gif,image/webp"
+                    accept="image/png,image/jpeg,image/webp"
                     className="sr-only"
                     onChange={(e) => uploadAvatar(e.target.files?.[0] ?? null)}
                     data-testid="input-avatar-file"

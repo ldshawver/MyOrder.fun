@@ -8,13 +8,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Mail, CheckCircle2, XCircle, ShieldAlert } from "lucide-react";
-import { assignableRolesForActor, canAssignRoleFromUserManagement } from "@/lib/userManagementPolicy";
+import { Search, Mail, CheckCircle2, XCircle, ShieldAlert, Upload } from "lucide-react";
+import { assignableRolesForActor, canAssignRoleFromUserManagement, canEditMemberProfileFromUserManagement } from "@/lib/userManagementPolicy";
 import { approvalMutationFailureMessage, ApprovalMutationError, isApprovalReverificationHint, requestUserApproval } from "@/lib/userApprovalMutation";
 
 type StatusFilter = "all" | "pending" | "approved" | "rejected" | "deactivated";
 type PageTab = "users" | "waitlist";
 type RoleFilter = "all" | "global_admin" | "admin" | "supervisor" | "csr" | "user";
+type ProfileTarget = { id: number; email: string; firstName?: string | null; lastName?: string | null; contactPhone?: string | null };
 
 const ROLE_OPTIONS: { value: SetUserApprovalBodyRole; label: string; globalOnly?: boolean }[] = [
   { value: "user", label: "Customer/User" },
@@ -358,6 +359,12 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
 
 export default function AdminUsers() {
   const queryClient = useQueryClient();
+  const { getToken } = useAuth();
+  const [profileTarget, setProfileTarget] = useState<ProfileTarget | null>(null);
+  const [profileDraft, setProfileDraft] = useState({ firstName: "", lastName: "", contactPhone: "" });
+  const [profileFile, setProfileFile] = useState<File | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState("");
   const [approvalFeedback, setApprovalFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const approvalRequestActive = useRef(false);
   const [pageTab, setPageTab] = useState<PageTab>("users");
@@ -439,6 +446,40 @@ export default function AdminUsers() {
     setApprovalFeedback(null);
     approvalMutation.mutate({ id, data: { approve: true, role } });
   };
+
+  async function saveMemberProfile() {
+    if (!profileTarget || profileSaving) return;
+    setProfileSaving(true);
+    setProfileMessage("");
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Your session expired. Sign in again.");
+      let profileImageUploadId: string | undefined;
+      if (profileFile) {
+        if (profileFile.size > 3_000_000) throw new Error("Choose an image up to 3 MB.");
+        const formData = new FormData();
+        formData.set("file", profileFile);
+        formData.set("email", profileTarget.email);
+        const upload = await fetch(`${import.meta.env.BASE_URL}api/profile-images`, {
+          method: "POST", headers: { Authorization: `Bearer ${token}` }, body: formData,
+        });
+        const uploaded = await upload.json().catch(() => ({}));
+        if (!upload.ok || typeof uploaded.uploadId !== "string") throw new Error(uploaded.error ?? "Profile picture upload failed.");
+        profileImageUploadId = uploaded.uploadId;
+      }
+      const response = await fetch(`${import.meta.env.BASE_URL}api/admin/users/${profileTarget.id}/profile`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ ...profileDraft, ...(profileImageUploadId ? { profileImageUploadId } : {}) }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error ?? "Could not update member profile.");
+      await queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
+      setProfileTarget(null);
+    } catch (err) {
+      setProfileMessage(err instanceof Error ? err.message : "Could not update member profile.");
+    } finally { setProfileSaving(false); }
+  }
 
   const allUsers = data?.users ?? [];
   const assignableRoleOptions = ROLE_OPTIONS.filter((option) =>
@@ -721,6 +762,14 @@ export default function AdminUsers() {
                                 Revoke
                               </Button>
                             )}
+                            {currentUser?.id !== user.id && canEditMemberProfileFromUserManagement(currentUser?.role, user.role) && (
+                              <Button size="sm" variant="outline" className="h-7 text-[10px] uppercase tracking-widest rounded-sm" data-testid={`btn-edit-profile-${user.id}`} onClick={() => {
+                                setProfileTarget(user);
+                                setProfileDraft({ firstName: user.firstName ?? "", lastName: user.lastName ?? "", contactPhone: user.contactPhone ?? "" });
+                                setProfileFile(null);
+                                setProfileMessage("");
+                              }}>Edit profile</Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -731,6 +780,25 @@ export default function AdminUsers() {
             </Table>
           </div>
         </>
+      )}
+      {profileTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileTarget(null); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="member-profile-title" className="w-full max-w-md space-y-4 rounded-md border border-border bg-background p-5 shadow-xl">
+            <div>
+              <h2 id="member-profile-title" className="text-lg font-semibold">Edit member profile</h2>
+              <p className="text-xs text-muted-foreground">{profileTarget.email}. Role, approval, tenant, and organization access are managed elsewhere.</p>
+            </div>
+            <label className="block space-y-1 text-sm">First name<Input value={profileDraft.firstName} onChange={(event) => setProfileDraft((v) => ({ ...v, firstName: event.target.value }))} /></label>
+            <label className="block space-y-1 text-sm">Last name<Input value={profileDraft.lastName} onChange={(event) => setProfileDraft((v) => ({ ...v, lastName: event.target.value }))} /></label>
+            <label className="block space-y-1 text-sm">Phone<Input value={profileDraft.contactPhone} onChange={(event) => setProfileDraft((v) => ({ ...v, contactPhone: event.target.value }))} /></label>
+            <label className="flex cursor-pointer items-center gap-2 text-sm"><Upload size={16} />
+              {profileFile ? profileFile.name : "Choose profile picture (optional)"}
+              <input type="file" className="sr-only" accept="image/png,image/jpeg,image/webp" onChange={(event) => setProfileFile(event.target.files?.[0] ?? null)} aria-label="Choose profile picture" />
+            </label>
+            {profileMessage && <p role="alert" className="text-sm text-destructive">{profileMessage}</p>}
+            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setProfileTarget(null)} disabled={profileSaving}>Cancel</Button><Button onClick={() => void saveMemberProfile()} disabled={profileSaving}>{profileSaving ? "Saving…" : "Save profile"}</Button></div>
+          </section>
+        </div>
       )}
     </div>
   );

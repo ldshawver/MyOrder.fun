@@ -77,6 +77,7 @@ const onboardingLimiter = rateLimit({
 app.use("/api", apiReadLimiter, apiWriteLimiter);
 app.use("/api/admin/mfa", mfaLimiter);
 app.use("/api/onboarding/request", onboardingLimiter);
+app.use("/api/profile-images", onboardingLimiter);
 
 // ── Security headers + deploy SHA ───────────────────────────────────────────
 const DEPLOY_SHA = process.env["DEPLOY_SHA"] ?? "unknown";

@@ -2,10 +2,19 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { repairPushNotifications } from "../pwaPushRepair";
 
+const storage = new Map<string, string>();
+const mockLocalStorage = {
+  getItem: (key: string) => storage.get(key) ?? null,
+  setItem: (key: string, value: string) => { storage.set(key, String(value)); },
+  removeItem: (key: string) => { storage.delete(key); },
+  clear: () => { storage.clear(); },
+};
+
 describe("repairPushNotifications", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    localStorage.clear();
+    storage.clear();
+    vi.stubGlobal("localStorage", mockLocalStorage);
   });
 
   it("subscribes and posts to backend when permission is granted but subscription is missing", async () => {

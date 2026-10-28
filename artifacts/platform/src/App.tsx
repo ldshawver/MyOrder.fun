@@ -3,7 +3,7 @@ import { BrandProvider, useBrand } from "@/contexts/BrandContext";
 import { CartProvider } from "@/contexts/CartContext";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
-import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser, useAuth } from "@clerk/react";
+import { ClerkProvider, SignIn, Show, useClerk, useUser, useAuth } from "@clerk/react";
 import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -18,6 +18,7 @@ import { getAccountApprovalScreenStatus } from "@/lib/accountApprovalError";
 
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
+import { luciferAuthAppearance } from "@/lib/luciferAuthAppearance";
 import Home from "@/pages/home";
 import PublicCatalog from "@/pages/public-catalog";
 import WaitlistPage from "@/pages/waitlist";
@@ -84,16 +85,16 @@ if (!clerkPubKey) {
 function AuthBrandWrapper({ children, registration = false }: { children: ReactNode; registration?: boolean }) {
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#090909] px-4 py-10 text-white sm:px-6 sm:py-14">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(176,132,57,0.14),transparent_55%)]" />
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#b89456] to-transparent" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(139,0,0,0.2),transparent_55%)]" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#8b0000] to-transparent" />
       <div className="relative mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-md flex-col items-center justify-center gap-7 sm:min-h-[calc(100vh-7rem)]">
         <img src="/lc-logo.webp" alt="Lucifer Cruz" className="h-auto w-48 object-contain sm:w-56" />
         <div className="text-center">
-          <div className="mx-auto mb-5 h-px w-16 bg-[#b89456]" />
+          <div className="mx-auto mb-5 h-px w-16 bg-[#8b0000]" />
           <h1 className="font-serif text-3xl tracking-wide text-white sm:text-4xl">
             {registration ? "Create your account" : "Sign into your account"}
           </h1>
-          <p className="mt-3 text-sm tracking-[0.2em] text-[#d5b777]">18+ Adult Boutique</p>
+          <p className="mt-3 text-sm tracking-[0.2em] text-[#c0c0c0]">18+ Adult Boutique</p>
         </div>
         <div className="w-full [&_.cl-rootBox]:mx-auto [&_.cl-rootBox]:w-full [&_.cl-cardBox]:w-full">
           {children}
@@ -101,12 +102,12 @@ function AuthBrandWrapper({ children, registration = false }: { children: ReactN
         {!registration && (
           <a
             href={`${basePath}/sign-up`}
-            className="flex min-h-12 w-full items-center justify-center rounded-md border border-[#c7a664] bg-[#b89456] px-6 py-3 text-sm font-semibold tracking-wide text-[#17120a] transition-colors hover:bg-[#d5b777] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d5b777]"
+            className="flex min-h-12 w-full items-center justify-center rounded-md border border-[#a00020] bg-[#8b0000] px-6 py-3 text-sm font-semibold tracking-wide text-white transition-colors hover:bg-[#a00020] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#dc143c]"
           >
             Create an Account
           </a>
         )}
-        <a href="https://lucifercruz.com" target="_blank" rel="noopener noreferrer" className="text-sm text-[#e5d4b2] underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d5b777]">
+        <a href="https://lucifercruz.com" target="_blank" rel="noopener noreferrer" className="text-sm text-[#c0c0c0] underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#dc143c]">
           Visit Lucifer Cruz
         </a>
         <p className="max-w-sm text-center text-xs leading-relaxed text-[#aaa49b]">
@@ -121,7 +122,7 @@ function SignInPage() {
   return (
     <AuthBrandWrapper>
       <SignIn
-        appearance={{ elements: { headerTitle: { display: "none" } } }}
+        appearance={luciferAuthAppearance}
         routing="path"
         path={`${basePath}/sign-in`}
         signUpUrl={`${basePath}/sign-up`}
@@ -132,11 +133,9 @@ function SignInPage() {
 }
 
 function SignUpPage() {
-  return (
-    <AuthBrandWrapper registration>
-      <SignUp appearance={{ elements: { headerTitle: { display: "none" } } }} routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} />
-    </AuthBrandWrapper>
-  );
+  // All member registrations use the guided, email-verified flow that also
+  // requires a validated profile photo and creates the access request.
+  return <WaitlistPage />;
 }
 
 function ClerkQueryClientCacheInvalidator() {

@@ -11,3 +11,11 @@ export function assignableRolesForActor(role?: string | null): readonly string[]
 export function canAssignRoleFromUserManagement(actorRole: string | null | undefined, targetRole: string): boolean {
   return assignableRolesForActor(actorRole).includes(targetRole);
 }
+
+export function canEditMemberProfileFromUserManagement(actorRole: string | null | undefined, targetRole: string): boolean {
+  const actor = normalizeApplicationRole(actorRole);
+  const target = normalizeApplicationRole(targetRole);
+  if (actor === "global_admin") return true;
+  if (actor === "admin") return target !== "global_admin";
+  return actor === "supervisor" && (target === "user" || target === "csr");
+}

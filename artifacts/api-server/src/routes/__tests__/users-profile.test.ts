@@ -3,18 +3,24 @@
  *
  * Verifies:
  *  - GET /api/users/me returns the current user record (with avatarUrl).
- *  - PATCH /api/users/me updates allowed fields (firstName/lastName/contactPhone/avatarUrl).
+ *  - PATCH /api/users/me updates permitted fields and email-bound image uploads.
  *  - PATCH mirrors name + phone to Clerk via clerkClient.users.updateUser.
- *  - PATCH mirrors avatar to Clerk via clerkClient.users.updateUserProfileImage.
+ *  - PATCH rejects direct URLs and image data supplied by the browser.
  *  - PATCH rejects invalid phone with HTTP 400 (JSON error body).
- *  - PATCH ignores unknown fields (does not 400, does not persist them).
+ *  - PATCH rejects protected and unknown fields.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import express from "express";
 import supertest from "supertest";
 
 let mockUserId: string | null = "user-clerk-id";
+const priorOwnerId = process.env.MYORDER_OWNER_CLERK_ID;
+
+vi.mock("../../lib/profileImageStore", () => ({
+  assertTemporaryProfileImage: vi.fn(async () => undefined),
+  finalizeProfileImage: vi.fn(async () => undefined),
+}));
 
 vi.mock("@clerk/express", () => {
   const updateUser = vi.fn(async () => ({}));
@@ -30,10 +36,11 @@ vi.mock("@clerk/express", () => {
 
 const dbState = {
   users: [] as Array<Record<string, unknown>>,
+  audits: [] as Array<Record<string, unknown>>,
 };
 
 vi.mock("@workspace/db", () => {
-  const usersTable = { id: "id", clerkId: "clerkId" };
+  const usersTable = { id: "id", clerkId: "clerkId", role: "role", tenantId: "tenantId", email: "email", status: "status", avatarUrl: "avatarUrl" };
   const notificationsTable = {};
   const auditLogsTable = {};
 
@@ -76,15 +83,15 @@ vi.mock("@workspace/db", () => {
     return chain;
   });
 
-  const insert = vi.fn(() => {
+  const insert = vi.fn((table?: unknown) => {
     const chain: Record<string, unknown> = {};
-    chain.values = vi.fn(async () => {});
+    chain.values = vi.fn(async (row?: Record<string, unknown>) => { if (table === auditLogsTable && row) dbState.audits.push(row); });
     chain.returning = vi.fn(async () => []);
     return chain;
   });
 
   return {
-    db: { execute: vi.fn(() => Promise.resolve()), select, update, insert, delete: vi.fn() },
+    db: { execute: vi.fn(() => Promise.resolve()), select, update, insert, transaction: vi.fn(async (work: (tx: unknown) => unknown) => work({ update, insert })), delete: vi.fn() },
     usersTable,
     notificationsTable,
     auditLogsTable,
@@ -118,6 +125,7 @@ vi.mock("node:dns/promises", () => ({
 }));
 
 import { clerkClient } from "@clerk/express";
+import { assertTemporaryProfileImage, finalizeProfileImage } from "../../lib/profileImageStore";
 import usersRouter from "../users";
 
 function buildApp() {
@@ -142,6 +150,8 @@ function seedUser(overrides: Record<string, unknown> = {}) {
     lastName: "Name",
     role: "user",
     status: "approved",
+    approvedByClerkId: "owner-clerk-id",
+    approvedAt: new Date("2026-01-01T00:00:00Z"),
     isActive: true,
     contactPhone: null,
     avatarUrl: null,
@@ -153,8 +163,10 @@ function seedUser(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  process.env.MYORDER_OWNER_CLERK_ID = "owner-clerk-id";
   vi.clearAllMocks();
   dbState.users = [];
+  dbState.audits = [];
   mockUserId = "user-clerk-id";
   // Default fetch mock for avatar sync — returns a tiny PNG.
   const png = new Uint8Array([137, 80, 78, 71]);
@@ -175,11 +187,16 @@ beforeEach(() => {
   );
 });
 
+afterAll(() => {
+  if (priorOwnerId === undefined) delete process.env.MYORDER_OWNER_CLERK_ID;
+  else process.env.MYORDER_OWNER_CLERK_ID = priorOwnerId;
+});
+
 describe("GET /api/users/me", () => {
   it("returns the current user including avatarUrl", async () => {
     seedUser({ avatarUrl: "https://cdn.example.com/me.png", contactPhone: "+15551112222" });
     const res = await supertest(buildApp()).get("/api/users/me");
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.email).toBe("user@example.com");
     expect(res.body.firstName).toBe("Old");
     expect(res.body.avatarUrl).toBe("https://cdn.example.com/me.png");
@@ -217,21 +234,17 @@ describe("PATCH /api/users/me", () => {
     );
   });
 
-  it("mirrors avatar changes to Clerk via updateUserProfileImage", async () => {
+  it("attaches a validated server upload without accepting image bytes or URLs", async () => {
     seedUser();
+    const imageId = "f2862f21-4f21-48f2-8cad-79bde3f2c2c3";
     const res = await supertest(buildApp())
       .patch("/api/users/me")
-      .send({ avatarUrl: "https://cdn.example.com/new.png" });
+      .send({ profileImageUploadId: imageId });
     expect(res.status).toBe(200);
-    expect(res.body.avatarUrl).toBe("https://cdn.example.com/new.png");
-    expect(dbState.users[0].avatarUrl).toBe("https://cdn.example.com/new.png");
-
-    const fetchUrl = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0];
-    expect(String(fetchUrl)).toBe("https://cdn.example.com/new.png");
-    expect(clerkClient.users.updateUserProfileImage).toHaveBeenCalledWith(
-      "user-clerk-id",
-      expect.objectContaining({ file: expect.anything() }),
-    );
+    expect(res.body.avatarUrl).toBe(`/api/profile-images/${imageId}`);
+    expect(assertTemporaryProfileImage).toHaveBeenCalledWith(imageId, "user@example.com");
+    expect(finalizeProfileImage).toHaveBeenCalledWith(imageId);
+    expect(clerkClient.users.updateUserProfileImage).not.toHaveBeenCalled();
   });
 
   it("does not call updateUserProfileImage when avatar is not in the body", async () => {
@@ -256,7 +269,7 @@ describe("PATCH /api/users/me", () => {
     expect(dbState.users[0].firstName).toBe("Old");
   });
 
-  it("ignores unknown fields (does not 400, does not persist them)", async () => {
+  it("rejects attempts to modify role, approval, active state, and identity", async () => {
     seedUser();
     const res = await supertest(buildApp())
       .patch("/api/users/me")
@@ -267,9 +280,8 @@ describe("PATCH /api/users/me", () => {
         isActive: false,
         clerkId: "hacker-clerk-id",
       });
-    expect(res.status).toBe(200);
-    // Allowed field saved
-    expect(dbState.users[0].firstName).toBe("Updated");
+    expect(res.status).toBe(400);
+    expect(dbState.users[0].firstName).toBe("Old");
     // Unknown / forbidden fields untouched in the DB
     expect(dbState.users[0].role).toBe("user");
     expect(dbState.users[0].status).toBe("approved");
@@ -330,42 +342,12 @@ describe("PATCH /api/users/me", () => {
     );
   });
 
-  it("SSRF guard: blocks avatar URLs that resolve to private IPs", async () => {
+  it("rejects direct avatar URLs and data URIs", async () => {
     seedUser();
     const res = await supertest(buildApp())
       .patch("/api/users/me")
-      .send({ avatarUrl: "https://private.example.com/me.png" });
-    // DB write still succeeds (URL was validated as syntactically correct).
-    expect(res.status).toBe(200);
-    expect(dbState.users[0].avatarUrl).toBe("https://private.example.com/me.png");
-    // But Clerk profile image is NOT updated and the URL is NOT fetched.
-    expect(fetch).not.toHaveBeenCalled();
-    expect(clerkClient.users.updateUserProfileImage).not.toHaveBeenCalled();
-  });
-
-  it("SSRF guard: blocks the cloud metadata endpoint (169.254.169.254)", async () => {
-    seedUser();
-    await supertest(buildApp())
-      .patch("/api/users/me")
-      .send({ avatarUrl: "http://metadata.example.com/latest/meta-data/" });
-    expect(fetch).not.toHaveBeenCalled();
-    expect(clerkClient.users.updateUserProfileImage).not.toHaveBeenCalled();
-  });
-
-  it("SSRF guard: blocks IP-literal localhost URLs", async () => {
-    seedUser();
-    await supertest(buildApp())
-      .patch("/api/users/me")
-      .send({ avatarUrl: "http://127.0.0.1/avatar.png" });
-    expect(fetch).not.toHaveBeenCalled();
-    expect(clerkClient.users.updateUserProfileImage).not.toHaveBeenCalled();
-  });
-
-  it("SSRF guard: blocks non-default ports", async () => {
-    seedUser();
-    await supertest(buildApp())
-      .patch("/api/users/me")
-      .send({ avatarUrl: "https://cdn.example.com:9999/me.png" });
+      .send({ avatarUrl: "data:image/png;base64,AAAA" });
+    expect(res.status).toBe(400);
     expect(fetch).not.toHaveBeenCalled();
     expect(clerkClient.users.updateUserProfileImage).not.toHaveBeenCalled();
   });
@@ -376,5 +358,43 @@ describe("PATCH /api/users/me", () => {
     expect(res.status).toBe(200);
     expect(clerkClient.users.updateUser).not.toHaveBeenCalled();
     expect(clerkClient.users.updateUserProfileImage).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/admin/users/:id/profile", () => {
+  function seedManagerAndTarget(targetTenant = 5, targetRole = "user") {
+    seedUser({ role: "admin", tenantId: 5 });
+    seedUser({ id: 2, clerkId: "member-clerk-id", email: "member@example.com", firstName: "Member", role: targetRole, tenantId: targetTenant });
+  }
+
+  it("allows a same-tenant admin to edit permitted fields, stores the audit, and supports photo upload", async () => {
+    seedManagerAndTarget();
+    const imageId = "f2862f21-4f21-48f2-8cad-79bde3f2c2c3";
+    const res = await supertest(buildApp()).patch("/api/admin/users/2/profile").send({
+      firstName: "Updated Member", contactPhone: "+15551234567", profileImageUploadId: imageId,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(dbState.users[1]).toMatchObject({ firstName: "Updated Member", contactPhone: "+15551234567", avatarUrl: `/api/profile-images/${imageId}` });
+    expect(assertTemporaryProfileImage).toHaveBeenCalledWith(imageId, "member@example.com");
+    expect(finalizeProfileImage).toHaveBeenCalledWith(imageId);
+    expect(dbState.audits).toContainEqual(expect.objectContaining({ action: "UPDATE_MEMBER_PROFILE", tenantId: 5, resourceId: "2", metadata: { fields: ["firstName", "contactPhone", "avatarUrl"] } }));
+  });
+
+  it("denies cross-tenant profile edits", async () => {
+    seedManagerAndTarget(9);
+    const res = await supertest(buildApp()).patch("/api/admin/users/2/profile").send({ firstName: "Nope" });
+    expect(res.status).toBe(403);
+    expect(dbState.users[1].firstName).toBe("Member");
+    expect(dbState.audits).toHaveLength(0);
+  });
+
+  it("rejects protected membership and role fields and refuses edits of equal or higher roles", async () => {
+    seedManagerAndTarget();
+    const forged = await supertest(buildApp()).patch("/api/admin/users/2/profile").send({ firstName: "Nope", role: "admin", status: "approved", tenantId: 99, organizationId: 99 });
+    expect(forged.status).toBe(400);
+    expect(dbState.users[1].firstName).toBe("Member");
+    seedUser({ id: 3, clerkId: "peer-admin", email: "peer@example.com", role: "admin", tenantId: 5 });
+    const peer = await supertest(buildApp()).patch("/api/admin/users/3/profile").send({ firstName: "Nope" });
+    expect(peer.status).toBe(403);
   });
 });
