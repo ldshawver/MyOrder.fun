@@ -613,9 +613,8 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings.taxRate, taxMode: "added", taxJurisdiction: taxSettings.taxJurisdiction, taxConfigurationId: taxSettings.taxConfigurationId, tender, cashDiscount });
     const merchandiseCents = dollarsToCents(financial.taxableSubtotal) + dollarsToCents(financial.nonTaxableSubtotal);
     let deliveryFeeCents = 0;
-    if (parsed.data.deliveryMethod === "csr_delivery") {
-      deliveryFeeCents = 600 + Number((BigInt(merchandiseCents) * 3n + 50n) / 100n);
-    } else if (parsed.data.deliveryMethod === "uber_direct") {
+    let deliveryEta: string | null = null;
+    if (parsed.data.deliveryMethod === "csr_delivery" || parsed.data.deliveryMethod === "uber_direct") {
       const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(
         eq(uberDeliveryQuotesTable.id, parsed.data.deliveryQuoteId ?? ""),
         eq(uberDeliveryQuotesTable.tenantId, tenantId),
@@ -625,6 +624,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       )).limit(1);
       if (!quote || quote.cartFingerprint !== checkoutFingerprint(lines)) { res.status(422).json({ error: "DELIVERY_QUOTE_UNAVAILABLE" }); return; }
       deliveryFeeCents = quote.feeCents;
+      deliveryEta = quote.dropoffEta.toISOString();
     }
     const tipCents = dollarsToCents(normalizeCheckoutTip(parsed.data.tipAmount));
     const taxCents = dollarsToCents(financial.taxCollected);
@@ -636,7 +636,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     if (tender === "customer_credit" && dueCents !== 0) { res.status(422).json({ error: "CUSTOMER_CREDIT_INCOMPLETE" }); return; }
     const amount = (cents: number) => Number(centsToDollars(cents));
     const checkoutTaxQuoteToken = createCheckoutTaxQuoteToken({ tenantId, userId: actor.id, cartFingerprint: checkoutFingerprint(lines), locationId: targetLocationId, taxConfigurationId: taxSettings.taxConfigurationId, taxRate: taxSettings.taxRate, taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase), taxCents });
-    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
+    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
   } catch (error) {
     res.status(error instanceof CustomerCreditError ? error.status : 422).json({ error: error instanceof CustomerCreditError ? error.code : "CHECKOUT_QUOTE_UNAVAILABLE" });
   }
@@ -701,7 +701,13 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
     }, uberConfig);
     const feeCents = Number(quote.fee);
     const expiresAt = quote.expires ? new Date(quote.expires) : null;
-    if (!quote.id || !Number.isSafeInteger(feeCents) || feeCents < 0 || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
+    const dropoffEta = quote.dropoff_eta ? new Date(quote.dropoff_eta) : null;
+    const durationSeconds = quote.duration == null ? null : Number(quote.duration);
+    const pickupDurationSeconds = quote.pickup_duration == null ? null : Number(quote.pickup_duration);
+    if (!quote.id || !Number.isSafeInteger(feeCents) || feeCents < 0 || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()
+      || !dropoffEta || Number.isNaN(dropoffEta.getTime()) || dropoffEta <= new Date()
+      || (durationSeconds != null && (!Number.isSafeInteger(durationSeconds) || durationSeconds < 0))
+      || (pickupDurationSeconds != null && (!Number.isSafeInteger(pickupDurationSeconds) || pickupDurationSeconds < 0))) {
       throw new UberDirectApiError(502, "Uber Direct returned an invalid delivery quote.", "invalid_quote_response");
     }
     // This opaque local ID is all the browser can return at order creation.
@@ -712,6 +718,7 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
       cartFingerprint: checkoutFingerprint(normalizedLines), pickupAddress: normalizedPickup,
       dropoffAddress: normalizedDropoff, manifestItems, feeCents,
       currency: String(quote.currency_type ?? "USD").toUpperCase(),
+      dropoffEta, durationSeconds, pickupDurationSeconds,
       providerCreatedAt: quote.created ? new Date(quote.created) : null, expiresAt,
     });
 
@@ -737,9 +744,9 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
       fee: feeCents / 100,
       feeCents,
       currency: String(quote.currency_type ?? "USD").toUpperCase(),
-      dropoffEta: quote.dropoff_eta ?? null,
-      duration: quote.duration ?? null,
-      pickupDuration: quote.pickup_duration ?? null,
+      dropoffEta: dropoffEta.toISOString(),
+      duration: durationSeconds,
+      pickupDuration: pickupDurationSeconds,
       expires: quote.expires ?? null,
       pickupAction: quote.pickup_action ?? getUberPickupAction(),
       manifestItems,
@@ -936,12 +943,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: "CSR personal delivery is only available within 2 miles" });
     return;
   }
-  // CSR personal delivery fee: $6 flat + 3% of sale total → goes to CSR as gratuity
-  const csrDeliveryFee = isCsrDelivery
-    ? Number(centsToDollars(600 + Number((BigInt(dollarsToCents(subtotal)) * 3n + 50n) / 100n)))
-    : 0;
   let trustedUberQuote: typeof uberDeliveryQuotesTable.$inferSelect | null = null;
-  if (explicitDeliveryMethod === "uber_direct") {
+  if (explicitDeliveryMethod === "uber_direct" || isCsrDelivery) {
     if (!clientDeliveryQuote?.quoteId || clientDeliveryQuote.provider !== "uber_direct" || !body.data.shippingAddress) {
       res.status(422).json({ error: "A current Uber delivery quote is required." });
       return;
@@ -960,15 +963,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     }
     trustedUberQuote = quote;
   } else if (clientDeliveryQuote) {
-    res.status(422).json({ error: "A delivery quote is only valid for Uber Courier delivery." });
+    res.status(422).json({ error: "A delivery quote is only valid for quoted delivery." });
     return;
   }
   const deliveryQuote = trustedUberQuote ? {
     provider: "uber_direct" as const, quoteId: trustedUberQuote.id,
     fee: trustedUberQuote.feeCents / 100, feeCents: trustedUberQuote.feeCents,
     currency: trustedUberQuote.currency, expires: trustedUberQuote.expiresAt.toISOString(),
+    dropoffEta: trustedUberQuote.dropoffEta.toISOString(), duration: trustedUberQuote.durationSeconds,
+    pickupDuration: trustedUberQuote.pickupDurationSeconds,
   } : null;
-  const deliveryFee = isCsrDelivery ? csrDeliveryFee : trustedUberQuote ? trustedUberQuote.feeCents / 100 : 0;
+  const deliveryFee = trustedUberQuote ? trustedUberQuote.feeCents / 100 : 0;
   let tipAmount: number;
   try {
     tipAmount = normalizeCheckoutTip(checkoutConfirmation?.tipAmount);
@@ -1037,7 +1042,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const normalizedCatalogIds = Array.from(new Set(normalizedLines.map(line => line.catalog_item_id)));
   const tenantCatalogRows = normalizedCatalogIds.length > 0
     ? await db
-      .select({ id: catalogItemsTable.id })
+      .select({ id: catalogItemsTable.id, commissionEligibility: catalogItemsTable.commissionEligibility })
       .from(catalogItemsTable)
       .where(and(
         eq(catalogItemsTable.tenantId, houseTenantId),
@@ -1048,6 +1053,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(404).json({ error: "One or more catalog items were not found for this tenant" });
     return;
   }
+  const commissionEligibilityByCatalogId = new Map(tenantCatalogRows.map(row => [row.id, row.commissionEligibility]));
 
   // Legacy assignedTechId/assignedShiftId mirror active CSR routing only.
   // Fallback/general-account orders must remain unassigned so they do not
@@ -1118,7 +1124,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
         orderType,
         deliveryQuoteId: deliveryQuote?.quoteId ?? null,
-        deliveryQuoteSnapshot: deliveryQuote ?? null,
+        deliveryQuoteSnapshot: deliveryQuote ? { ...deliveryQuote, fulfillment: isCsrDelivery ? "csr" : "uber_direct" } : null,
         deliveryFee: deliveryFee > 0 ? String(deliveryFee.toFixed(2)) : null,
         deliveryCurrency: isCsrDelivery ? "usd" : (deliveryQuote?.currency ?? null),
         notes: body.data.notes ?? null,
@@ -1184,6 +1190,14 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           totalBeforeTip: merchandiseTotal + deliveryFee,
           total: finalTotal,
         },
+        deliveryEarnings: deliveryQuote ? {
+          quotedFee: deliveryFee,
+          currency: deliveryQuote.currency,
+          fulfillment: isCsrDelivery ? "csr" : "uber_direct",
+          csrShare: isCsrDelivery ? 0.8 : 0,
+          houseShare: isCsrDelivery ? 0.2 : 0,
+          providerShare: isCsrDelivery ? 0 : 1,
+        } : null,
       };
 
       await tx.update(ordersTable).set({
@@ -1192,7 +1206,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         checkoutConversionSnapshot: checkoutSnapshotWithTip,
       }).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, createdOrder.id)));
 
-      if (trustedUberQuote) {
+      if (trustedUberQuote && !isCsrDelivery) {
         await tx.insert(uberDeliveryFulfillmentsTable).values({
           tenantId: houseTenantId,
           orderId: createdOrder.id,
@@ -1248,6 +1262,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           quantity: line.quantity,
           unitPrice: String(line.unit_price.toFixed(2)),
           totalPrice: String((line.unit_price * line.quantity).toFixed(2)),
+          commissionEligibilitySnapshot: commissionEligibilityByCatalogId.get(line.catalog_item_id) ?? "unclassified",
+          commissionGrossAmount: centsToDollars(lineTaxAllocations[lineIndex]!.grossCents),
+          commissionDiscountAmount: centsToDollars(lineTaxAllocations[lineIndex]!.discountCents),
           alavontName: line.receipt_alavont_name,
           luciferCruzName: line.merchant_name,
           receiptName: line.receipt_name ?? line.merchant_name,
@@ -1321,7 +1338,14 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           `);
       }
 
-      const finalizedTaxSnapshot = { ...checkoutTaxSnapshot, originalTenderAllocations, lineTaxAllocations };
+      const commissionLines = lineTaxAllocations.map(line => ({
+        orderItemId: line.orderItemId,
+        catalogItemId: line.catalogItemId,
+        eligibility: commissionEligibilityByCatalogId.get(line.catalogItemId) ?? "unclassified",
+        grossCents: line.grossCents,
+        discountCents: line.discountCents,
+      }));
+      const finalizedTaxSnapshot = { ...checkoutTaxSnapshot, originalTenderAllocations, lineTaxAllocations, commission: { schemaVersion: 1, lines: commissionLines } };
       await tx.update(ordersTable).set({ taxSnapshot: finalizedTaxSnapshot })
         .where(and(eq(ordersTable.id, createdOrder.id), eq(ordersTable.tenantId, houseTenantId)));
       // order_tax_snapshots is protected by an immutable-row trigger. Build its
@@ -1465,14 +1489,6 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     metadata: { routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, promisedMinutes: routing.promisedMinutes },
     ipAddress: req.ip,
   });
-
-  // CSR delivery earnings: atomically increment shift csrDeliveryEarnings (fire-and-forget)
-  if (isCsrDelivery && assignedShiftId && csrDeliveryFee > 0) {
-    db.update(labTechShiftsTable)
-      .set({ csrDeliveryEarnings: sql`coalesce(${labTechShiftsTable.csrDeliveryEarnings}, 0) + ${String(csrDeliveryFee.toFixed(2))}` })
-      .where(eq(labTechShiftsTable.id, assignedShiftId))
-      .catch(err => logger.warn({ err, shiftId: assignedShiftId, csrDeliveryFee }, "Failed to update csrDeliveryEarnings"));
-  }
 
   const customerName = `${actor.firstName ?? ""} ${actor.lastName ?? ""}`.trim() || actor.email || "Customer";
 

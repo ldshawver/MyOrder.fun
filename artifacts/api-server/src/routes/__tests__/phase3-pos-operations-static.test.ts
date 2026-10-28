@@ -96,7 +96,9 @@ describe("Phase 3 POS operations Product Master integration", () => {
       expect(shifts).toContain("endingInventory: inventory.map");
       expect(shifts).toContain("sales: { orderCount: stats.orderCount");
       expect(shifts).toContain("deposit: { cashBankStart");
-      expect(shifts).toContain("supervisor: { supervisorId");
+      expect(shifts).toContain("supervisor: {");
+      expect(shifts).toContain("commissionAmount: summary?.commissionAmount");
+      expect(shifts).toContain("closeoutLines: summary?.closeoutLines");
     });
   });
 

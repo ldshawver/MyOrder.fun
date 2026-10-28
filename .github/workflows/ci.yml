@@ -87,6 +87,12 @@ jobs:
           MYORDER_OWNER_APPROVAL_DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
           DB_SSL: "false"
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/__tests__/platform-authorization-postgres.integration.test.ts
+      - name: Run PostgreSQL-backed shift earnings regression
+        env:
+          DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
+          MYORDER_ACCOUNTING_DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
+          DB_SSL: "false"
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/__tests__/shift-earnings-postgres.integration.test.ts
       - run: pnpm lint
       - run: pnpm lint:ratchet
       - run: pnpm --filter @workspace/scripts inventory:lockdown

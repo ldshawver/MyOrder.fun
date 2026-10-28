@@ -368,6 +368,19 @@ export const commissionSnapshotsTable = pgTable("commission_snapshots", {
   csrFk: foreignKey({ columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
 }));
 
+export const shiftEarningLinesTable = pgTable("shift_earning_lines", {
+  id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  closeoutPackageId: integer("closeout_package_id").notNull().references(() => shiftCloseoutPackagesTable.id),
+  shiftId: integer("shift_id").notNull(), csrUserId: integer("csr_user_id").notNull(),
+  kind: text("kind").notNull(), amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  sourceKey: text("source_key").notNull(), sourceOrderId: integer("source_order_id"), metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  sourceUnique: unique("shift_earning_lines_tenant_source_unique").on(table.tenantId, table.sourceKey),
+  shiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  csrFk: foreignKey({ columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+}));
+
 // ── Print Settings ─────────────────────────────────────────────────────────────
 /**
  * Per-tenant automatic-print switches. This is the authoritative source for

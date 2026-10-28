@@ -122,6 +122,9 @@ export const orderItemsTable = pgTable("order_items", {
   quantity: integer("quantity").notNull(),
   unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
   totalPrice: numeric("total_price", { precision: 10, scale: 2 }).notNull(),
+  commissionEligibilitySnapshot: text("commission_eligibility_snapshot").notNull().default("unclassified"),
+  commissionGrossAmount: numeric("commission_gross_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  commissionDiscountAmount: numeric("commission_discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   // Dual-brand snapshot at time of order
   alavontName: text("alavont_name"),
   luciferCruzName: text("lucifer_cruz_name"),

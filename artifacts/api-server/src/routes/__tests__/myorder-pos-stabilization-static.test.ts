@@ -551,13 +551,13 @@ describe("admin/POS/security cleanup regressions", () => {
     expect(settings).not.toContain('router.put("/admin/concierge/promoted", requireRole("global_admin", "admin", "supervisor"');
   });
 
-  it("documents and enforces personal delivery fee and 2-mile limit", () => {
+  it("uses a server-owned Uber quote for personal delivery and enforces the 2-mile limit", () => {
     const orders = api("routes/orders.ts");
-    const newOrder = platform("pages/new-order.tsx");
     expect(orders).toContain('csrDeliveryDistanceMiles > 2');
     expect(orders).toContain('CSR personal delivery is only available within 2 miles');
-    expect(orders).toContain('BigInt(dollarsToCents(subtotal)) * 3n');
-    expect(newOrder).toContain('$6 + 3% of merchandise subtotal');
+    expect(orders).toContain('explicitDeliveryMethod === "uber_direct" || isCsrDelivery');
+    expect(orders).toContain('deliveryFee = trustedUberQuote ? trustedUberQuote.feeCents / 100 : 0');
+    expect(orders).not.toContain('BigInt(dollarsToCents(subtotal)) * 3n');
   });
 
 
