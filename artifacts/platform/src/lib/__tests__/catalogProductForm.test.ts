@@ -88,4 +88,25 @@ describe("catalog product submission", () => {
     expect(source).toContain('refetchType: "active"');
     expect(source).not.toContain("await refetch();\n      setEditItem(null)");
   });
+
+  it("labels the main product image and gallery by where customers see them", () => {
+    const source = readFileSync(new URL("../../pages/catalog.tsx", import.meta.url), "utf8");
+    expect(source).toContain("Used on the Alavont catalogue card and as the first fallback image on product details.");
+    expect(source).toContain("These images and videos appear in the product details gallery and rotating catalogue-card preview.");
+    expect(source).toContain("Gallery slot {index + 1}");
+    expect(source).toContain('alt={`${label} preview`}');
+    expect(source).toContain("This image could not be loaded. Check the URL before saving.");
+    expect(source).toContain("Brand-specific fallback shown in the Alavont catalogue");
+    expect(source).toContain("Primary image shown for this item in the Lucifer Cruz supplier catalogue.");
+    expect(source).toContain("Shown in the converted checkout presentation");
+    expect(source).toContain('className="h-full w-full object-contain"');
+  });
+
+  it("groups product name, category, and description as labeled customer-facing details", () => {
+    const source = readFileSync(new URL("../../pages/catalog.tsx", import.meta.url), "utf8");
+    expect(source).toContain("Customer-facing details");
+    expect(source).toContain('htmlFor={`catalog-field-${key}`}');
+    expect(source).toContain('htmlFor="catalog-field-description"');
+    expect(source).toContain('id="catalog-field-description"');
+  });
 });
