@@ -20,6 +20,8 @@ import {
   shiftCloseoutPackagesTable,
   commissionSnapshotsTable,
   shiftEarningLinesTable,
+  shiftCommissionOrderSnapshotsTable,
+  shiftEarningAdjustmentApplicationsTable,
   auditLogsTable,
   shiftPrintAssignmentsTable,
   printPrintersTable,
@@ -29,7 +31,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, evaluateAccountApp
 import { requirePermission } from "../lib/roles";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
 import { quantityUnits } from "../lib/exactQuantity";
-import { calculateCloseoutFinancials, formatMoneyCents, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents } from "../lib/shiftCloseoutFinancials";
+import { calculateCloseoutFinancials, formatMoneyCents, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents, ShiftCloseoutConflictError, ShiftCloseoutSerializationError, withSerializableRetry } from "../lib/shiftCloseoutFinancials";
 import { calculateShiftEarnings, type ShiftEarningOrder } from "../lib/shiftEarnings";
 import { locallyManagedSellableCatalogWhere } from "../lib/localInventoryEligibility";
 import { z } from "zod";
@@ -904,17 +906,19 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
 
 async function loadShiftEarningOrders(executor: Pick<typeof db, "execute">, tenantId: number, shiftId: number): Promise<ShiftEarningOrder[]> {
   const result = await executor.execute(sql`
-    SELECT o.id AS "orderId",o.route_source AS "routeSource",o.payment_status AS "paymentStatus",
+    SELECT o.id AS "orderId",o.route_source AS "routeSource",o.payment_status AS "paymentStatus",o.fulfillment_status AS "fulfillmentStatus",
       o.delivery_method AS "deliveryMethod",coalesce(o.delivery_fee,0)::text AS "deliveryFee",
+      udf.request_state AS "uberRequestState",udf.provider_delivery_id AS "uberProviderDeliveryId",udf.provider_status AS "uberProviderStatus",
       coalesce(o.checkout_conversion_snapshot#>>'{tip,amount}','0') AS "tipAmount",
       oi.id AS "orderItemId",oi.commission_eligibility_snapshot AS "eligibility",
       oi.commission_gross_amount::text AS "grossAmount",oi.commission_discount_amount::text AS "discountAmount",
       coalesce(sum(CASE WHEN rt.status='completed' THEN rl.unit_value ELSE 0 END),0)::text AS "refundedAmount"
     FROM orders o JOIN order_items oi ON oi.order_id=o.id
+    LEFT JOIN uber_delivery_fulfillments udf ON udf.tenant_id=o.tenant_id AND udf.order_id=o.id
     LEFT JOIN return_transactions rt ON rt.tenant_id=o.tenant_id AND rt.order_id=o.id
     LEFT JOIN return_lines rl ON rl.return_transaction_id=rt.id AND rl.order_item_id=oi.id
     WHERE o.tenant_id=${tenantId} AND o.assigned_shift_id=${shiftId}
-    GROUP BY o.id,oi.id
+    GROUP BY o.id,oi.id,udf.request_state,udf.provider_delivery_id,udf.provider_status
     ORDER BY o.id,oi.id
   `);
   const rows = Array.isArray(result) ? result as Array<Record<string, unknown>> : ((result as { rows?: Array<Record<string, unknown>> }).rows ?? []);
@@ -923,7 +927,7 @@ async function loadShiftEarningOrders(executor: Pick<typeof db, "execute">, tena
     const orderId = Number(row.orderId);
     let order = byOrder.get(orderId);
     if (!order) {
-      order = { orderId, routeSource: row.routeSource == null ? null : String(row.routeSource), paymentStatus: String(row.paymentStatus), deliveryMethod: row.deliveryMethod == null ? null : String(row.deliveryMethod), deliveryFee: row.deliveryFee, tipAmount: row.tipAmount, lines: [] };
+      order = { orderId, routeSource: row.routeSource == null ? null : String(row.routeSource), paymentStatus: String(row.paymentStatus), deliveryMethod: row.deliveryMethod == null ? null : String(row.deliveryMethod), fulfillmentStatus: row.fulfillmentStatus == null ? null : String(row.fulfillmentStatus), uberRequestState: row.uberRequestState == null ? null : String(row.uberRequestState), uberProviderDeliveryId: row.uberProviderDeliveryId == null ? null : String(row.uberProviderDeliveryId), uberProviderStatus: row.uberProviderStatus == null ? null : String(row.uberProviderStatus), deliveryFee: row.deliveryFee, tipAmount: row.tipAmount, lines: [] };
       byOrder.set(orderId, order);
     }
     order.lines.push({ orderItemId: Number(row.orderItemId), eligibility: String(row.eligibility) as ShiftEarningOrder["lines"][number]["eligibility"], grossAmount: row.grossAmount, discountAmount: row.discountAmount, refundedAmount: row.refundedAmount });
@@ -2234,7 +2238,12 @@ router.post(
 
     const supervisor = req.dbUser!;
     const idempotencyKey = `shift-closeout:${shift.tenantId}:${shiftId}`;
-    const outcome = await db.transaction(async (tx) => {
+    type CloseoutOutcome =
+      | { conflict: string }
+      | { shift: typeof labTechShiftsTable.$inferSelect | undefined; checkout: unknown; replayed: boolean };
+    let outcome: CloseoutOutcome;
+    try {
+      outcome = await withSerializableRetry(() => db.transaction(async (tx) => {
       await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
       const [lockedShift] = await tx.select().from(labTechShiftsTable)
         .where(and(eq(labTechShiftsTable.tenantId, shift.tenantId), eq(labTechShiftsTable.id, shiftId)))
@@ -2243,10 +2252,18 @@ router.post(
         .where(and(eq(shiftCloseoutPackagesTable.tenantId, shift.tenantId), eq(shiftCloseoutPackagesTable.shiftId, shiftId))).limit(1);
       if (existingPackage) {
         const snapshot = existingPackage.snapshotJson as { commissionPercent?: number; tipPercent?: number };
-        if ((snapshot.commissionPercent ?? snapshot.tipPercent) !== tipPercent) throw new Error("SHIFT_CLOSEOUT_COMMISSION_CHANGED");
+        if ((snapshot.commissionPercent ?? snapshot.tipPercent) !== tipPercent) return { conflict: "SHIFT_CLOSEOUT_COMMISSION_CHANGED" as const };
         return { shift: lockedShift, checkout: existingPackage.snapshotJson, replayed: true };
       }
-      if (!lockedShift || lockedShift.status !== "supervisor_pending") throw new Error("SHIFT_CLOSEOUT_STATE_CHANGED");
+      if (!lockedShift || lockedShift.status !== "supervisor_pending") return { conflict: "SHIFT_CLOSEOUT_STATE_CHANGED" as const };
+
+      // Returns use the same tenant/order advisory locks. Holding them through
+      // settlement makes the refund cutoff and its per-order commission
+      // snapshots deterministic.
+      await tx.execute(sql`
+        SELECT pg_advisory_xact_lock(${shift.tenantId}, ordered.id)
+        FROM (SELECT id FROM orders WHERE tenant_id=${shift.tenantId} AND assigned_shift_id=${shiftId} ORDER BY id) ordered
+      `);
 
       const stats = await computeShiftStats(shiftId, shift.tenantId, req, tx);
       const snapshotItems = await tx.select().from(shiftInventoryItemsTable)
@@ -2267,13 +2284,44 @@ router.post(
       });
       const earnings = calculateShiftEarnings(await loadShiftEarningOrders(tx, shift.tenantId, shiftId), tipPercent as 15 | 16 | 17 | 18);
       const payoutCents = requiredNonNegativeMoneyCents(earnings.csrPayout, "csrPayout");
+      const grossCommissionCents = requiredNonNegativeMoneyCents(earnings.commissionAmount, "commissionAmount");
+      let commissionAvailableForRefunds = grossCommissionCents;
+      let commissionRefundAdjustmentCents = 0n;
+      const pendingAdjustmentResult = await tx.execute(sql`
+        SELECT a.id,a.order_id AS "orderId",a.amount::text AS amount,
+          COALESCE((SELECT sum(ap.amount)::numeric FROM shift_earning_adjustment_applications ap
+            WHERE ap.tenant_id=a.tenant_id AND ap.adjustment_id=a.id),0)::text AS applied
+        FROM commission_refund_adjustments a
+        WHERE a.tenant_id=${shift.tenantId} AND a.csr_user_id=${lockedShift.techId}
+        ORDER BY a.created_at,a.id FOR UPDATE OF a
+      `);
+      const pendingAdjustmentRows = Array.isArray(pendingAdjustmentResult)
+        ? pendingAdjustmentResult as Array<Record<string, unknown>>
+        : ((pendingAdjustmentResult as { rows?: Array<Record<string, unknown>> }).rows ?? []);
+      const refundAdjustmentApplications: Array<{ adjustmentId: number; orderId: number; amount: string; sourceKey: string }> = [];
+      for (const row of pendingAdjustmentRows) {
+        const obligation = requiredNonNegativeMoneyCents(row.amount, "commissionRefundAdjustment.amount");
+        const applied = requiredNonNegativeMoneyCents(row.applied, "commissionRefundAdjustment.applied");
+        if (applied > obligation) throw new ShiftCloseoutConflictError("SHIFT_CLOSEOUT_REFUND_ADJUSTMENT_INCONSISTENT");
+        const remaining = obligation - applied;
+        const amount = remaining < commissionAvailableForRefunds ? remaining : commissionAvailableForRefunds;
+        if (amount <= 0n) continue;
+        const adjustmentId = Number(row.id);
+        const orderId = Number(row.orderId);
+        refundAdjustmentApplications.push({ adjustmentId, orderId, amount: formatMoneyCents(amount), sourceKey: `commission-refund:${adjustmentId}:shift:${shiftId}` });
+        commissionRefundAdjustmentCents += amount;
+        commissionAvailableForRefunds -= amount;
+      }
+      const payoutAfterRefundAdjustmentsCents = payoutCents - commissionRefundAdjustmentCents;
+      const netCommissionAfterRefundAdjustmentsCents = grossCommissionCents - commissionRefundAdjustmentCents;
       const differenceCents = requiredNonNegativeMoneyCents(differenceAmount, "differenceAmount");
-      const finalPayoutCents = payoutCents > differenceCents ? payoutCents - differenceCents : 0n;
+      const finalPayoutCents = payoutAfterRefundAdjustmentsCents > differenceCents ? payoutAfterRefundAdjustmentsCents - differenceCents : 0n;
       const depositBase = requiredNonNegativeMoneyCents(stats.cashSales, "cashSales")
         - finalPayoutCents - requiredNonNegativeMoneyCents(lockedShift.cashBankStart, "cashBankStart");
       const depositCents = depositBase > 0n ? depositBase : 0n;
       const closeoutLines = [
         { kind: "product_commission", label: "Product commission", amount: earnings.commissionAmount },
+        { kind: "commission_refund_adjustment", label: "Prior refund commission adjustment", amount: formatMoneyCents(-commissionRefundAdjustmentCents) },
         { kind: "customer_tip", label: "Customer tips (100% to CSR)", amount: earnings.customerTips },
         { kind: "csr_delivery", label: "CSR delivery earnings (80%)", amount: earnings.csrDeliveryEarnings },
         { kind: "house_delivery", label: "House delivery share (20%)", amount: earnings.houseDeliveryShare },
@@ -2282,6 +2330,8 @@ router.post(
       const checkout = {
         shiftId, tenantId: shift.tenantId, csrUserId: lockedShift.techId,
         commissionBasis: earnings.commissionBasis, commissionPercent: tipPercent, commissionAmount: earnings.commissionAmount,
+        commissionRefundAdjustment: formatMoneyCents(commissionRefundAdjustmentCents),
+        commissionNetAfterRefundAdjustments: formatMoneyCents(netCommissionAfterRefundAdjustmentsCents),
         customerTips: earnings.customerTips, csrDeliveryEarnings: earnings.csrDeliveryEarnings,
         houseDeliveryShare: earnings.houseDeliveryShare, uberProviderDelivery: earnings.uberProviderDelivery,
         csrPayoutBeforeAdjustments: earnings.csrPayout, shortageAdjustment: formatMoneyCents(-differenceCents),
@@ -2300,24 +2350,45 @@ router.post(
       await tx.insert(commissionSnapshotsTable).values({
         tenantId: shift.tenantId, closeoutPackageId: pkg.id, shiftId, csrUserId: lockedShift.techId,
         qualifyingSales: earnings.commissionBasis, commissionBasis: earnings.commissionBasis,
-        commissionRate: (tipPercent / 100).toFixed(6), adjustments: "0.00",
+        commissionRate: (tipPercent / 100).toFixed(6), adjustments: formatMoneyCents(-commissionRefundAdjustmentCents),
         commissionAmount: earnings.commissionAmount,
         ruleSnapshot: checkout.commissionRule,
       });
+      if (earnings.orderCommissions.length) await tx.insert(shiftCommissionOrderSnapshotsTable).values(earnings.orderCommissions.map(item => ({
+        tenantId: shift.tenantId, closeoutPackageId: pkg.id, shiftId, csrUserId: lockedShift.techId,
+        orderId: item.orderId, commissionBasis: item.commissionBasis, commissionRate: item.commissionRate, commissionAmount: item.commissionAmount,
+      })));
       await tx.insert(shiftEarningLinesTable).values([
         { tenantId: shift.tenantId, closeoutPackageId: pkg.id, shiftId, csrUserId: lockedShift.techId, kind: "product_commission", amount: earnings.commissionAmount, sourceKey: `shift:${shiftId}:product_commission`, sourceOrderId: null, metadata: { basis: earnings.commissionBasis, rate: (tipPercent / 100).toFixed(6) } },
         ...earnings.lines.map(line => ({ tenantId: shift.tenantId, closeoutPackageId: pkg.id, shiftId, csrUserId: lockedShift.techId, ...line })),
+        ...refundAdjustmentApplications.map(adjustment => ({ tenantId: shift.tenantId, closeoutPackageId: pkg.id, shiftId, csrUserId: lockedShift.techId, kind: "commission_refund_adjustment", amount: adjustment.amount, sourceKey: adjustment.sourceKey, sourceOrderId: adjustment.orderId, metadata: { adjustmentId: adjustment.adjustmentId, direction: "deduction_from_commission" } })),
       ]);
+      if (refundAdjustmentApplications.length) await tx.insert(shiftEarningAdjustmentApplicationsTable).values(refundAdjustmentApplications.map(adjustment => ({
+        tenantId: shift.tenantId, adjustmentId: adjustment.adjustmentId, closeoutPackageId: pkg.id, shiftId, csrUserId: lockedShift.techId,
+        amount: adjustment.amount, sourceKey: adjustment.sourceKey,
+      })));
       const [finalized] = await tx.update(labTechShiftsTable).set({
         status: "finalized", tipPercentSelected: String(tipPercent), tipAmount: earnings.customerTips,
         csrDeliveryEarnings: earnings.csrDeliveryEarnings,
         differenceAmount: formatMoneyCents(differenceCents), depositAmount: formatMoneyCents(depositCents),
         supervisorId: supervisor.id, supervisorConfirmedAt: new Date(), summary: checkout,
       }).where(and(eq(labTechShiftsTable.tenantId, shift.tenantId), eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.status, "supervisor_pending"))).returning();
-      if (!finalized) throw new Error("SHIFT_CLOSEOUT_STATE_CHANGED");
-      await tx.insert(auditLogsTable).values({ tenantId: shift.tenantId, actorId: supervisor.id, actorEmail: supervisor.email ?? "", actorRole: supervisor.role, action: "SHIFT_CLOSEOUT_PACKAGE_FINALIZED", resourceType: "shift_closeout_package", resourceId: String(pkg.id), metadata: { shiftId, idempotencyKey, commissionSnapshot: true, commissionAmount: earnings.commissionAmount, customerTips: earnings.customerTips, csrDeliveryEarnings: earnings.csrDeliveryEarnings, houseDeliveryShare: earnings.houseDeliveryShare, uberProviderDelivery: earnings.uberProviderDelivery } });
+      if (!finalized) throw new ShiftCloseoutConflictError("SHIFT_CLOSEOUT_STATE_CHANGED");
+      await tx.insert(auditLogsTable).values({ tenantId: shift.tenantId, actorId: supervisor.id, actorEmail: supervisor.email ?? "", actorRole: supervisor.role, action: "SHIFT_CLOSEOUT_PACKAGE_FINALIZED", resourceType: "shift_closeout_package", resourceId: String(pkg.id), metadata: { shiftId, idempotencyKey, commissionSnapshot: true, commissionAmount: earnings.commissionAmount, commissionRefundAdjustment: formatMoneyCents(commissionRefundAdjustmentCents), customerTips: earnings.customerTips, csrDeliveryEarnings: earnings.csrDeliveryEarnings, houseDeliveryShare: earnings.houseDeliveryShare, uberProviderDelivery: earnings.uberProviderDelivery } });
       return { shift: finalized, checkout, replayed: false };
-    });
+      }));
+    } catch (error) {
+      if (error instanceof ShiftCloseoutSerializationError) {
+        res.status(409).json({ error: "SHIFT_CLOSEOUT_RETRY_REQUIRED", message: "Another closeout changed this shift. Refresh and retry." });
+        return;
+      }
+      if (error instanceof ShiftCloseoutConflictError) {
+        res.status(409).json({ error: error.code });
+        return;
+      }
+      throw error;
+    }
+    if ("conflict" in outcome) { res.status(409).json({ error: outcome.conflict }); return; }
     res.json(outcome);
   }
 );

@@ -13,6 +13,43 @@ export class ShiftCloseoutFinancialError extends Error {
   }
 }
 
+export class ShiftCloseoutSerializationError extends Error {
+  constructor() {
+    super("Shift closeout could not be serialized after bounded retries");
+    this.name = "ShiftCloseoutSerializationError";
+  }
+}
+
+export class ShiftCloseoutConflictError extends Error {
+  readonly code: string;
+  constructor(code: string) {
+    super(code);
+    this.name = "ShiftCloseoutConflictError";
+    this.code = code;
+  }
+}
+
+function postgresCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const record = error as { code?: unknown; cause?: unknown };
+  if (typeof record.code === "string") return record.code;
+  return record.cause ? postgresCode(record.cause) : null;
+}
+
+/** Retry a complete SERIALIZABLE transaction, never a partially executed callback. */
+export async function withSerializableRetry<T>(operation: () => Promise<T>, maxAttempts = 3): Promise<T> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (postgresCode(error) !== "40001") throw error;
+      if (attempt === maxAttempts) throw new ShiftCloseoutSerializationError();
+      await new Promise(resolve => setTimeout(resolve, 15 * attempt));
+    }
+  }
+  throw new ShiftCloseoutSerializationError();
+}
+
 function centsFromDecimal(value: string, field: string): bigint {
   const text = value.trim();
   if (!DECIMAL_MONEY.test(text)) throw new ShiftCloseoutFinancialError(`${field} must be a decimal monetary value`);

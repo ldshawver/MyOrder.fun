@@ -351,6 +351,7 @@ export const shiftCloseoutPackagesTable = pgTable("shift_closeout_packages", {
 }, (table) => ({
   shiftUnique: unique("shift_closeout_packages_tenant_shift_unique").on(table.tenantId, table.shiftId),
   keyUnique: unique("shift_closeout_packages_tenant_key_unique").on(table.tenantId, table.idempotencyKey),
+  tenantIdUnique: unique("shift_closeout_packages_tenant_id_id_unique").on(table.tenantId, table.id),
   shiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
   locationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
   supervisorFk: foreignKey({ columns: [table.tenantId, table.supervisorUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
@@ -358,27 +359,82 @@ export const shiftCloseoutPackagesTable = pgTable("shift_closeout_packages", {
 
 export const commissionSnapshotsTable = pgTable("commission_snapshots", {
   id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
-  closeoutPackageId: integer("closeout_package_id").notNull().references(() => shiftCloseoutPackagesTable.id), shiftId: integer("shift_id").notNull(), csrUserId: integer("csr_user_id").notNull(),
+  closeoutPackageId: integer("closeout_package_id").notNull(), shiftId: integer("shift_id").notNull(), csrUserId: integer("csr_user_id").notNull(),
   qualifyingSales: numeric("qualifying_sales", { precision: 12, scale: 2 }).notNull(), commissionBasis: numeric("commission_basis", { precision: 12, scale: 2 }).notNull(),
   commissionRate: numeric("commission_rate", { precision: 9, scale: 6 }).notNull(), adjustments: numeric("adjustments", { precision: 12, scale: 2 }).notNull().default("0"),
   commissionAmount: numeric("commission_amount", { precision: 12, scale: 2 }).notNull(), ruleSnapshot: jsonb("rule_snapshot").notNull(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   packageUserUnique: unique("commission_snapshots_tenant_package_user_unique").on(table.tenantId, table.closeoutPackageId, table.csrUserId),
+  packageFk: foreignKey({ name: "commission_snapshots_tenant_package_fk", columns: [table.tenantId, table.closeoutPackageId], foreignColumns: [shiftCloseoutPackagesTable.tenantId, shiftCloseoutPackagesTable.id] }),
   shiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
   csrFk: foreignKey({ columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
 }));
 
 export const shiftEarningLinesTable = pgTable("shift_earning_lines", {
   id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
-  closeoutPackageId: integer("closeout_package_id").notNull().references(() => shiftCloseoutPackagesTable.id),
+  closeoutPackageId: integer("closeout_package_id").notNull(),
   shiftId: integer("shift_id").notNull(), csrUserId: integer("csr_user_id").notNull(),
   kind: text("kind").notNull(), amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   sourceKey: text("source_key").notNull(), sourceOrderId: integer("source_order_id"), metadata: jsonb("metadata").notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   sourceUnique: unique("shift_earning_lines_tenant_source_unique").on(table.tenantId, table.sourceKey),
+  packageFk: foreignKey({ name: "shift_earning_lines_tenant_package_fk", columns: [table.tenantId, table.closeoutPackageId], foreignColumns: [shiftCloseoutPackagesTable.tenantId, shiftCloseoutPackagesTable.id] }),
   shiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
   csrFk: foreignKey({ columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  orderFk: foreignKey({ name: "shift_earning_lines_tenant_order_fk", columns: [table.tenantId, table.sourceOrderId], foreignColumns: [ordersTable.tenantId, ordersTable.id] }),
+  kindCheck: check("shift_earning_lines_kind_check", sql`${table.kind} IN ('product_commission','customer_tip','csr_delivery','house_delivery','uber_provider_delivery','commission_refund_adjustment')`),
+  amountNonnegative: check("shift_earning_lines_amount_nonnegative", sql`${table.amount} >= 0`),
+}));
+
+export const shiftCommissionOrderSnapshotsTable = pgTable("shift_commission_order_snapshots", {
+  id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  closeoutPackageId: integer("closeout_package_id").notNull(), shiftId: integer("shift_id").notNull(),
+  csrUserId: integer("csr_user_id").notNull(), orderId: integer("order_id").notNull(),
+  commissionBasis: numeric("commission_basis", { precision: 12, scale: 2 }).notNull(),
+  commissionRate: numeric("commission_rate", { precision: 9, scale: 6 }).notNull(),
+  commissionAmount: numeric("commission_amount", { precision: 12, scale: 2 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({
+  orderUnique: unique("shift_commission_order_snapshots_tenant_order_unique").on(table.tenantId, table.orderId),
+  packageFk: foreignKey({ name: "shift_commission_order_snapshots_tenant_package_fk", columns: [table.tenantId, table.closeoutPackageId], foreignColumns: [shiftCloseoutPackagesTable.tenantId, shiftCloseoutPackagesTable.id] }),
+  shiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  csrFk: foreignKey({ columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  orderFk: foreignKey({ columns: [table.tenantId, table.orderId], foreignColumns: [ordersTable.tenantId, ordersTable.id] }),
+  basisNonnegative: check("shift_commission_order_snapshots_basis_nonnegative", sql`${table.commissionBasis} >= 0`),
+  rateCheck: check("shift_commission_order_snapshots_rate_check", sql`${table.commissionRate} >= 0 AND ${table.commissionRate} <= 1`),
+  amountNonnegative: check("shift_commission_order_snapshots_amount_nonnegative", sql`${table.commissionAmount} >= 0`),
+}));
+
+export const commissionRefundAdjustmentsTable = pgTable("commission_refund_adjustments", {
+  id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  originalCloseoutPackageId: integer("original_closeout_package_id").notNull(), originalShiftId: integer("original_shift_id").notNull(),
+  csrUserId: integer("csr_user_id").notNull(), orderId: integer("order_id").notNull(), returnId: integer("return_id").notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(), sourceKey: text("source_key").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({
+  tenantIdUnique: unique("commission_refund_adjustments_tenant_id_id_unique").on(table.tenantId, table.id),
+  sourceUnique: unique("commission_refund_adjustments_tenant_source_unique").on(table.tenantId, table.sourceKey),
+  packageFk: foreignKey({ name: "commission_refund_adjustments_tenant_package_fk", columns: [table.tenantId, table.originalCloseoutPackageId], foreignColumns: [shiftCloseoutPackagesTable.tenantId, shiftCloseoutPackagesTable.id] }),
+  shiftFk: foreignKey({ name: "commission_refund_adjustments_tenant_shift_fk", columns: [table.tenantId, table.originalShiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  csrFk: foreignKey({ name: "commission_refund_adjustments_tenant_csr_fk", columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  orderFk: foreignKey({ name: "commission_refund_adjustments_tenant_order_fk", columns: [table.tenantId, table.orderId], foreignColumns: [ordersTable.tenantId, ordersTable.id] }),
+  amountPositive: check("commission_refund_adjustments_amount_positive", sql`${table.amount} > 0`),
+}));
+
+export const shiftEarningAdjustmentApplicationsTable = pgTable("shift_earning_adjustment_applications", {
+  id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  adjustmentId: integer("adjustment_id").notNull(), closeoutPackageId: integer("closeout_package_id").notNull(),
+  shiftId: integer("shift_id").notNull(), csrUserId: integer("csr_user_id").notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(), sourceKey: text("source_key").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({
+  sourceUnique: unique("shift_earning_adjustment_applications_tenant_source_unique").on(table.tenantId, table.sourceKey),
+  adjustmentFk: foreignKey({ name: "shift_earning_adjustment_applications_tenant_adjustment_fk", columns: [table.tenantId, table.adjustmentId], foreignColumns: [commissionRefundAdjustmentsTable.tenantId, commissionRefundAdjustmentsTable.id] }),
+  packageFk: foreignKey({ name: "shift_earning_adjustment_applications_tenant_package_fk", columns: [table.tenantId, table.closeoutPackageId], foreignColumns: [shiftCloseoutPackagesTable.tenantId, shiftCloseoutPackagesTable.id] }),
+  shiftFk: foreignKey({ name: "shift_earning_adjustment_applications_tenant_shift_fk", columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  csrFk: foreignKey({ name: "shift_earning_adjustment_applications_tenant_csr_fk", columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  amountPositive: check("shift_earning_adjustment_applications_amount_positive", sql`${table.amount} > 0`),
 }));
 
 // ── Print Settings ─────────────────────────────────────────────────────────────

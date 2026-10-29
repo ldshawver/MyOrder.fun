@@ -136,7 +136,10 @@ export const orderItemsTable = pgTable("order_items", {
   wooVariationId: text("woo_variation_id"),
   inventoryDeductions: jsonb("inventory_deductions").default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  commissionEligibilitySnapshotCheck: check("order_items_commission_eligibility_snapshot_check", sql`${table.commissionEligibilitySnapshot} IN ('eligible', 'membership', 'excluded', 'unclassified')`),
+  commissionAmountsCheck: check("order_items_commission_amounts_check", sql`${table.commissionGrossAmount} >= 0 AND ${table.commissionDiscountAmount} >= 0 AND ${table.commissionDiscountAmount} <= ${table.commissionGrossAmount}`),
+}));
 
 export const orderNotesTable = pgTable("order_notes", {
   id: serial("id").primaryKey(),

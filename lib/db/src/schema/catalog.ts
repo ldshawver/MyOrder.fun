@@ -7,7 +7,9 @@ import {
   numeric,
   boolean,
   jsonb,
+  check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
 
 export const catalogItemsTable = pgTable("catalog_items", {
@@ -114,7 +116,9 @@ export const catalogItemsTable = pgTable("catalog_items", {
   merchantBrand: text("merchant_brand").notNull().default("alavont"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  commissionEligibilityCheck: check("catalog_items_commission_eligibility_check", sql`${table.commissionEligibility} IN ('eligible', 'membership', 'excluded', 'unclassified')`),
+}));
 
 export type CatalogItem = typeof catalogItemsTable.$inferSelect;
 export type InsertCatalogItem = typeof catalogItemsTable.$inferInsert;
