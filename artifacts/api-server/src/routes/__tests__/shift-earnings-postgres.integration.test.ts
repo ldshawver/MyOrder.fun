@@ -56,6 +56,9 @@ describeDatabase("shift earning ledger PostgreSQL migration", () => {
       INSERT INTO orders (id,tenant_id) VALUES (1,1),(2,2);
       INSERT INTO lab_tech_shifts (id,tenant_id,tech_id) VALUES (1,1,1),(2,2,2),(3,1,1);
       INSERT INTO shift_closeout_packages (id,tenant_id,shift_id,supervisor_user_id,idempotency_key) VALUES (1,1,1,1,'seed-a'),(2,2,2,2,'seed-b');
+      -- Explicit fixture IDs do not advance serial sequences. Keep the next
+      -- concurrent closeout insert from colliding with the seeded package IDs.
+      SELECT setval(pg_get_serial_sequence('shift_closeout_packages','id'), (SELECT max(id) FROM shift_closeout_packages));
       INSERT INTO uber_delivery_quotes (id,status,expires_at,consumed_at) VALUES
         ('active-no-eta','quoted',now()+interval '1 day',NULL),
         ('expired-no-eta','expired',now()-interval '1 day',NULL),
