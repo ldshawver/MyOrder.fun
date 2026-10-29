@@ -11,6 +11,7 @@ import { requireOnlinePayments } from "../payments/config";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { PayPalProvider } from "../payments/paypal";
 import { PaymentService, PaymentServiceError } from "../payments/service";
+import { calculatePostCloseoutCommissionRecovery, refundedCommissionBasisAfterCloseout } from "../lib/shiftEarnings";
 
 const router = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -104,6 +105,63 @@ async function refundedByTender(tx: Parameters<Parameters<typeof db.transaction>
   return { customer_credit: cents(rows<Row>(credit)[0]?.amount), cash: cents(rows<Row>(cash)[0]?.amount), paypal: cents(rows<Row>(paypal)[0]?.amount) };
 }
 
+async function recordPostCloseoutCommissionAdjustment(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  input: { tenantId: number; orderId: number; returnId: number },
+): Promise<void> {
+  const snapshot = rows<Row>(await tx.execute(sql`
+    SELECT id,closeout_package_id AS "closeoutPackageId",shift_id AS "shiftId",csr_user_id AS "csrUserId",
+      order_id AS "orderId",commission_basis::text AS basis,commission_rate::text AS rate,
+      commission_amount::text AS "commissionAmount"
+    FROM shift_commission_order_snapshots
+    WHERE tenant_id=${input.tenantId} AND order_id=${input.orderId}
+    FOR UPDATE
+  `))[0];
+  if (!snapshot) return; // There was no closed commission to reverse.
+  const [refunds] = rows<Row>(await tx.execute(sql`
+    SELECT COALESCE(sum(rl.unit_value),0)::text AS amount
+    FROM return_lines rl
+    JOIN return_transactions rt ON rt.tenant_id=${input.tenantId} AND rt.id=rl.return_transaction_id
+    JOIN order_items oi ON oi.id=rl.order_item_id AND oi.order_id=${input.orderId}
+    WHERE rt.tenant_id=${input.tenantId} AND rt.order_id=${input.orderId}
+      AND rt.status='completed'
+      AND oi.commission_eligibility_snapshot='eligible'
+  `));
+  const [basis] = rows<Row>(await tx.execute(sql`
+    SELECT COALESCE(sum(commission_gross_amount - commission_discount_amount),0)::text AS amount
+    FROM order_items
+    WHERE order_id=${input.orderId} AND commission_eligibility_snapshot='eligible'
+  `));
+  let refundedAfterCloseout: string;
+  try {
+    refundedAfterCloseout = refundedCommissionBasisAfterCloseout({
+      originalEligibleBasis: basis?.amount ?? "0.00",
+      closeoutEligibleBasis: snapshot.basis,
+      allCompletedRefundBasis: refunds?.amount ?? "0.00",
+    });
+  } catch {
+    throw new PaymentServiceError(409, "COMMISSION_REFUND_RECONCILIATION_REQUIRED", "Completed refunds do not reconcile with the closed commission snapshot");
+  }
+  const [previous] = rows<Row>(await tx.execute(sql`
+    SELECT COALESCE(sum(amount),0)::text AS amount FROM commission_refund_adjustments
+    WHERE tenant_id=${input.tenantId} AND order_id=${input.orderId}
+  `));
+  const amount = calculatePostCloseoutCommissionRecovery({
+    closeoutBasis: snapshot.basis,
+    commissionRate: snapshot.rate,
+    commissionPaid: snapshot.commissionAmount,
+    eligibleRefundsSinceCloseout: refundedAfterCloseout,
+    recoveryAlreadyRecorded: previous?.amount ?? "0.00",
+  });
+  if (amount === "0.00") return;
+  await tx.execute(sql`
+    INSERT INTO commission_refund_adjustments
+      (tenant_id,original_closeout_package_id,original_shift_id,csr_user_id,order_id,return_id,amount,source_key)
+    VALUES (${input.tenantId},${Number(snapshot.closeoutPackageId)},${Number(snapshot.shiftId)},${Number(snapshot.csrUserId)},${input.orderId},${input.returnId},${amount},${`return:${input.returnId}:post-closeout-commission`})
+    ON CONFLICT (tenant_id,source_key) DO NOTHING
+  `);
+}
+
 /** Local effects for a PayPal return happen only after the provider identity
  * has been committed.  This function is repeat-safe via the return status and
  * inventory movement idempotency keys. */
@@ -147,6 +205,7 @@ const finalizePayPalReturn = async (input: { returnId: number; tenantId: number;
     await postInventoryMovement(tx as never, { tenantId: input.tenantId, actor: { id: input.actor.id, email: input.actor.email, role: input.actor.role, ipAddress: input.ipAddress }, entityType: "catalog", itemId: Number(line.catalog_item_id), locationId: Number(ret.location_id), movementType: "customer_return", quantity: String(line.quantity), unitCost: sale ? undefined : (valuation?.cost ? String(valuation.cost) : undefined), sourceType: "return", sourceId: sale ? String(sale.id) : `order-item:${line.order_item_id}`, orderId: input.orderId, orderItemId: Number(line.order_item_id), reasonCode: "customer_return_restock", reasonText: String(ret.reason), idempotencyKey: `return-movement:${input.returnId}:${line.order_item_id}` });
   }
   await tx.execute(sql`UPDATE return_transactions SET status='completed', updated_at=now() WHERE id=${input.returnId}`);
+  await recordPostCloseoutCommissionAdjustment(tx, { tenantId: input.tenantId, orderId: input.orderId, returnId: input.returnId });
   const [taxLedger] = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(tax_amount),0)::numeric AS refunded FROM return_transactions WHERE tenant_id=${input.tenantId} AND order_id=${input.orderId} AND status='completed'`));
   const [taxSnapshot] = rows<Row>(await tx.execute(sql`SELECT tax_collected FROM order_tax_snapshots WHERE tenant_id=${input.tenantId} AND order_id=${input.orderId} LIMIT 1`));
   if (taxSnapshot && cents(taxLedger?.refunded) > cents(taxSnapshot.tax_collected)) throw new PaymentServiceError(409, "TAX_REFUND_LIMIT_EXCEEDED", "Refunded tax exceeds original tax collected");
@@ -301,6 +360,7 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     const full = priorRefundedCents + total >= originalPaidCents;
     await tx.execute(sql`UPDATE orders SET payment_status = ${full ? "refunded" : "partially_refunded"}, status = CASE WHEN ${full} THEN 'refunded' ELSE status END, updated_at = now() WHERE tenant_id = ${tenantId} AND id = ${orderId}`);
     await tx.execute(sql`UPDATE return_transactions SET status = 'completed', updated_at = now() WHERE id = ${returnId}`);
+    await recordPostCloseoutCommissionAdjustment(tx, { tenantId, orderId, returnId });
     // order_tax_snapshots is immutable by database trigger. Completed return
     // transactions are the append-only tax-refund ledger; never rewrite the
     // original tax snapshot to report cumulative refunds.

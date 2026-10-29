@@ -623,6 +623,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
         gt(uberDeliveryQuotesTable.expiresAt, new Date()),
       )).limit(1);
       if (!quote || quote.cartFingerprint !== checkoutFingerprint(lines)) { res.status(422).json({ error: "DELIVERY_QUOTE_UNAVAILABLE" }); return; }
+      if (!quote.dropoffEta) { res.status(409).json({ error: "Delivery quote is missing provider ETA; request a fresh quote" }); return; }
       deliveryFeeCents = quote.feeCents;
       deliveryEta = quote.dropoffEta.toISOString();
     }
@@ -957,7 +958,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       gt(uberDeliveryQuotesTable.expiresAt, new Date()),
     )).limit(1);
     const normalizedAddress = normalizeUberAddress(body.data.shippingAddress);
-    if (!quote || quote.cartFingerprint !== checkoutFingerprint(normalizedLines) || !sameUberAddress(normalizeUberAddress(quote.dropoffAddress as UberAddress), normalizedAddress)) {
+    if (!quote || !quote.dropoffEta || quote.cartFingerprint !== checkoutFingerprint(normalizedLines) || !sameUberAddress(normalizeUberAddress(quote.dropoffAddress as UberAddress), normalizedAddress)) {
       res.status(422).json({ error: "Your Uber delivery quote is missing, expired, or no longer matches this checkout. Please calculate delivery again." });
       return;
     }
@@ -966,11 +967,15 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: "A delivery quote is only valid for quoted delivery." });
     return;
   }
+  if (trustedUberQuote && !trustedUberQuote.dropoffEta) {
+    res.status(422).json({ error: "The stored delivery quote has no verified ETA. Request a fresh quote." });
+    return;
+  }
   const deliveryQuote = trustedUberQuote ? {
     provider: "uber_direct" as const, quoteId: trustedUberQuote.id,
     fee: trustedUberQuote.feeCents / 100, feeCents: trustedUberQuote.feeCents,
     currency: trustedUberQuote.currency, expires: trustedUberQuote.expiresAt.toISOString(),
-    dropoffEta: trustedUberQuote.dropoffEta.toISOString(), duration: trustedUberQuote.durationSeconds,
+    dropoffEta: trustedUberQuote.dropoffEta!.toISOString(), duration: trustedUberQuote.durationSeconds,
     pickupDuration: trustedUberQuote.pickupDurationSeconds,
   } : null;
   const deliveryFee = trustedUberQuote ? trustedUberQuote.feeCents / 100 : 0;

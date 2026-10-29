@@ -64,7 +64,7 @@ test("unknown, missing, reordered and fabricated historical rows fail", () => {
   assert.throws(() => validateAppliedLineage(local, fabricatedId));
 });
 
-test("49-row staging permits only the ordered 0077, 0078, and 0079 continuation", () => {
+test("49-row staging permits only the ordered 0077 through 0080 continuation", () => {
   const before = [...staging];
   for (const index of [39, 40, 41, 42, 46, 47, 48, 49, 50]) {
     before.push({ id: before.length + 1, hash: local[index].hash, created_at: String(local[index].when) });
@@ -73,10 +73,11 @@ test("49-row staging permits only the ordered 0077, 0078, and 0079 continuation"
   const verified = validateAppliedLineage(local, before);
   const pending = local.map((_: unknown, index: number) => index)
     .filter((index: number) => !verified.appliedJournalIndices.has(index));
-  assert.deepEqual(pending, [51, 52, 53]);
+  assert.deepEqual(pending, [51, 52, 53, 54]);
   assert.equal(local[51].tag, "0077_catalogue_inventory_reconciliation");
   assert.equal(local[52].tag, "0078_inventory_history_baseline_repair");
   assert.equal(local[53].tag, "0079_verified_zero_opening_counts");
+  assert.equal(local[54].tag, "0080_csr_delivery_closeout_accounting");
   assert.deepEqual(historicalStagingInventory.forwardIndices.slice(before.length - 40), pending);
 
   const reconciliation = { id: 50, hash: local[51].hash, created_at: String(local[51].when) };
@@ -86,9 +87,9 @@ test("49-row staging permits only the ordered 0077, 0078, and 0079 continuation"
   assert.deepEqual(
     local.map((_: unknown, index: number) => index)
       .filter((index: number) => !reconciliationVerified.appliedJournalIndices.has(index)),
-    [52, 53],
+    [52, 53, 54],
   );
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterReconciliation.length - 40), [52, 53]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterReconciliation.length - 40), [52, 53, 54]);
 
   const repair = { id: 51, hash: local[52].hash, created_at: String(local[52].when) };
   const afterRepair = [...afterReconciliation, repair];
@@ -96,14 +97,19 @@ test("49-row staging permits only the ordered 0077, 0078, and 0079 continuation"
   assert.deepEqual(
     local.map((_: unknown, index: number) => index)
       .filter((index: number) => !validateAppliedLineage(local, afterRepair).appliedJournalIndices.has(index)),
-    [53],
+    [53, 54],
   );
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterRepair.length - 40), [53]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterRepair.length - 40), [53, 54]);
 
   const zeroOpening = { id: 52, hash: local[53].hash, created_at: String(local[53].when) };
   const afterZeroOpening = [...afterRepair, zeroOpening];
-  assert.equal(validateAppliedLineage(local, afterZeroOpening).appliedJournalIndices.size, local.length);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterZeroOpening.length - 40), []);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterZeroOpening).appliedJournalIndices.has(index)), [54]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterZeroOpening.length - 40), [54]);
+
+  const accounting = { id: 53, hash: local[54].hash, created_at: String(local[54].when) };
+  const afterAccounting = [...afterZeroOpening, accounting];
+  assert.equal(validateAppliedLineage(local, afterAccounting).appliedJournalIndices.size, local.length);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterAccounting.length - 40), []);
 
   assert.throws(() => validateAppliedLineage(local, [...before, { ...reconciliation, hash: "0".repeat(64) }]));
   assert.throws(() => validateAppliedLineage(local, [...before, { ...reconciliation, created_at: String(local[51].when + 1) }]));
@@ -116,4 +122,6 @@ test("49-row staging permits only the ordered 0077, 0078, and 0079 continuation"
   assert.throws(() => validateAppliedLineage(local, [...afterRepair, { ...zeroOpening, created_at: String(local[53].when + 1) }]));
   assert.throws(() => validateAppliedLineage(local, [...afterRepair.slice(0, -1), zeroOpening]));
   assert.throws(() => validateAppliedLineage(local, [...afterZeroOpening, { ...zeroOpening, id: 53 }]));
+  assert.throws(() => validateAppliedLineage(local, [...afterZeroOpening, { ...accounting, hash: "0".repeat(64) }]));
+  assert.throws(() => validateAppliedLineage(local, [...afterZeroOpening, { ...accounting, created_at: String(local[54].when + 1) }]));
 });

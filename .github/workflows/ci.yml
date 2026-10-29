@@ -101,6 +101,7 @@ jobs:
         run: >-
           pnpm --filter @workspace/db exec tsx --test
           scripts/catalogue-variant-migration.test.ts
+          scripts/csr-delivery-accounting-migration.test.ts
           scripts/migrate-verified.test.ts
           scripts/migration-lineage.test.ts
           scripts/reconciliation-schema.test.ts
