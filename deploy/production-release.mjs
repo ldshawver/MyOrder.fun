@@ -95,6 +95,16 @@ export const MIGRATION_0079 = Object.freeze({
   timestamp: "1793044800000",
   sha256: "04105fcffc7f6219c4059a34739d4f26d96a233aa58a8a063e80e98ba4758aa6",
 });
+export const MIGRATION_0080 = Object.freeze({
+  tag: "0080_csr_delivery_closeout_accounting",
+  timestamp: "1793231605334",
+  sha256: "b01b36c35c0cf6cf80583d8d11accd8dbd6b7a6a7e9396f0bc582f161f1f517e",
+});
+export const MIGRATION_0081 = Object.freeze({
+  tag: "0081_csr_inventory_accountability",
+  timestamp: "1793318400000",
+  sha256: "ba37c03f6d5a20a3f8a9bcbf4688a270d01bad9c58dabcf4eb85567f5e2ba521",
+});
 let releaseIdentity = APPROVED_RELEASE;
 export const PRODUCTION = Object.freeze({
   root: "/opt/alavont",
@@ -134,7 +144,8 @@ export const PRODUCTION_SMOKE_DOCKER_CHECKS = Object.freeze({
 });
 
 export const EXPECTED_PRODUCTION_MIGRATIONS = Object.freeze([
-  MIGRATION_0079.tag,
+  MIGRATION_0080.tag,
+  MIGRATION_0081.tag,
 ]);
 
 const preReleaseSchemaInvariants = (ledgerRows) => Object.freeze([
@@ -1104,9 +1115,9 @@ function createSnapshot(compose, backupRoot) {
     compose,
     "SELECT id || '|' || hash || '|' || created_at::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (ledger.split("\n").length !== 53)
+  if (ledger.split("\n").length !== 54)
     throw new Error(
-      "Expected the recognized 53-row pre-0079 production ledger",
+      "Expected the recognized 54-row pre-0080/0081 production ledger",
     );
   const counts = query(
     compose,
@@ -1169,7 +1180,7 @@ function createSnapshot(compose, backupRoot) {
   });
   writeFileSync(
     `${archive}.metadata.json`,
-    `${JSON.stringify({ sourceApiRevision: PRODUCTION_BASELINE.apiRevision, sourceApiImage: PRODUCTION_BASELINE.apiImage, sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision, sourcePlatformImage: PRODUCTION_BASELINE.platformImage, targetSha: releaseIdentity.sha, targetTree: releaseIdentity.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 53, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({ sourceApiRevision: PRODUCTION_BASELINE.apiRevision, sourceApiImage: PRODUCTION_BASELINE.apiImage, sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision, sourcePlatformImage: PRODUCTION_BASELINE.platformImage, targetSha: releaseIdentity.sha, targetTree: releaseIdentity.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 54, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
     { flag: "wx", mode: 0o600 },
   );
   chmodSync(partial, 0o600);
@@ -1410,6 +1421,8 @@ function restoreSnapshotInIsolation(snapshot) {
       ...(ledgerRows === 51 ? [[MIGRATION_0077, "0077_catalogue_inventory_reconciliation.sql"]] : []),
       ...(ledgerRows <= 52 ? [[MIGRATION_0078, "0078_inventory_history_baseline_repair.sql"]] : []),
       [MIGRATION_0079, "0079_verified_zero_opening_counts.sql"],
+      [MIGRATION_0080, "0080_csr_delivery_closeout_accounting.sql"],
+      [MIGRATION_0081, "0081_csr_inventory_accountability.sql"],
     ];
     for (const [migration, filename] of migrations) {
       const migrationPath = path.join(
@@ -1468,17 +1481,24 @@ function restoreSnapshotInIsolation(snapshot) {
         AND (SELECT count(*) FROM pg_trigger WHERE tgname='inventory_history_baseline_repair_events_immutable' AND NOT tgisinternal)=1
         AND (SELECT pg_get_constraintdef(oid,true) FROM pg_constraint WHERE conrelid='public.inventory_movements'::regclass AND conname='inventory_movements_quantity_nonzero')
           = $$CHECK (quantity_delta <> 0::numeric OR quantity_delta = 0::numeric AND movement_type = 'correction'::text AND source_type = 'verified_opening_count'::text AND reason_code = 'opening_count'::text AND pre_quantity = 0::numeric AND post_quantity = 0::numeric AND destination_location_id IS NULL AND unit_cost IS NULL AND extended_cost = 0::numeric)$$
+        AND to_regclass('public.shift_earning_lines') IS NOT NULL
+        AND to_regclass('public.shift_commission_order_snapshots') IS NOT NULL
+        AND (SELECT count(*) FROM pg_trigger WHERE tgname IN ('shift_earning_lines_immutable','shift_commission_order_snapshots_immutable','commission_refund_adjustments_immutable','shift_earning_adjustment_applications_immutable') AND NOT tgisinternal)=4
+        AND to_regclass('public.contractor_inventory_adjustments') IS NOT NULL
+        AND to_regclass('public.contractor_inventory_adjustment_applications') IS NOT NULL
+        AND to_regclass('public.shift_inventory_shortage_lines') IS NOT NULL
+        AND (SELECT count(*) FROM pg_trigger WHERE tgname IN ('contractor_inventory_adjustments_immutable','contractor_inventory_adjustment_applications_immutable','shift_inventory_shortage_lines_immutable') AND NOT tgisinternal)=3
         AND (SELECT count(*) FROM drizzle.__drizzle_migrations)=${ledgerRows}`,
     ]).trim();
     if (rehearsalVerified !== "t")
-      throw new Error("Isolated 0077/0078/0079 rehearsal schema verification failed");
+      throw new Error("Isolated 0077-through-0081 rehearsal schema verification failed");
     const countsAfterRehearsal = run("docker", [
       "exec", name, "psql", "-U", "postgres", "-d", "alavont_recovery",
       "-X", "-v", "ON_ERROR_STOP=1", "-Atc",
       "SELECT 'orders='||(SELECT count(*) FROM orders)||';inventory_transaction_log='||(SELECT count(*) FROM inventory_transaction_log)||';inventory_reservations='||(SELECT count(*) FROM inventory_reservations)||';inventory_balances='||(SELECT count(*) FROM inventory_balances)||';catalog_items='||(SELECT count(*) FROM catalog_items)||';order_items='||(SELECT count(*) FROM order_items)",
     ]).trim();
     if (countsAfterRehearsal !== snapshot.counts.trim())
-      throw new Error("Migration 0077/0078/0079 rehearsal changed representative production data counts");
+      throw new Error("Migration 0077-through-0081 rehearsal changed representative production data counts");
     const isolation = JSON.parse(run("docker", ["inspect", name]))[0];
     if (
       isolation.HostConfig.NetworkMode !== "none" ||
@@ -1496,6 +1516,8 @@ function restoreSnapshotInIsolation(snapshot) {
       migration0077: ledgerRows === 51,
       migration0078: ledgerRows <= 52,
       migration0079: true,
+      migration0080: true,
+      migration0081: true,
     };
   } finally {
     if (started) {
@@ -1523,23 +1545,28 @@ function verifyMigration(compose) {
     compose,
     "SELECT substring(hash from 1 for 0) || id::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (actual.split("\n").length !== 54)
-    throw new Error("Production migration ledger count is not 54");
+  if (actual.split("\n").length !== 56)
+    throw new Error("Production migration ledger count is not 56");
   const journal = JSON.parse(
     readFileSync(
       path.join(compose.releaseRoot, "lib/db/drizzle/meta/_journal.json"),
       "utf8",
     ),
   );
-  if (journal.entries.length !== 54)
-    throw new Error("Candidate migration journal must contain all 54 canonical entries through 0079");
+  if (journal.entries.length !== 56)
+    throw new Error("Candidate migration journal must contain all 56 canonical entries through 0081");
   if (
     expected.some((tag) => !journal.entries.some((entry) => entry.tag === tag))
   )
-    throw new Error("Approved migration 0079 is missing from the candidate journal");
-  const migrationPath = path.join(compose.releaseRoot, "lib/db/drizzle/0079_verified_zero_opening_counts.sql");
-  if (createHash("sha256").update(readFileSync(migrationPath)).digest("hex") !== MIGRATION_0079.sha256)
-    throw new Error("Migration 0079 source checksum differs from the reviewed candidate");
+    throw new Error("Approved migrations 0080/0081 are missing from the candidate journal");
+  for (const [migration, filename] of [
+    [MIGRATION_0080, "0080_csr_delivery_closeout_accounting.sql"],
+    [MIGRATION_0081, "0081_csr_inventory_accountability.sql"],
+  ]) {
+    const migrationPath = path.join(compose.releaseRoot, "lib/db/drizzle", filename);
+    if (createHash("sha256").update(readFileSync(migrationPath)).digest("hex") !== migration.sha256)
+      throw new Error(`Migration ${migration.tag.slice(0, 4)} source checksum differs from the reviewed candidate`);
+  }
   const validator = run(
     "docker",
     [
@@ -1563,7 +1590,7 @@ function verifyMigration(compose) {
     throw new Error(`Post-migration validator did not preserve ${MIGRATION_0077.tag}`);
   if (!validator.includes(`APPLIED ${MIGRATION_0078.tag} `))
     throw new Error(`Post-migration validator did not preserve ${MIGRATION_0078.tag}`);
-  if (!validator.includes("recognized lineage preserved: 54/54"))
+  if (!validator.includes("recognized lineage preserved: 56/56"))
     throw new Error(
       "Post-migration validator did not confirm the complete candidate migration lineage",
     );
@@ -1631,6 +1658,29 @@ function verifyMigration(compose) {
   `);
   if (zeroOpeningSchema !== "t")
     throw new Error("Migration 0079 verified zero opening-count constraint is absent or structurally invalid");
+  const closeoutAccountingSchema = query(compose, `
+    SELECT
+      to_regclass('public.shift_earning_lines') IS NOT NULL
+      AND to_regclass('public.shift_commission_order_snapshots') IS NOT NULL
+      AND to_regclass('public.commission_refund_adjustments') IS NOT NULL
+      AND to_regclass('public.shift_earning_adjustment_applications') IS NOT NULL
+      AND (SELECT count(*) FROM pg_trigger WHERE tgname IN ('shift_earning_lines_immutable','shift_commission_order_snapshots_immutable','commission_refund_adjustments_immutable','shift_earning_adjustment_applications_immutable') AND NOT tgisinternal)=4
+      AND (SELECT count(*) FROM drizzle.__drizzle_migrations WHERE created_at=${MIGRATION_0080.timestamp})=1
+  `);
+  if (closeoutAccountingSchema !== "t")
+    throw new Error("Migration 0080 closeout accounting schema is absent or structurally invalid");
+  const inventoryAccountabilitySchema = query(compose, `
+    SELECT
+      to_regclass('public.contractor_inventory_adjustments') IS NOT NULL
+      AND to_regclass('public.contractor_inventory_adjustment_applications') IS NOT NULL
+      AND to_regclass('public.shift_inventory_shortage_lines') IS NOT NULL
+      AND (SELECT count(*) FROM pg_trigger WHERE tgname IN ('contractor_inventory_adjustments_immutable','contractor_inventory_adjustment_applications_immutable','shift_inventory_shortage_lines_immutable') AND NOT tgisinternal)=3
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname='contractor_inventory_apps_tenant_source_unique' AND contype='u' AND convalidated)
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname='shift_inventory_shortage_lines_tenant_movement_fk' AND contype='f' AND convalidated)
+      AND (SELECT count(*) FROM drizzle.__drizzle_migrations WHERE created_at=${MIGRATION_0081.timestamp})=1
+  `);
+  if (inventoryAccountabilitySchema !== "t")
+    throw new Error("Migration 0081 inventory accountability schema is absent or structurally invalid");
   verifyP0Schema(compose);
   const checks = query(
     compose,
@@ -1666,17 +1716,17 @@ export function classifyMigrationLineage(output) {
   ].map((match) => match[1]);
   if (
     JSON.stringify(pending) === JSON.stringify(expected) &&
-    output.includes("recognized lineage preserved: 53/54")
+    output.includes("recognized lineage preserved: 54/56")
   )
     return "pending";
   if (
     pending.length === 0 &&
     expected.every((tag) => output.includes(`APPLIED ${tag} `)) &&
-    output.includes("recognized lineage preserved: 54/54")
+    output.includes("recognized lineage preserved: 56/56")
   )
     return "applied";
   throw new Error(
-    `Production migration state is neither the exact 53-row pre-0079 path nor the verified 54-row applied lineage: ${pending.join(",")}`,
+    `Production migration state is neither the exact 54-row pre-0080/0081 path nor the verified 56-row applied lineage: ${pending.join(",")}`,
   );
 }
 
@@ -1909,7 +1959,7 @@ async function main() {
         );
       });
       if (runtimeAlreadyAdvanced && migrationState !== "applied")
-        throw new Error("Approved runtime image cannot be resumed before the exact 53-row migration lineage is applied");
+        throw new Error("Approved runtime image cannot be resumed before the exact 56-row migration lineage is applied");
       if (migrationState === "applied") migrationStarted = true;
     },
     "verify-writer-inventory": async () => {
@@ -1965,7 +2015,7 @@ async function main() {
     },
     migrate: async () => {
       if (migrationState === "applied") {
-        console.log("production resume: exact 53-row migration lineage is already applied");
+        console.log("production resume: exact 56-row migration lineage is already applied");
         return;
       }
       migrationStarted = true;
@@ -2129,7 +2179,7 @@ async function main() {
     const rehearsal = restoreSnapshotInIsolation(preservedSnapshot);
     console.log("production rehearsal step complete=restore-rehearsal");
     console.log(
-      `production rehearsal result=passed release_sha=${sha} isolated=${rehearsal.isolated} migration_0077=${rehearsal.migration0077} migration_0078=${rehearsal.migration0078} migration_0079=${rehearsal.migration0079} ledger_rows=${rehearsal.ledgerRows}`,
+      `production rehearsal result=passed release_sha=${sha} isolated=${rehearsal.isolated} migration_0077=${rehearsal.migration0077} migration_0078=${rehearsal.migration0078} migration_0079=${rehearsal.migration0079} migration_0080=${rehearsal.migration0080} migration_0081=${rehearsal.migration0081} ledger_rows=${rehearsal.ledgerRows}`,
     );
     return;
   }

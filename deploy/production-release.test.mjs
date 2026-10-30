@@ -12,6 +12,8 @@ import {
   MIGRATION_0077,
   MIGRATION_0078,
   MIGRATION_0079,
+  MIGRATION_0080,
+  MIGRATION_0081,
   PRESERVED_SNAPSHOT,
   PRODUCTION_BASELINE,
   PRODUCTION,
@@ -861,13 +863,20 @@ test("production rollback baseline matches the verified PR 205 production images
   assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:db33bc237f28b89b3c1af3cbc60c2dab3ba556502ade97c3d5a3d649116e04d1");
   assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:342c24069cc60c9dfbf983f5cf32a39bb2ea7fbbbdbabe34526fbc8c7665a40d");
   assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:59a10be3fe6a5486fc9e4b6e95b26fac49b4c43cfa3efde43ede2eb86567a1e5");
-  assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, ["0079_verified_zero_opening_counts"]);
+  assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, [
+    "0080_csr_delivery_closeout_accounting",
+    "0081_csr_inventory_accountability",
+  ]);
   assert.equal(MIGRATION_0077.timestamp, "1792440000000");
   assert.equal(MIGRATION_0077.sha256, "29b98289bd97b1c4781495a93d3d034f03a0daa503a96adfda035d2a3aeecd6b");
   assert.equal(MIGRATION_0078.timestamp, "1792785600000");
   assert.equal(MIGRATION_0078.sha256, "9d62687484ce3bdea6a0b127411643125739ec198644793b247313a92b2b78a4");
   assert.equal(MIGRATION_0079.timestamp, "1793044800000");
   assert.equal(MIGRATION_0079.sha256, "04105fcffc7f6219c4059a34739d4f26d96a233aa58a8a063e80e98ba4758aa6");
+  assert.equal(MIGRATION_0080.timestamp, "1793231605334");
+  assert.equal(MIGRATION_0080.sha256, "b01b36c35c0cf6cf80583d8d11accd8dbd6b7a6a7e9396f0bc582f161f1f517e");
+  assert.equal(MIGRATION_0081.timestamp, "1793318400000");
+  assert.equal(MIGRATION_0081.sha256, "ba37c03f6d5a20a3f8a9bcbf4688a270d01bad9c58dabcf4eb85567f5e2ba521");
   assert.equal(
     mayRestoreRollbackApi({ apiStopAttempted: true, migrationStarted: false }),
     true,
@@ -901,28 +910,28 @@ test("candidate builder and deployment approval are frozen to the exact verified
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
 
-test("migration lineage classifier accepts only the ordered 0079 continuation after applied 0077 and 0078", () => {
+test("migration lineage classifier accepts only the ordered 0080/0081 continuation after applied 0079", () => {
   assert.equal(
     classifyMigrationLineage(
-      "[migration-ledger] APPLIED 0077_catalogue_inventory_reconciliation hash\n[migration-ledger] APPLIED 0078_inventory_history_baseline_repair hash\n[migration-ledger] APPLIED 0079_verified_zero_opening_counts hash\n[migration-ledger] recognized lineage preserved: 54/54\n",
+      "[migration-ledger] APPLIED 0079_verified_zero_opening_counts hash\n[migration-ledger] APPLIED 0080_csr_delivery_closeout_accounting hash\n[migration-ledger] APPLIED 0081_csr_inventory_accountability hash\n[migration-ledger] recognized lineage preserved: 56/56\n",
     ),
     "applied",
   );
   assert.equal(
     classifyMigrationLineage(
-      "[migration-ledger] APPLIED 0077_catalogue_inventory_reconciliation hash\n[migration-ledger] APPLIED 0078_inventory_history_baseline_repair hash\n[migration-ledger] PENDING 0079_verified_zero_opening_counts hash\n[migration-ledger] recognized lineage preserved: 53/54\n",
+      "[migration-ledger] APPLIED 0079_verified_zero_opening_counts hash\n[migration-ledger] PENDING 0080_csr_delivery_closeout_accounting hash\n[migration-ledger] PENDING 0081_csr_inventory_accountability hash\n[migration-ledger] recognized lineage preserved: 54/56\n",
     ),
     "pending",
   );
   assert.throws(
-    () => classifyMigrationLineage("[migration-ledger] recognized lineage preserved: 53/54\n"),
-    /neither the exact 53-row pre-0079 path nor the verified 54-row applied lineage/,
+    () => classifyMigrationLineage("[migration-ledger] recognized lineage preserved: 54/56\n"),
+    /neither the exact 54-row pre-0080\/0081 path nor the verified 56-row applied lineage/,
   );
   assert.throws(
     () => classifyMigrationLineage(
-      "[migration-ledger] APPLIED 0077_catalogue_inventory_reconciliation hash\n[migration-ledger] PENDING 0078_inventory_history_baseline_repair hash\n[migration-ledger] PENDING 0079_verified_zero_opening_counts hash\n[migration-ledger] recognized lineage preserved: 52/54\n",
+      "[migration-ledger] APPLIED 0079_verified_zero_opening_counts hash\n[migration-ledger] PENDING 0081_csr_inventory_accountability hash\n[migration-ledger] PENDING 0080_csr_delivery_closeout_accounting hash\n[migration-ledger] recognized lineage preserved: 54/56\n",
     ),
-    /neither the exact 53-row pre-0079 path nor the verified 54-row applied lineage/,
+    /neither the exact 54-row pre-0080\/0081 path nor the verified 56-row applied lineage/,
   );
 });
 
@@ -988,7 +997,7 @@ test("approved P0 patch identity and rerun semantics are verified without changi
   assert.doesNotMatch(sql, /drizzle\.__drizzle_migrations/);
 });
 
-test("migration verifier checks physical 0077/0078/0079 effects and release gates bind the exact lineage", () => {
+test("migration verifier checks physical 0077-through-0081 effects and release gates bind the exact lineage", () => {
   const validator = readFileSync(new URL("../lib/db/scripts/validate-migration-ledger.ts", import.meta.url), "utf8");
   const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
   const guard = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
@@ -999,16 +1008,18 @@ test("migration verifier checks physical 0077/0078/0079 effects and release gate
   assert.match(validator, /0076 WooCommerce webhook physical effects/);
   assert.match(validator, /woocommerce_webhook_events_pkey/);
   assert.match(controller, /verifyP0Schema\(compose\)/);
-  assert.match(controller, /recognized lineage preserved: 53\/54/);
-  assert.match(controller, /recognized lineage preserved: 54\/54/);
+  assert.match(controller, /recognized lineage preserved: 54\/56/);
+  assert.match(controller, /recognized lineage preserved: 56\/56/);
   assert.match(controller, /Migration 0077 reconciliation schema/);
   assert.match(controller, /Migration 0078 repair evidence schema/);
   assert.match(controller, /Migration 0079 verified zero opening-count constraint/);
+  assert.match(controller, /Migration 0080 closeout accounting schema/);
+  assert.match(controller, /Migration 0081 inventory accountability schema/);
   assert.match(controller, /contype IN \('p','f','u'\)\)=5/);
   assert.match(controller, /FOREIGN KEY \(actor_user_id\) REFERENCES users\(id\)/);
   assert.match(controller, /Isolated migration \$\{migration\.tag\.slice\(0, 4\)\} rehearsal failed/);
   assert.match(controller, /--single-transaction/);
-  assert.match(controller, /Migration 0077\/0078\/0079 rehearsal changed representative production data counts/);
+  assert.match(controller, /Migration 0077-through-0081 rehearsal changed representative production data counts/);
   assert.match(guard, /recognized lineage preserved: 49\/51/);
   assert.match(guard, /appliedMigrations\.length === 51/);
   assert.match(guard, /hasPendingMigrations/);
@@ -1292,5 +1303,5 @@ test("post-migration resume accepts only exact approved runtime identities", () 
     controller,
     /runtimeAlreadyAdvanced && migrationState !== "applied"/,
   );
-  assert.match(controller, /exact 53-row migration lineage is applied/);
+  assert.match(controller, /exact 56-row migration lineage is applied/);
 });
