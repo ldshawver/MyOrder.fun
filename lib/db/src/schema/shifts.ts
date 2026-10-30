@@ -271,7 +271,9 @@ export const shiftInventoryItemsTable = pgTable("shift_inventory_items", {
   // Location linkage: which box/storefront/backstock this snapshot row tracks
   locationId: integer("location_id").references(() => inventoryLocationsTable.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, table => ({
+  shiftIdIdUnique: unique("shift_inventory_items_shift_id_id_unique").on(table.shiftId, table.id),
+}));
 
 export type LabTechShift = typeof labTechShiftsTable.$inferSelect;
 export type InventoryTemplate = typeof inventoryTemplatesTable.$inferSelect;

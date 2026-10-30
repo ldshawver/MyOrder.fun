@@ -8,6 +8,7 @@ import {
   boolean,
   jsonb,
   check,
+  unique,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
@@ -117,6 +118,7 @@ export const catalogItemsTable = pgTable("catalog_items", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
+  tenantIdIdUnique: unique("catalog_items_tenant_id_id_unique").on(table.tenantId, table.id),
   commissionEligibilityCheck: check("catalog_items_commission_eligibility_check", sql`${table.commissionEligibility} IN ('eligible', 'membership', 'excluded', 'unclassified')`),
 }));
 
