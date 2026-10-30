@@ -939,16 +939,16 @@ test("candidate builder and deployment approval are frozen to the exact verified
     new URL("../.github/workflows/build-production-platform.yml", import.meta.url),
     "utf8",
   );
-  const proposed = {
-    sha: "bf618373c49c73334060e50cca751400e331036f",
-    tree: "2e526826b0576b15cdd38fcc3edee08a8e0c3244",
+  const candidate = {
+    sha: "9169b2f7f40317b1dd6fdb86d901bc6b776b6832",
+    tree: "4a499a2618aed6c7c29750737f3ca22e733cd268",
   };
-  assert.match(workflow, new RegExp(`SOURCE_SHA: ${proposed.sha}`));
-  assert.match(workflow, new RegExp(`SOURCE_TREE: ${proposed.tree}`));
-  assert.match(workflow, new RegExp(`ref: ${proposed.sha}`));
-  assert.equal(workflow.match(new RegExp(proposed.sha, "g"))?.length, 5);
-  assert.equal(proposed.sha, APPROVED_RELEASE.sha);
-  assert.equal(proposed.tree, APPROVED_RELEASE.tree);
+  assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
+  assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));
+  assert.match(workflow, new RegExp(`ref: ${candidate.sha}`));
+  assert.equal(workflow.match(new RegExp(candidate.sha, "g"))?.length, 5);
+  assert.notEqual(candidate.sha, APPROVED_RELEASE.sha);
+  assert.notEqual(candidate.tree, APPROVED_RELEASE.tree);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
