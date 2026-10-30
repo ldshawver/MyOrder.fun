@@ -32,6 +32,8 @@ export type CatalogReadAccessDecision =
   | { allowed: true; reason: "approved_account" | "verified_legacy_tenant_member" }
   | { allowed: false; reason: Extract<AccountApprovalDecision, { allowed: false }>["reason"] | "missing_tenant_membership" | "unverified_identity" };
 
+export type CustomerCheckoutAccessDecision = CatalogReadAccessDecision;
+
 /** Shared approval policy. The owner exception satisfies provenance only; it
  * does not bypass account status, activity, tenant, role, or object checks. */
 export function evaluateAccountApproval(req: Request, user: {
@@ -86,6 +88,18 @@ export function evaluateCatalogReadAccess(req: Request, user: {
     return { allowed: false, reason: "unverified_identity" };
   }
   return { allowed: true, reason: "verified_legacy_tenant_member" };
+}
+
+/**
+ * Customer checkout uses the same tightly bounded legacy-account exception as
+ * customer catalogue reads. Some approved customer rows predate approval
+ * provenance, but their verified application identity and tenant assignment
+ * are still authoritative. The exception is deliberately limited to the
+ * non-privileged customer role; staff and administrative accounts continue to
+ * require complete approval provenance.
+ */
+export function evaluateCustomerCheckoutAccess(req: Request, user: Parameters<typeof evaluateCatalogReadAccess>[1]): CustomerCheckoutAccessDecision {
+  return evaluateCatalogReadAccess(req, user);
 }
 
 let usersSchemaVerified = false;
@@ -297,6 +311,23 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
 
 export function requireCatalogReadAccess(req: Request, res: Response, next: NextFunction): void {
   const decision = evaluateCatalogReadAccess(req, req.dbUser);
+  if (decision.allowed) {
+    next();
+    return;
+  }
+  if (decision.reason === "missing_tenant_membership") {
+    res.status(403).json({ error: "Tenant assignment required", code: "TENANT_ASSIGNMENT_REQUIRED" });
+    return;
+  }
+  if (decision.reason === "unverified_identity") {
+    res.status(403).json({ error: "Verified account provisioning required", code: "ACCOUNT_IDENTITY_REQUIRED" });
+    return;
+  }
+  requireApproved(req, res, next);
+}
+
+export function requireCustomerCheckoutAccess(req: Request, res: Response, next: NextFunction): void {
+  const decision = evaluateCustomerCheckoutAccess(req, req.dbUser);
   if (decision.allowed) {
     next();
     return;

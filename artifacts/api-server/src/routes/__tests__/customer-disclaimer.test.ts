@@ -19,6 +19,7 @@ vi.mock("../../lib/auth", () => ({
   loadDbUser: (q: express.Request, _s: express.Response, n: express.NextFunction) => { (q as unknown as { dbUser: Actor }).dbUser = mockActor; n(); },
   requireDbUser: (_q: express.Request, _s: express.Response, n: express.NextFunction) => n(),
   requireApproved: (_q: express.Request, _s: express.Response, n: express.NextFunction) => n(),
+  requireCustomerCheckoutAccess: (_q: express.Request, _s: express.Response, n: express.NextFunction) => n(),
   requireRole: (...roles: string[]) => (q: express.Request, s: express.Response, n: express.NextFunction) => {
     const role = (q as unknown as { dbUser?: Actor }).dbUser?.role;
     if (!role || !roles.includes(role)) return void s.status(403).json({ error: "Forbidden" });

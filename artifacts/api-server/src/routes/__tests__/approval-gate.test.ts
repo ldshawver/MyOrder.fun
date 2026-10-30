@@ -160,8 +160,10 @@ vi.mock("../../lib/singleTenant", () => ({
 
 
 vi.mock("../../lib/checkoutNormalizer", () => ({
+  CheckoutMappingError: class CheckoutMappingError extends Error {},
   normalizeCheckoutCart: vi.fn().mockResolvedValue([]),
   buildMerchantPayloadLines: vi.fn().mockReturnValue([]),
+  computeBaseCheckoutTotals: vi.fn().mockReturnValue({ subtotal: 0, tax: 0, total: 0, taxRate: 0 }),
 }));
 
 vi.mock("../../lib/logger", () => ({
@@ -403,6 +405,77 @@ describe("Approval gate — catalog endpoints", () => {
     expect(templateValues).toHaveBeenCalledTimes(1);
     expect(db.insert).toHaveBeenCalledWith(inventoryTemplatesTable);
     expect(db.insert).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Approval gate — customer checkout endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  const legacyApprovedCustomer = () => ({
+    ...makeApprovedUser(),
+    clerkId: "test-clerk-id",
+    role: "user",
+    tenantId: 7,
+    approvedByClerkId: null,
+    approvedAt: null,
+    identityStatus: "verified",
+    provisioningStatus: "active",
+  });
+
+  it.each([
+    ["cart confirmation", "/api/cart/convert"],
+    ["checkout quote", "/api/checkout/quote"],
+  ])("lets Landon's legacy-approved %s request reach the checkout handler without an organization claim", async (_label, path) => {
+    configureDbForUser(legacyApprovedCustomer());
+    const app = buildApp(ordersRouter);
+
+    // An empty body is intentionally invalid at the endpoint schema. Reaching
+    // that 400 proves the real checkout stack did not stop at the historical
+    // ACCOUNT_APPROVAL_PROVENANCE_REQUIRED middleware failure.
+    const res = await supertest(app).post(path).send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).not.toBe("ACCOUNT_APPROVAL_PROVENANCE_REQUIRED");
+  });
+
+  it("confirms the cart and returns server-selected payment methods for the legacy-approved customer", async () => {
+    configureDbForUser(legacyApprovedCustomer());
+    const app = buildApp(ordersRouter);
+    const res = await supertest(app).post("/api/cart/convert").send({
+      items: [{ catalogItemId: 417, quantity: 1 }],
+      confirmation: {
+        acceptedAllSalesFinal: true,
+        confirmedAt: "2026-10-29T20:00:00.000Z",
+        legalDisclaimerText: "All sales are final.",
+      },
+    });
+
+    expect(res.status, res.text).toBe(200);
+    expect(res.body.converted.stage).toBe("checkout_prepared");
+    expect(res.body.converted.paymentMethods).toEqual(expect.any(Array));
+    expect(res.body.conversionToken).toEqual(expect.any(String));
+  });
+
+  it.each([
+    ["pending", { status: "pending" }],
+    ["deactivated", { isActive: false }],
+    ["unprovisioned", { provisioningStatus: "pending" }],
+  ])("keeps a %s account out of checkout", async (_label, override) => {
+    configureDbForUser({ ...legacyApprovedCustomer(), ...override });
+    const app = buildApp(ordersRouter);
+    const res = await supertest(app).post("/api/cart/convert").send({});
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects a cross-tenant checkout before cart conversion", async () => {
+    configureDbForUser(legacyApprovedCustomer());
+    const app = buildApp(ordersRouter);
+    const res = await supertest(app).post("/api/cart/convert").send({ tenantId: 8 });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/tenant assignment does not match/i);
   });
 });
 

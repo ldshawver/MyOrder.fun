@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireCustomerCheckoutAccess, writeAuditLog } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
 import { requireOnlinePayments } from "../payments/config";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
@@ -19,7 +19,8 @@ import { releaseInventoryReservationsForOrder } from "../lib/inventoryReservatio
 
 const router: IRouter = Router();
 const limiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Payment requests rate-limited" } });
-const auth = [limiter, requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext] as const;
+const customerAuth = [limiter, requireAuth, loadDbUser, requireDbUser, requireCustomerCheckoutAccess, requireTenantContext] as const;
+const adminAuth = [limiter, requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext] as const;
 const Id = z.coerce.number().int().positive();
 const Empty = z.object({}).strict();
 const Capture = z.object({ attemptId: z.number().int().positive() }).strict();
@@ -56,18 +57,18 @@ async function webhookTenant(event: { resource?: Record<string, unknown> }): Pro
   return matches.size === 1 ? [...matches.values()][0] : null;
 }
 
-router.get("/payments/config", ...auth, async (req, res) => {
+router.get("/payments/config", ...customerAuth, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   try { const config = await loadTenantPaymentConfig(req.authorizedTenantId!); res.json(config.enabled ? { enabled: true, provider: "paypal", mode: config.mode, clientId: config.clientId, currency: "USD", countryCode: "US" } : { enabled: false, provider: "paypal", mode: "disabled" }); }
   catch { res.status(503).json({ enabled: false, provider: "paypal", mode: "disabled" }); }
 });
 
-router.post("/payments/paypal/orders/:orderId", ...auth, async (req, res) => {
+router.post("/payments/paypal/orders/:orderId", ...customerAuth, async (req, res) => {
   try { Empty.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).create({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, idempotencyKey: key(req.get("Idempotency-Key")) }); res.status(result.replayed ? 200 : 201).json(result); }
   catch (error) { fail(res, error); }
 });
 
-router.post("/payments/paypal/orders/:orderId/capture", ...auth, async (req, res) => {
+router.post("/payments/paypal/orders/:orderId/capture", ...customerAuth, async (req, res) => {
   let body: z.infer<typeof Capture> | undefined; let orderId: number | undefined;
   try { body = Capture.parse(req.body); orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).capture({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, idempotencyKey: key(req.get("Idempotency-Key")), finalize: (order, tx) => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx) }); await queueUberDeliveryForPaidOrder(req.authorizedTenantId!, orderId).catch(error => logger.warn({ tenantId: req.authorizedTenantId!, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CAPTURE_VERIFIED", tenantId: req.authorizedTenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
   catch (error) {
@@ -92,12 +93,12 @@ router.post("/payments/paypal/orders/:orderId/capture", ...auth, async (req, res
   }
 });
 
-router.post("/admin/payments/paypal/orders/:orderId/refund", ...auth, requirePermission("orders.refund"), async (req, res) => {
+router.post("/admin/payments/paypal/orders/:orderId/refund", ...adminAuth, requirePermission("orders.refund"), async (req, res) => {
   try { const body = Refund.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).refund({ tenantId: req.authorizedTenantId!, orderId, actorUserId: actor.id, idempotencyKey: key(req.get("Idempotency-Key")), amount: body.amount, reason: body.reason }); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_REFUND", tenantId: req.authorizedTenantId!, resourceType: "order", resourceId: String(orderId), metadata: { status: result.status, replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
   catch (error) { fail(res, error); }
 });
 
-router.get("/admin/payments/paypal/orders/:orderId/reconciliation", ...auth, requirePermission("orders.refund"), async (req, res) => {
+router.get("/admin/payments/paypal/orders/:orderId/reconciliation", ...adminAuth, requirePermission("orders.refund"), async (req, res) => {
   try { const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).reconcile({ tenantId: req.authorizedTenantId!, orderId, finalize: (order, tx) => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx) }); if (result.localState === "captured") await queueUberDeliveryForPaidOrder(req.authorizedTenantId!, orderId).catch(error => logger.warn({ tenantId: req.authorizedTenantId!, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); res.json(result); }
   catch (error) { fail(res, error); }
 });
