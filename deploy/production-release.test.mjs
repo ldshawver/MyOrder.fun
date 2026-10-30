@@ -940,8 +940,8 @@ test("candidate builder and deployment approval are frozen to the exact verified
     "utf8",
   );
   const candidate = {
-    sha: "9169b2f7f40317b1dd6fdb86d901bc6b776b6832",
-    tree: "4a499a2618aed6c7c29750737f3ca22e733cd268",
+    sha: "dc2b92d1b0e3f742c93d62194a1555558acbfda1",
+    tree: "9065d3876dbf281fa10437a15b6a714ec4c8c3a1",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));
