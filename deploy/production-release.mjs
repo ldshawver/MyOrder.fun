@@ -105,6 +105,16 @@ export const MIGRATION_0081 = Object.freeze({
   timestamp: "1793318400000",
   sha256: "ba37c03f6d5a20a3f8a9bcbf4688a270d01bad9c58dabcf4eb85567f5e2ba521",
 });
+export const MIGRATION_0082 = Object.freeze({
+  tag: "0082_location_pickup_scheduling",
+  timestamp: "1793404800000",
+  sha256: "b44416543abd37738b96d5b5f02d1d91bbbd484bd2ee0f78459759f152fded3d",
+});
+export const MIGRATION_0083 = Object.freeze({
+  tag: "0083_uber_quote_authoritative_settings",
+  timestamp: "1793408400000",
+  sha256: "57ea3f4656f845d903ff698c4f9143ac2f14ffef1f96d737fb6c66557abd50a4",
+});
 let releaseIdentity = APPROVED_RELEASE;
 export const PRODUCTION = Object.freeze({
   root: "/opt/alavont",
@@ -144,8 +154,8 @@ export const PRODUCTION_SMOKE_DOCKER_CHECKS = Object.freeze({
 });
 
 export const EXPECTED_PRODUCTION_MIGRATIONS = Object.freeze([
-  MIGRATION_0080.tag,
-  MIGRATION_0081.tag,
+  MIGRATION_0082.tag,
+  MIGRATION_0083.tag,
 ]);
 
 const preReleaseSchemaInvariants = (ledgerRows) => Object.freeze([
@@ -165,6 +175,22 @@ const preReleaseSchemaInvariants = (ledgerRows) => Object.freeze([
   ].map((id) => Object.freeze({ id, expected: "index", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ })),
   Object.freeze({ id: "public.catalogue_inventory_reconciliation_events", expected: ledgerRows === 51 ? "missing" : "table", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ }),
   Object.freeze({ id: "public.inventory_history_baseline_repair_events", expected: ledgerRows < 53 ? "missing" : "table", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ }),
+  Object.freeze({ id: "public.location_pickup_schedules", expected: "missing", allowed: /^(?:table|partitioned table|index|partitioned index|view|materialized view|sequence|foreign table|other|missing)$/ }),
+  ...[
+    "orders.pickup_location_id",
+    "orders.pickup_at",
+    "orders.pickup_schedule_snapshot",
+    "uber_direct_settings.pickup_latitude",
+    "uber_direct_settings.pickup_longitude",
+    "uber_direct_settings.external_store_id",
+    "uber_direct_settings.pickup_window_minutes",
+    "uber_direct_settings.dropoff_window_minutes",
+    "uber_delivery_quotes.pickup_location_id",
+    "uber_delivery_quotes.pickup_at",
+    "uber_delivery_quotes.pickup_schedule_snapshot",
+    "uber_delivery_quotes.manifest_total_value",
+    "uber_delivery_quotes.external_store_id",
+  ].map((id) => Object.freeze({ id: `public.${id}`, expected: "missing", allowed: /^(?:present|missing)$/ })),
   ...[
     "public.catalog_items_tenant_id_id_unique",
     "public.inventory_locations_tenant_id_id_unique",
@@ -175,10 +201,10 @@ const preReleaseSchemaInvariants = (ledgerRows) => Object.freeze([
   Object.freeze({ id: "admin_settings_duplicate_tenant_groups", expected: "0", allowed: /^\d+$/ }),
   Object.freeze({ id: "tenants_duplicate_casefolded_slug_groups", expected: "0", allowed: /^\d+$/ }),
 ]);
-export const PRE_RELEASE_SCHEMA_INVARIANTS = preReleaseSchemaInvariants(53);
+export const PRE_RELEASE_SCHEMA_INVARIANTS = preReleaseSchemaInvariants(56);
 
-export function assertPreReleaseSchemaInvariantDiagnostics(rows, ledgerRows = 53) {
-  if (![51, 52, 53, 54].includes(ledgerRows))
+export function assertPreReleaseSchemaInvariantDiagnostics(rows, ledgerRows = 56) {
+  if (![51, 52, 53, 54, 55, 56].includes(ledgerRows))
     throw new Error("Isolated restore migration ledger length is not a recognized release predecessor");
   const invariants = preReleaseSchemaInvariants(ledgerRows);
   if (!Array.isArray(rows) || rows.length !== invariants.length)
@@ -203,14 +229,16 @@ export function assertPreReleaseSchemaInvariantDiagnostics(rows, ledgerRows = 53
 }
 
 export function migrationsForRestoredLedger(ledgerRows) {
-  if (![51, 52, 53, 54].includes(ledgerRows))
+  if (![51, 52, 53, 54, 55, 56].includes(ledgerRows))
     throw new Error("Isolated restore migration ledger length is not a recognized release predecessor");
   return [
     ...(ledgerRows === 51 ? [[MIGRATION_0077, "0077_catalogue_inventory_reconciliation.sql"]] : []),
     ...(ledgerRows <= 52 ? [[MIGRATION_0078, "0078_inventory_history_baseline_repair.sql"]] : []),
     ...(ledgerRows <= 53 ? [[MIGRATION_0079, "0079_verified_zero_opening_counts.sql"]] : []),
-    [MIGRATION_0080, "0080_csr_delivery_closeout_accounting.sql"],
-    [MIGRATION_0081, "0081_csr_inventory_accountability.sql"],
+    ...(ledgerRows <= 54 ? [[MIGRATION_0080, "0080_csr_delivery_closeout_accounting.sql"]] : []),
+    ...(ledgerRows <= 55 ? [[MIGRATION_0081, "0081_csr_inventory_accountability.sql"]] : []),
+    [MIGRATION_0082, "0082_location_pickup_scheduling.sql"],
+    [MIGRATION_0083, "0083_uber_quote_authoritative_settings.sql"],
   ];
 }
 
@@ -1212,9 +1240,9 @@ function createSnapshot(compose, backupRoot) {
     compose,
     "SELECT id || '|' || hash || '|' || created_at::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (ledger.split("\n").length !== 54)
+  if (ledger.split("\n").length !== 56)
     throw new Error(
-      "Expected the recognized 54-row pre-0080/0081 production ledger",
+      "Expected the recognized 56-row pre-0082/0083 production ledger",
     );
   const counts = query(
     compose,
@@ -1277,7 +1305,7 @@ function createSnapshot(compose, backupRoot) {
   });
   writeFileSync(
     `${archive}.metadata.json`,
-    `${JSON.stringify({ sourceApiRevision: PRODUCTION_BASELINE.apiRevision, sourceApiImage: PRODUCTION_BASELINE.apiImage, sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision, sourcePlatformImage: PRODUCTION_BASELINE.platformImage, targetSha: releaseIdentity.sha, targetTree: releaseIdentity.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 54, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({ sourceApiRevision: PRODUCTION_BASELINE.apiRevision, sourceApiImage: PRODUCTION_BASELINE.apiImage, sourcePlatformRevision: PRODUCTION_BASELINE.platformRevision, sourcePlatformImage: PRODUCTION_BASELINE.platformImage, targetSha: releaseIdentity.sha, targetTree: releaseIdentity.tree, productionProject: PRODUCTION.project, database: PRODUCTION.database, databaseIdentity: identity, ledgerRows: 56, ledger, representativeCounts: counts, archiveSha256: digest, capturedAt: new Date().toISOString() }, null, 2)}\n`,
     { flag: "wx", mode: 0o600 },
   );
   chmodSync(partial, 0o600);
@@ -1320,6 +1348,15 @@ export function preReleaseSchemaDiagnosticSql() {
     add(`public.${name}`, relationTypeExpression(name));
   add("public.catalogue_inventory_reconciliation_events", relationTypeExpression("catalogue_inventory_reconciliation_events"));
   add("public.inventory_history_baseline_repair_events", relationTypeExpression("inventory_history_baseline_repair_events"));
+  add("public.location_pickup_schedules", relationTypeExpression("location_pickup_schedules"));
+  for (const [table, columns] of [
+    ["orders", ["pickup_location_id", "pickup_at", "pickup_schedule_snapshot"]],
+    ["uber_direct_settings", ["pickup_latitude", "pickup_longitude", "external_store_id", "pickup_window_minutes", "dropoff_window_minutes"]],
+    ["uber_delivery_quotes", ["pickup_location_id", "pickup_at", "pickup_schedule_snapshot", "manifest_total_value", "external_store_id"]],
+  ]) {
+    for (const column of columns)
+      add(`public.${table}.${column}`, `CASE WHEN EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='${table}' AND column_name='${column}') THEN 'present' ELSE 'missing' END`);
+  }
   for (const [name, columns] of PRE_RELEASE_UNIQUE_INDEXES) {
     add(
       `public.${name}`,
@@ -1473,8 +1510,8 @@ function restoreSnapshotInIsolation(snapshot) {
         "Isolated restore migration ledger differs from snapshot source",
       );
     const ledgerRows = recoveredLedger.trim().split("\n").filter(Boolean).length;
-    if (![51, 52, 53, 54].includes(ledgerRows))
-      throw new Error("Isolated restore does not have a recognized 0077/0078/0079 predecessor lineage");
+    if (![51, 52, 53, 54, 55, 56].includes(ledgerRows))
+      throw new Error("Isolated restore does not have a recognized 0077-through-0083 predecessor lineage");
     const invariantJson = run("docker", [
       "exec",
       name,
@@ -1579,17 +1616,37 @@ function restoreSnapshotInIsolation(snapshot) {
         AND to_regclass('public.contractor_inventory_adjustment_applications') IS NOT NULL
         AND to_regclass('public.shift_inventory_shortage_lines') IS NOT NULL
         AND (SELECT count(*) FROM pg_trigger WHERE tgname IN ('contractor_inventory_adjustments_immutable','contractor_inventory_adjustment_applications_immutable','shift_inventory_shortage_lines_immutable') AND NOT tgisinternal)=3
+        AND to_regclass('public.location_pickup_schedules') IS NOT NULL
+        AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='location_pickup_schedules')=10
+        AND NOT EXISTS (
+          SELECT 1 FROM (VALUES
+            ('id','int4','NO'), ('tenant_id','int4','NO'), ('location_id','int4','NO'),
+            ('time_zone','text','NO'), ('weekly_hours','jsonb','NO'), ('exceptions','jsonb','NO'),
+            ('slot_minutes','int4','NO'), ('max_advance_days','int4','NO'), ('version','int4','NO'),
+            ('updated_at','timestamptz','NO')
+          ) AS expected(column_name, udt_name, is_nullable)
+          WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema='public'
+            AND c.table_name='location_pickup_schedules' AND c.column_name=expected.column_name
+            AND c.udt_name=expected.udt_name AND c.is_nullable=expected.is_nullable)
+        )
+        AND (SELECT count(*) FROM pg_constraint WHERE conrelid='public.location_pickup_schedules'::regclass AND conname IN ('location_pickup_schedules_pkey','location_pickup_schedules_tenant_id_fkey','location_pickup_schedules_tenant_location_unique','location_pickup_schedules_tenant_location_fk','location_pickup_schedules_slot_minutes_check','location_pickup_schedules_max_advance_days_check','location_pickup_schedules_version_check') AND convalidated)=7
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.orders'::regclass AND conname='orders_tenant_pickup_location_fk' AND contype='f' AND convalidated)
+        AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='orders' AND column_name IN ('pickup_location_id','pickup_at','pickup_schedule_snapshot'))=3
+        AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='uber_direct_settings' AND column_name IN ('pickup_latitude','pickup_longitude','external_store_id','pickup_window_minutes','dropoff_window_minutes'))=5
+        AND (SELECT count(*) FROM pg_constraint WHERE conrelid='public.uber_direct_settings'::regclass AND conname IN ('uber_direct_settings_pickup_latitude_check','uber_direct_settings_pickup_longitude_check','uber_direct_settings_pickup_window_check','uber_direct_settings_dropoff_window_check') AND contype='c' AND convalidated)=4
+        AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='uber_delivery_quotes' AND column_name IN ('pickup_location_id','pickup_at','pickup_schedule_snapshot','manifest_total_value','external_store_id'))=5
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.uber_delivery_quotes'::regclass AND conname='uber_delivery_quotes_tenant_pickup_location_fk' AND contype='f' AND convalidated)
         AND (SELECT count(*) FROM drizzle.__drizzle_migrations)=${ledgerRows}`,
     ]).trim();
     if (rehearsalVerified !== "t")
-      throw new Error("Isolated 0077-through-0081 rehearsal schema verification failed");
+      throw new Error("Isolated 0077-through-0083 rehearsal schema verification failed");
     const countsAfterRehearsal = run("docker", [
       "exec", name, "psql", "-U", "postgres", "-d", "alavont_recovery",
       "-X", "-v", "ON_ERROR_STOP=1", "-Atc",
       "SELECT 'orders='||(SELECT count(*) FROM orders)||';inventory_transaction_log='||(SELECT count(*) FROM inventory_transaction_log)||';inventory_reservations='||(SELECT count(*) FROM inventory_reservations)||';inventory_balances='||(SELECT count(*) FROM inventory_balances)||';catalog_items='||(SELECT count(*) FROM catalog_items)||';order_items='||(SELECT count(*) FROM order_items)",
     ]).trim();
     if (countsAfterRehearsal !== snapshot.counts.trim())
-      throw new Error("Migration 0077-through-0081 rehearsal changed representative production data counts");
+      throw new Error("Migration 0077-through-0083 rehearsal changed representative production data counts");
     const isolation = JSON.parse(run("docker", ["inspect", name]))[0];
     if (
       isolation.HostConfig.NetworkMode !== "none" ||
@@ -1609,6 +1666,8 @@ function restoreSnapshotInIsolation(snapshot) {
       migration0079: true,
       migration0080: true,
       migration0081: true,
+      migration0082: true,
+      migration0083: true,
     };
   } finally {
     if (started) {
@@ -1636,23 +1695,25 @@ function verifyMigration(compose) {
     compose,
     "SELECT substring(hash from 1 for 0) || id::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (actual.split("\n").length !== 56)
-    throw new Error("Production migration ledger count is not 56");
+  if (actual.split("\n").length !== 58)
+    throw new Error("Production migration ledger count is not 58");
   const journal = JSON.parse(
     readFileSync(
       path.join(compose.releaseRoot, "lib/db/drizzle/meta/_journal.json"),
       "utf8",
     ),
   );
-  if (journal.entries.length !== 56)
-    throw new Error("Candidate migration journal must contain all 56 canonical entries through 0081");
+  if (journal.entries.length !== 58)
+    throw new Error("Candidate migration journal must contain all 58 canonical entries through 0083");
   if (
     expected.some((tag) => !journal.entries.some((entry) => entry.tag === tag))
   )
-    throw new Error("Approved migrations 0080/0081 are missing from the candidate journal");
+    throw new Error("Approved migrations 0082/0083 are missing from the candidate journal");
   for (const [migration, filename] of [
     [MIGRATION_0080, "0080_csr_delivery_closeout_accounting.sql"],
     [MIGRATION_0081, "0081_csr_inventory_accountability.sql"],
+    [MIGRATION_0082, "0082_location_pickup_scheduling.sql"],
+    [MIGRATION_0083, "0083_uber_quote_authoritative_settings.sql"],
   ]) {
     const migrationPath = path.join(compose.releaseRoot, "lib/db/drizzle", filename);
     if (createHash("sha256").update(readFileSync(migrationPath)).digest("hex") !== migration.sha256)
@@ -1681,7 +1742,7 @@ function verifyMigration(compose) {
     throw new Error(`Post-migration validator did not preserve ${MIGRATION_0077.tag}`);
   if (!validator.includes(`APPLIED ${MIGRATION_0078.tag} `))
     throw new Error(`Post-migration validator did not preserve ${MIGRATION_0078.tag}`);
-  if (!validator.includes("recognized lineage preserved: 56/56"))
+  if (!validator.includes("recognized lineage preserved: 58/58"))
     throw new Error(
       "Post-migration validator did not confirm the complete candidate migration lineage",
     );
@@ -1772,6 +1833,63 @@ function verifyMigration(compose) {
   `);
   if (inventoryAccountabilitySchema !== "t")
     throw new Error("Migration 0081 inventory accountability schema is absent or structurally invalid");
+  const pickupSchedulingSchema = query(compose, `
+    SELECT
+      to_regclass('public.location_pickup_schedules') IS NOT NULL
+      AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='location_pickup_schedules')=10
+      AND NOT EXISTS (
+        SELECT 1 FROM (VALUES
+          ('id','int4','NO'), ('tenant_id','int4','NO'), ('location_id','int4','NO'),
+          ('time_zone','text','NO'), ('weekly_hours','jsonb','NO'), ('exceptions','jsonb','NO'),
+          ('slot_minutes','int4','NO'), ('max_advance_days','int4','NO'), ('version','int4','NO'),
+          ('updated_at','timestamptz','NO')
+        ) AS expected(column_name, udt_name, is_nullable)
+        WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema='public'
+          AND c.table_name='location_pickup_schedules' AND c.column_name=expected.column_name
+          AND c.udt_name=expected.udt_name AND c.is_nullable=expected.is_nullable)
+      )
+      AND (SELECT count(*) FROM pg_constraint WHERE conrelid='public.location_pickup_schedules'::regclass AND conname IN ('location_pickup_schedules_pkey','location_pickup_schedules_tenant_id_fkey','location_pickup_schedules_tenant_location_unique','location_pickup_schedules_tenant_location_fk','location_pickup_schedules_slot_minutes_check','location_pickup_schedules_max_advance_days_check','location_pickup_schedules_version_check') AND convalidated)=7
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.orders'::regclass AND conname='orders_tenant_pickup_location_fk' AND contype='f' AND convalidated)
+      AND NOT EXISTS (
+        SELECT 1 FROM (VALUES
+          ('pickup_location_id','int4','YES'), ('pickup_at','timestamptz','YES'), ('pickup_schedule_snapshot','jsonb','YES')
+        ) AS expected(column_name, udt_name, is_nullable)
+        WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema='public'
+          AND c.table_name='orders' AND c.column_name=expected.column_name
+          AND c.udt_name=expected.udt_name AND c.is_nullable=expected.is_nullable)
+      )
+      AND (SELECT count(*) FROM drizzle.__drizzle_migrations WHERE created_at=${MIGRATION_0082.timestamp})=1
+  `);
+  if (pickupSchedulingSchema !== "t")
+    throw new Error("Migration 0082 pickup scheduling schema is absent or structurally invalid");
+  const uberQuoteSettingsSchema = query(compose, `
+    SELECT
+      NOT EXISTS (
+        SELECT 1 FROM (VALUES
+          ('pickup_latitude','numeric','YES'), ('pickup_longitude','numeric','YES'),
+          ('external_store_id','text','YES'), ('pickup_window_minutes','int4','YES'),
+          ('dropoff_window_minutes','int4','YES')
+        ) AS expected(column_name, udt_name, is_nullable)
+        WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema='public'
+          AND c.table_name='uber_direct_settings' AND c.column_name=expected.column_name
+          AND c.udt_name=expected.udt_name AND c.is_nullable=expected.is_nullable)
+      )
+      AND (SELECT count(*) FROM pg_constraint WHERE conrelid='public.uber_direct_settings'::regclass AND conname IN ('uber_direct_settings_pickup_latitude_check','uber_direct_settings_pickup_longitude_check','uber_direct_settings_pickup_window_check','uber_direct_settings_dropoff_window_check') AND contype='c' AND convalidated)=4
+      AND NOT EXISTS (
+        SELECT 1 FROM (VALUES
+          ('pickup_location_id','int4','YES'), ('pickup_at','timestamptz','YES'),
+          ('pickup_schedule_snapshot','jsonb','YES'), ('manifest_total_value','int4','YES'),
+          ('external_store_id','text','YES')
+        ) AS expected(column_name, udt_name, is_nullable)
+        WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema='public'
+          AND c.table_name='uber_delivery_quotes' AND c.column_name=expected.column_name
+          AND c.udt_name=expected.udt_name AND c.is_nullable=expected.is_nullable)
+      )
+      AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.uber_delivery_quotes'::regclass AND conname='uber_delivery_quotes_tenant_pickup_location_fk' AND contype='f' AND convalidated)
+      AND (SELECT count(*) FROM drizzle.__drizzle_migrations WHERE created_at=${MIGRATION_0083.timestamp})=1
+  `);
+  if (uberQuoteSettingsSchema !== "t")
+    throw new Error("Migration 0083 Uber quote settings schema is absent or structurally invalid");
   verifyP0Schema(compose);
   const checks = query(
     compose,
@@ -1807,17 +1925,17 @@ export function classifyMigrationLineage(output) {
   ].map((match) => match[1]);
   if (
     JSON.stringify(pending) === JSON.stringify(expected) &&
-    output.includes("recognized lineage preserved: 54/56")
+    output.includes("recognized lineage preserved: 56/58")
   )
     return "pending";
   if (
     pending.length === 0 &&
     expected.every((tag) => output.includes(`APPLIED ${tag} `)) &&
-    output.includes("recognized lineage preserved: 56/56")
+    output.includes("recognized lineage preserved: 58/58")
   )
     return "applied";
   throw new Error(
-    `Production migration state is neither the exact 54-row pre-0080/0081 path nor the verified 56-row applied lineage: ${pending.join(",")}`,
+    `Production migration state is neither the exact 56-row pre-0082/0083 path nor the verified 58-row applied lineage: ${pending.join(",")}`,
   );
 }
 
@@ -2050,7 +2168,7 @@ async function main() {
         );
       });
       if (runtimeAlreadyAdvanced && migrationState !== "applied")
-        throw new Error("Approved runtime image cannot be resumed before the exact 56-row migration lineage is applied");
+        throw new Error("Approved runtime image cannot be resumed before the exact 58-row migration lineage is applied");
       if (migrationState === "applied") migrationStarted = true;
     },
     "verify-writer-inventory": async () => {
@@ -2106,7 +2224,7 @@ async function main() {
     },
     migrate: async () => {
       if (migrationState === "applied") {
-        console.log("production resume: exact 56-row migration lineage is already applied");
+        console.log("production resume: exact 58-row migration lineage is already applied");
         return;
       }
       migrationStarted = true;
@@ -2256,7 +2374,7 @@ async function main() {
         recentLogs.match(/\b(?:ERROR|FATAL|uncaught exception)\b/gi) ?? []
       ).length;
       console.log(
-        `production smoke health_sha=${api.sha} homepage=${home.status} sign_in=${signInStatus} pos_shell=${posStatus} public_catalog_items=${publicCatalogItems} public_catalog_total=${eligiblePublicTotal} unauthenticated=${accessResults.join(",")} paypal=disabled cash=not-mutated print_bridge=not-probed sanitized_log_errors=${errorLogCount} secret_like_log_entries=${secretLikeLogEntries} checks=health,homepage,sign_in,pos_shell,public_catalog_filter,auth,admin,inventory_read_gate,orders_read_gate,ledger,compose,restart,oom,log_review`,
+        `production smoke health_sha=${api.sha} homepage=${home.status} sign_in=${signInStatus} pos_shell=${posStatus} public_catalog_items=${publicCatalogItems} public_catalog_total=${eligiblePublicTotal} unauthenticated=${accessResults.join(",")} paypal=tenant-readiness-verified cash=not-mutated print_bridge=not-probed sanitized_log_errors=${errorLogCount} secret_like_log_entries=${secretLikeLogEntries} checks=health,homepage,sign_in,pos_shell,public_catalog_filter,auth,admin,inventory_read_gate,orders_read_gate,ledger,compose,restart,oom,log_review`,
       );
     },
   };
@@ -2270,7 +2388,7 @@ async function main() {
     const rehearsal = restoreSnapshotInIsolation(preservedSnapshot);
     console.log("production rehearsal step complete=restore-rehearsal");
     console.log(
-      `production rehearsal result=passed release_sha=${sha} isolated=${rehearsal.isolated} migration_0077=${rehearsal.migration0077} migration_0078=${rehearsal.migration0078} migration_0079=${rehearsal.migration0079} migration_0080=${rehearsal.migration0080} migration_0081=${rehearsal.migration0081} ledger_rows=${rehearsal.ledgerRows}`,
+      `production rehearsal result=passed release_sha=${sha} isolated=${rehearsal.isolated} migration_0077=${rehearsal.migration0077} migration_0078=${rehearsal.migration0078} migration_0079=${rehearsal.migration0079} migration_0080=${rehearsal.migration0080} migration_0081=${rehearsal.migration0081} migration_0082=${rehearsal.migration0082} migration_0083=${rehearsal.migration0083} ledger_rows=${rehearsal.ledgerRows}`,
     );
     return;
   }
