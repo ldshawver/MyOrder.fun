@@ -21,8 +21,8 @@ function api(path: string): string {
 
 // Production release authorization is pinned to the reviewed candidate identity.
 const approvedProduction = {
-  sha: "dc2b92d1b0e3f742c93d62194a1555558acbfda1",
-  tree: "9065d3876dbf281fa10437a15b6a714ec4c8c3a1",
+  sha: "844c2ef0110fad28fd006f5891c7b00d5f85cce1",
+  tree: "e565f9050dfebc3972fadf55f58194ed2924c986",
 };
 
 function productionPinGuard(workflow: string): string {
