@@ -53,7 +53,7 @@ describe("Phase 3 POS operations Product Master integration", () => {
       expect(catalog).not.toContain("alavontInStock: available");
       expect(catalog).toContain("isCustomerView ? publicCatalogEligibility() : undefined");
       expect(catalog).toContain("query.data.customerPreview");
-      expect(checkout).toContain("if (!isCatalogItemForSale(ci))");
+      expect(checkout).toContain("ci.isWooManaged === true ? !isCatalogItemLifecycleEligible(ci) : !isCatalogItemForSale(ci)");
       expect(checkout).toContain('"item_unavailable"');
     });
   });
