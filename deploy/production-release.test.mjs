@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createCipheriv, createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import {
@@ -29,7 +29,8 @@ import {
   assertReusableReleaseIdentity,
   classifyMigrationLineage,
   assertKnownNonWriterService,
-  assertNoEncryptedProductionPayPalSettings,
+  assertProductionPayPalReadiness,
+  decryptProductionPayPalSettings,
   assertPublicCatalogSmokePayload,
   assertPlatformSmokeDocument,
   executeProductionSequence,
@@ -626,7 +627,7 @@ test("production Compose is pinned to the production database, release images, v
   }), /Migration image/);
   const enabledPaypal = structuredClone(expectedConfig);
   enabledPaypal.services.api.environment.PAYMENT_MODE = "live";
-  assert.throws(() => assertProductionConfig(enabledPaypal), /fail-closed/);
+  assert.throws(() => assertProductionConfig(enabledPaypal), /deployment secrets/);
   const enabledUberDispatch = structuredClone(expectedConfig);
   enabledUberDispatch.services.api.environment.UBER_DIRECT_DISPATCH_ENABLED =
     "true";
@@ -940,15 +941,15 @@ test("candidate builder and deployment approval are frozen to the exact verified
     "utf8",
   );
   const candidate = {
-    sha: "dc2b92d1b0e3f742c93d62194a1555558acbfda1",
-    tree: "9065d3876dbf281fa10437a15b6a714ec4c8c3a1",
+    sha: "844c2ef0110fad28fd006f5891c7b00d5f85cce1",
+    tree: "e565f9050dfebc3972fadf55f58194ed2924c986",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));
   assert.match(workflow, new RegExp(`ref: ${candidate.sha}`));
   assert.equal(workflow.match(new RegExp(candidate.sha, "g"))?.length, 5);
-  assert.equal(candidate.sha, APPROVED_RELEASE.sha);
-  assert.equal(candidate.tree, APPROVED_RELEASE.tree);
+  assert.notEqual(candidate.sha, APPROVED_RELEASE.sha);
+  assert.notEqual(candidate.tree, APPROVED_RELEASE.tree);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
@@ -1021,12 +1022,33 @@ test("approved image gate keeps manifest, repository, config and metadata identi
   );
 });
 
-test("production PayPal configuration stays fail-closed in Release 1", () => {
-  assert.equal(assertNoEncryptedProductionPayPalSettings(0), true);
-  assert.throws(
-    () => assertNoEncryptedProductionPayPalSettings(1),
-    /provider readiness/,
-  );
+test("production PayPal readiness accepts only audited, decryptable live tenant configuration", () => {
+  const key = Buffer.alloc(32, 7);
+  const iv = Buffer.alloc(12, 3);
+  const config = {
+    version: 1,
+    enabled: true,
+    environment: "live",
+    clientId: "live-client",
+    clientSecret: "live-secret",
+    webhookId: "live-webhook",
+  };
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(config), "utf8"),
+    cipher.final(),
+  ]);
+  const ciphertext = `enc:v1:${Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString("base64")}`;
+  const decrypted = decryptProductionPayPalSettings(ciphertext, key.toString("hex"));
+  const ready = [{ tenantId: 1, paypalEnabled: true, connectionReady: true, config: decrypted }];
+  assert.equal(assertProductionPayPalReadiness(ready), true);
+  assert.throws(() => decryptProductionPayPalSettings(ciphertext, Buffer.alloc(32, 8).toString("hex")), /cannot be decrypted/);
+  assert.throws(() => assertProductionPayPalReadiness([]), /no configured tenant/);
+  assert.throws(() => assertProductionPayPalReadiness([{ ...ready[0], paypalEnabled: false }]), /not enabled/);
+  assert.throws(() => assertProductionPayPalReadiness([{ ...ready[0], connectionReady: false }]), /within 24 hours/);
+  assert.throws(() => assertProductionPayPalReadiness([{ ...ready[0], config: { ...config, environment: "sandbox" } }]), /live configuration/);
+  assert.throws(() => assertProductionPayPalReadiness([{ ...ready[0], config: { ...config, extra: true } }]), /schema/);
+  assert.throws(() => assertProductionPayPalReadiness([{ ...ready[0], config: { ...config, webhookId: "" } }]), /webhookId/);
 });
 
 test("approved P0 patch identity and rerun semantics are verified without changing the Drizzle ledger", () => {

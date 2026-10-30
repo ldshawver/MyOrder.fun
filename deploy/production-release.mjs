@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createDecipheriv, createHash, scryptSync } from "node:crypto";
 import {
   createReadStream,
   existsSync,
@@ -419,7 +419,7 @@ export function assertProductionConfig(config, expected) {
     ].some((value) => String(value ?? "").trim() !== "")
   ) {
     throw new Error(
-      "Release 1 production online payments must remain fail-closed until production PayPal is explicitly configured",
+      "Production PayPal deployment secrets must remain disabled; encrypted tenant settings are the only approved authority",
     );
   }
   if (
@@ -524,11 +524,60 @@ export function mayRestoreRollbackApi({ apiStopAttempted, migrationStarted }) {
   return apiStopAttempted === true && migrationStarted === false;
 }
 
-export function assertNoEncryptedProductionPayPalSettings(count) {
-  if (count !== 0)
-    throw new Error(
-      "Production has tenant PayPal configuration; refusing this release until provider readiness is reviewed",
-    );
+export function decryptProductionPayPalSettings(ciphertext, rawKey) {
+  if (typeof ciphertext !== "string" || !ciphertext.startsWith("enc:v1:"))
+    throw new Error("Production PayPal settings are not stored in the approved encrypted envelope");
+  if (typeof rawKey !== "string" || rawKey.trim() === "")
+    throw new Error("Production settings encryption key is unavailable");
+  let key;
+  if (/^[0-9a-fA-F]{64}$/.test(rawKey)) key = Buffer.from(rawKey, "hex");
+  else {
+    const decoded = Buffer.from(rawKey, "base64");
+    key = decoded.length === 32
+      ? decoded
+      : scryptSync(rawKey, "orderflow-settings-enc-v1", 32);
+  }
+  const payload = Buffer.from(ciphertext.slice("enc:v1:".length), "base64");
+  if (payload.length < 29)
+    throw new Error("Production PayPal encrypted settings payload is invalid");
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", key, payload.subarray(0, 12));
+    decipher.setAuthTag(payload.subarray(12, 28));
+    const plaintext = Buffer.concat([
+      decipher.update(payload.subarray(28)),
+      decipher.final(),
+    ]).toString("utf8");
+    return JSON.parse(plaintext);
+  } catch {
+    throw new Error("Production PayPal settings cannot be decrypted and validated");
+  }
+}
+
+export function assertProductionPayPalReadiness(records) {
+  if (!Array.isArray(records) || records.length === 0)
+    throw new Error("Production PayPal readiness has no configured tenant");
+  const tenantIds = new Set();
+  for (const record of records) {
+    if (!Number.isSafeInteger(record?.tenantId) || record.tenantId <= 0 || tenantIds.has(record.tenantId))
+      throw new Error("Production PayPal readiness tenant identity is invalid");
+    tenantIds.add(record.tenantId);
+    if (record.paypalEnabled !== true)
+      throw new Error("Production PayPal configuration is not enabled for its tenant");
+    if (record.connectionReady !== true)
+      throw new Error("Production PayPal requires a successful live connection test after its latest configuration change and within 24 hours");
+    const config = record.config;
+    const keys = config && typeof config === "object" && !Array.isArray(config)
+      ? Object.keys(config).sort()
+      : [];
+    if (JSON.stringify(keys) !== JSON.stringify(["clientId", "clientSecret", "enabled", "environment", "version", "webhookId"]))
+      throw new Error("Production PayPal decrypted settings schema is invalid");
+    if (config.version !== 1 || config.enabled !== true || config.environment !== "live")
+      throw new Error("Production PayPal must use an enabled v1 live configuration");
+    for (const [name, maximum] of [["clientId", 300], ["clientSecret", 4096], ["webhookId", 300]]) {
+      if (typeof config[name] !== "string" || config[name].trim() === "" || config[name].length > maximum)
+        throw new Error(`Production PayPal ${name} is missing or invalid`);
+    }
+  }
   return true;
 }
 
@@ -1034,14 +1083,50 @@ function stopAndVerifyWriters(compose, containerBaseline) {
     );
 }
 
-function verifyProductionPayPalDisabled(compose) {
-  if (compose.config.services.api.environment.PAYMENT_MODE !== "disabled")
-    throw new Error("Production PayPal mode is not disabled");
-  const encryptedSettings = query(
+function verifyProductionPayPalReadiness(compose) {
+  const apiEnvironment = compose.config.services.api.environment;
+  if (apiEnvironment.PAYMENT_MODE !== "disabled" || [
+    apiEnvironment.PAYPAL_ENVIRONMENT,
+    apiEnvironment.PAYPAL_CLIENT_ID,
+    apiEnvironment.PAYPAL_CLIENT_SECRET,
+    apiEnvironment.PAYPAL_WEBHOOK_ID,
+  ].some(value => String(value ?? "").trim() !== ""))
+    throw new Error("Production PayPal deployment-secret configuration is not disabled");
+  const raw = query(
     compose,
-    "SELECT count(*) FROM admin_settings WHERE merchant_processor_config IS NOT NULL AND merchant_processor_config::jsonb ? 'paypalRuntimeCiphertext'",
+    `SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'tenantId', settings.tenant_id,
+      'paypalEnabled', 'paypal' = ANY(COALESCE(settings.enabled_processors, '{}'::text[])),
+      'ciphertext', settings.merchant_processor_config::jsonb->>'paypalRuntimeCiphertext',
+      'connectionReady', EXISTS (
+        SELECT 1 FROM audit_logs tested
+        WHERE tested.tenant_id = settings.tenant_id
+          AND tested.action = 'settings.paypal.connection_tested'
+          AND tested.metadata->>'environment' = 'live'
+          AND tested.metadata->>'connected' = 'true'
+          AND tested.created_at >= NOW() - INTERVAL '24 hours'
+          AND tested.created_at >= (
+            SELECT MAX(changed.created_at) FROM audit_logs changed
+            WHERE changed.tenant_id = settings.tenant_id
+              AND changed.action = 'settings.paypal.configuration_changed'
+          )
+      )
+    ) ORDER BY settings.tenant_id), '[]'::jsonb)::text
+    FROM admin_settings settings
+    WHERE 'paypal' = ANY(COALESCE(settings.enabled_processors, '{}'::text[]))
+       OR (settings.merchant_processor_config IS NOT NULL
+         AND settings.merchant_processor_config::jsonb ? 'paypalRuntimeCiphertext')`,
   );
-  assertNoEncryptedProductionPayPalSettings(Number(encryptedSettings));
+  let records;
+  try { records = JSON.parse(raw); }
+  catch { throw new Error("Production PayPal readiness query returned invalid evidence"); }
+  const readiness = records.map(record => ({
+    tenantId: record?.tenantId,
+    paypalEnabled: record?.paypalEnabled,
+    connectionReady: record?.connectionReady,
+    config: decryptProductionPayPalSettings(record?.ciphertext, apiEnvironment.SETTINGS_ENC_KEY),
+  }));
+  assertProductionPayPalReadiness(readiness);
 }
 
 function safePrintAssetsCopy(apiId, sharedRoot) {
@@ -1951,7 +2036,7 @@ async function main() {
     "verify-release-images": async () => verifyApprovedReleaseImages(),
     validate: async () => {
       compose = validateComposeRuntimeConfig(releaseRoot, envFile, overlayFile);
-      verifyProductionPayPalDisabled(compose);
+      verifyProductionPayPalReadiness(compose);
       containerBaseline = verifyWriterSet(compose);
     },
     "validate-lineage": async () => {
