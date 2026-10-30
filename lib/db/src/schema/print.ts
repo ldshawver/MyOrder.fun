@@ -17,7 +17,9 @@ import { sql } from "drizzle-orm";
 import { ordersTable } from "./orders";
 import { usersTable } from "./users";
 import { tenantsTable } from "./tenants";
-import { inventoryLocationsTable, labTechShiftsTable } from "./shifts";
+import { inventoryLocationsTable, labTechShiftsTable, shiftInventoryItemsTable } from "./shifts";
+import { catalogItemsTable } from "./catalog";
+import { inventoryMovementsTable } from "./inventoryLedger";
 
 // ── Bridge Profiles ────────────────────────────────────────────────────────────
 // Represents a physical print bridge server (Mac Studio or Raspberry Pi).
@@ -435,6 +437,66 @@ export const shiftEarningAdjustmentApplicationsTable = pgTable("shift_earning_ad
   shiftFk: foreignKey({ name: "shift_earning_adjustment_applications_tenant_shift_fk", columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
   csrFk: foreignKey({ name: "shift_earning_adjustment_applications_tenant_csr_fk", columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
   amountPositive: check("shift_earning_adjustment_applications_amount_positive", sql`${table.amount} > 0`),
+}));
+
+export const contractorInventoryAdjustmentsTable = pgTable("contractor_inventory_adjustments", {
+  id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  sourceCloseoutPackageId: integer("source_closeout_package_id").notNull(), sourceShiftId: integer("source_shift_id").notNull(),
+  csrUserId: integer("csr_user_id").notNull(), originalAmount: numeric("original_amount", { precision: 12, scale: 2 }).notNull(),
+  reason: text("reason").notNull(), remainderPolicy: text("remainder_policy").notNull(),
+  confirmedByUserId: integer("confirmed_by_user_id").notNull(), confirmedAt: timestamp("confirmed_at", { withTimezone: true }).notNull().defaultNow(),
+  metadata: jsonb("metadata").notNull().default({}), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({
+  tenantIdUnique: unique("contractor_inventory_adjustments_tenant_id_id_unique").on(table.tenantId, table.id),
+  sourcePackageUnique: unique("contractor_inventory_adjustments_tenant_package_unique").on(table.tenantId, table.sourceCloseoutPackageId),
+  packageFk: foreignKey({ name: "contractor_inventory_adjustments_tenant_package_fk", columns: [table.tenantId, table.sourceCloseoutPackageId], foreignColumns: [shiftCloseoutPackagesTable.tenantId, shiftCloseoutPackagesTable.id] }),
+  shiftFk: foreignKey({ name: "contractor_inventory_adjustments_tenant_shift_fk", columns: [table.tenantId, table.sourceShiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  csrFk: foreignKey({ name: "contractor_inventory_adjustments_tenant_csr_fk", columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  confirmerFk: foreignKey({ name: "contractor_inventory_adjustments_tenant_confirmer_fk", columns: [table.tenantId, table.confirmedByUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  amountPositive: check("contractor_inventory_adjustments_amount_positive", sql`${table.originalAmount} > 0`),
+  reasonLength: check("contractor_inventory_adjustments_reason_length", sql`length(btrim(${table.reason})) >= 10`),
+  policyCheck: check("contractor_inventory_adjustments_policy_check", sql`${table.remainderPolicy} = 'carry_forward_to_future_shift_payout'`),
+}));
+
+export const contractorInventoryAdjustmentApplicationsTable = pgTable("contractor_inventory_adjustment_applications", {
+  id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  adjustmentId: integer("adjustment_id").notNull(), appliedCloseoutPackageId: integer("applied_closeout_package_id").notNull(),
+  appliedShiftId: integer("applied_shift_id").notNull(), csrUserId: integer("csr_user_id").notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(), sourceKey: text("source_key").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({
+  sourceUnique: unique("contractor_inventory_apps_tenant_source_unique").on(table.tenantId, table.sourceKey),
+  adjustmentFk: foreignKey({ name: "contractor_inventory_apps_tenant_adjustment_fk", columns: [table.tenantId, table.adjustmentId], foreignColumns: [contractorInventoryAdjustmentsTable.tenantId, contractorInventoryAdjustmentsTable.id] }),
+  packageFk: foreignKey({ name: "contractor_inventory_apps_tenant_package_fk", columns: [table.tenantId, table.appliedCloseoutPackageId], foreignColumns: [shiftCloseoutPackagesTable.tenantId, shiftCloseoutPackagesTable.id] }),
+  shiftFk: foreignKey({ name: "contractor_inventory_apps_tenant_shift_fk", columns: [table.tenantId, table.appliedShiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  csrFk: foreignKey({ name: "contractor_inventory_apps_tenant_csr_fk", columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  amountPositive: check("contractor_inventory_apps_amount_positive", sql`${table.amount} > 0`),
+}));
+
+export const shiftInventoryShortageLinesTable = pgTable("shift_inventory_shortage_lines", {
+  id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  closeoutPackageId: integer("closeout_package_id").notNull(), adjustmentId: integer("adjustment_id").notNull(),
+  shiftId: integer("shift_id").notNull(), csrUserId: integer("csr_user_id").notNull(), shiftInventoryItemId: integer("shift_inventory_item_id").notNull(),
+  catalogItemId: integer("catalog_item_id").notNull(), locationId: integer("location_id").notNull(), inventoryMovementId: integer("inventory_movement_id").notNull(),
+  itemNameSnapshot: text("item_name_snapshot").notNull(), unitOfMeasureSnapshot: text("unit_of_measure_snapshot").notNull(),
+  openingQuantity: numeric("opening_quantity", { precision: 20, scale: 6 }).notNull(), nonSaleMovementDelta: numeric("non_sale_movement_delta", { precision: 20, scale: 6 }).notNull(),
+  recordedSalesQuantity: numeric("recorded_sales_quantity", { precision: 20, scale: 6 }).notNull(), expectedQuantity: numeric("expected_quantity", { precision: 20, scale: 6 }).notNull(),
+  countedQuantity: numeric("counted_quantity", { precision: 20, scale: 6 }).notNull(), missingQuantity: numeric("missing_quantity", { precision: 20, scale: 6 }).notNull(),
+  retailPriceSnapshot: numeric("retail_price_snapshot", { precision: 12, scale: 2 }).notNull(), discountRate: numeric("discount_rate", { precision: 9, scale: 6 }).notNull(),
+  unitReplacementValue: numeric("unit_replacement_value", { precision: 12, scale: 2 }).notNull(), lineTotal: numeric("line_total", { precision: 12, scale: 2 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({
+  itemUnique: unique("shift_inventory_shortage_lines_tenant_shift_item_unique").on(table.tenantId, table.shiftId, table.shiftInventoryItemId),
+  packageFk: foreignKey({ name: "shift_inventory_shortage_lines_tenant_package_fk", columns: [table.tenantId, table.closeoutPackageId], foreignColumns: [shiftCloseoutPackagesTable.tenantId, shiftCloseoutPackagesTable.id] }),
+  adjustmentFk: foreignKey({ name: "shift_inventory_shortage_lines_tenant_adjustment_fk", columns: [table.tenantId, table.adjustmentId], foreignColumns: [contractorInventoryAdjustmentsTable.tenantId, contractorInventoryAdjustmentsTable.id] }),
+  shiftFk: foreignKey({ name: "shift_inventory_shortage_lines_tenant_shift_fk", columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  csrFk: foreignKey({ name: "shift_inventory_shortage_lines_tenant_csr_fk", columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  itemFk: foreignKey({ name: "shift_inventory_shortage_lines_tenant_catalog_fk", columns: [table.tenantId, table.catalogItemId], foreignColumns: [catalogItemsTable.tenantId, catalogItemsTable.id] }),
+  locationFk: foreignKey({ name: "shift_inventory_shortage_lines_tenant_location_fk", columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+  movementFk: foreignKey({ name: "shift_inventory_shortage_lines_tenant_movement_fk", columns: [table.tenantId, table.inventoryMovementId], foreignColumns: [inventoryMovementsTable.tenantId, inventoryMovementsTable.id] }),
+  shiftItemFk: foreignKey({ name: "shift_inventory_shortage_lines_shift_item_fk", columns: [table.shiftId, table.shiftInventoryItemId], foreignColumns: [shiftInventoryItemsTable.shiftId, shiftInventoryItemsTable.id] }),
+  quantityCheck: check("shift_inventory_shortage_lines_quantity_check", sql`${table.openingQuantity} >= 0 AND ${table.recordedSalesQuantity} >= 0 AND ${table.expectedQuantity} >= 0 AND ${table.countedQuantity} >= 0 AND ${table.missingQuantity} > 0`),
+  moneyCheck: check("shift_inventory_shortage_lines_money_check", sql`${table.retailPriceSnapshot} > 0 AND ${table.discountRate} = 0.2 AND ${table.unitReplacementValue} > 0 AND ${table.lineTotal} > 0`),
 }));
 
 // ── Print Settings ─────────────────────────────────────────────────────────────

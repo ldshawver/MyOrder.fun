@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, foreignKey, integer, numeric, pgTable, serial, smallint, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { check, foreignKey, integer, numeric, pgTable, serial, smallint, text, timestamp, unique, uniqueIndex } from "drizzle-orm/pg-core";
 import { catalogItemsTable } from "./catalog";
 import { nonCatalogInventoryItemsTable } from "./nonCatalogInventory";
 import { orderItemsTable, ordersTable } from "./orders";
@@ -49,4 +49,5 @@ export const inventoryMovementsTable = pgTable("inventory_movements", {
 }, (t) => ({
   entity: check("inventory_movements_entity_type_check", sql`(${t.inventoryEntityType} = 'catalog' AND ${t.catalogItemId} IS NOT NULL AND ${t.nonCatalogItemId} IS NULL) OR (${t.inventoryEntityType} = 'non_catalog' AND ${t.catalogItemId} IS NULL AND ${t.nonCatalogItemId} IS NOT NULL)`),
   idempotency: uniqueIndex("inventory_movements_tenant_idempotency_index_unique").on(t.tenantId, t.idempotencyKey, t.movementIndex),
+  tenantIdUnique: unique("inventory_movements_tenant_id_id_unique").on(t.tenantId, t.id),
 }));

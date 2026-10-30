@@ -10,7 +10,7 @@ const tag = "0080_csr_delivery_closeout_accounting";
 const migration = readFileSync(resolve(root, `${tag}.sql`), "utf8");
 
 test("delivery closeout accounting is in the verified journal after 0079", () => {
-  assert.deepEqual(journal.entries.slice(-2).map(({ idx, tag: name }) => [idx, name]), [[53, "0079_verified_zero_opening_counts"], [54, tag]]);
+  assert.deepEqual(journal.entries.slice(53, 55).map(({ idx, tag: name }) => [idx, name]), [[53, "0079_verified_zero_opening_counts"], [54, tag]]);
   assert.match(createHash("sha256").update(migration).digest("hex"), /^[a-f0-9]{64}$/);
   assert.equal(existsSync(resolve(import.meta.dirname, "../migrations/202610280001_csr_delivery_closeout_accounting.sql")), false);
 });

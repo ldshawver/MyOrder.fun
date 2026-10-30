@@ -12,6 +12,11 @@ type PendingShift = {
   cashBankStart: number;
   cashBankEndReported: number;
   totalRevenue: number;
+  inventoryAccountability: {
+    total: string;
+    blockers: Array<{ code: string; message: string; itemName: string }>;
+    lines: Array<{ shiftInventoryItemId: number; itemName: string; expectedQuantity: string; countedQuantity: string; missingQuantity: string; retailPrice: string; unitReplacementValue: string; lineTotal: string }>;
+  };
 };
 type ActiveShift = { shiftId: number; techId: number; techName: string; techEmail: string; boxAssignmentId?: string | null; clockedInAt: string; cashBankStart: number };
 
@@ -28,6 +33,8 @@ export default function AdminCloseouts() {
   const [activeShifts, setActiveShifts] = useState<ActiveShift[]>([]);
   const [targetById, setTargetById] = useState<Record<number, number>>({});
   const [cashEndById, setCashEndById] = useState<Record<number, string>>({});
+  const [reasonById, setReasonById] = useState<Record<number, string>>({});
+  const [confirmedById, setConfirmedById] = useState<Record<number, boolean>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -98,7 +105,12 @@ export default function AdminCloseouts() {
       const res = await fetch(`/api/shifts/${shiftId}/supervisor-checkout`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ tipPercent }),
+        body: JSON.stringify({
+          tipPercent,
+          supervisorReason: reasonById[shiftId]?.trim() || undefined,
+          confirmInventoryAccountability: confirmedById[shiftId] ?? false,
+          remainderPolicy: "carry_forward_to_future_shift_payout",
+        }),
       });
       const text = await res.text();
       let body: unknown = {};
@@ -108,8 +120,8 @@ export default function AdminCloseouts() {
         throw new Error(`Approve failed (HTTP ${res.status}): ${errMsg}`);
       }
       setShifts(prev => prev.filter(s => s.shiftId !== shiftId));
-      const checkout = (body as { checkout?: { finalTip?: number; depositAmount?: number } }).checkout ?? {};
-      setResultMessage(`Shift #${shiftId} finalized — tip $${(checkout.finalTip ?? 0).toFixed(2)}, deposit $${(checkout.depositAmount ?? 0).toFixed(2)}.`);
+      const checkout = (body as { checkout?: { finalCsrPayout?: string; depositAmount?: number; inventoryAccountability?: { totalRemainder?: string } } }).checkout ?? {};
+      setResultMessage(`Shift #${shiftId} finalized — contractor payout $${checkout.finalCsrPayout ?? "0.00"}, cash deposit $${(checkout.depositAmount ?? 0).toFixed(2)}, carried inventory balance $${checkout.inventoryAccountability?.totalRemainder ?? "0.00"}.`);
       setTimeout(() => setResultMessage(null), 6000);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Approve failed");
@@ -177,6 +189,9 @@ export default function AdminCloseouts() {
         <div className="space-y-3">
           {shifts.map(s => {
             const cashDelta = s.cashBankEndReported - s.cashBankStart;
+            const hasShortage = s.inventoryAccountability.lines.length > 0;
+            const hasBlockers = s.inventoryAccountability.blockers.length > 0;
+            const reasonReady = (reasonById[s.shiftId]?.trim().length ?? 0) >= 10;
             return (
               <div key={s.shiftId} className="rounded-xl border border-border/40 bg-card/30 p-4" data-testid={`row-closeout-${s.shiftId}`}>
                 <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -192,6 +207,31 @@ export default function AdminCloseouts() {
                     <Stat label="Cash start" value={`$${s.cashBankStart.toFixed(2)}`} />
                     <Stat label="Cash end" value={`$${s.cashBankEndReported.toFixed(2)}`} delta={cashDelta} />
                   </div>
+                </div>
+
+                <div className="mt-4 rounded-lg border border-border/40 bg-background/40 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold">Inventory accountability</div>
+                      <div className="text-[11px] text-muted-foreground">Shortages use the exact item/variant retail price at closeout, less 20%. Overages are not charged.</div>
+                    </div>
+                    <div className="text-sm font-mono font-semibold">${s.inventoryAccountability.total}</div>
+                  </div>
+                  {s.inventoryAccountability.lines.map(line => <div key={line.shiftInventoryItemId} className="grid grid-cols-2 gap-1 text-xs md:grid-cols-6">
+                    <span className="md:col-span-2 font-medium">{line.itemName}</span><span>Expected {line.expectedQuantity}</span><span>Counted {line.countedQuantity}</span><span>Missing {line.missingQuantity}</span><span>80% unit ${line.unitReplacementValue} · line ${line.lineTotal}</span>
+                  </div>)}
+                  {s.inventoryAccountability.blockers.map(blocker => <div key={`${blocker.code}:${blocker.itemName}`} className="text-xs text-red-400"><b>{blocker.itemName}:</b> {blocker.message}</div>)}
+                  {hasShortage && <>
+                    <label className="block text-xs">Supervisor reason
+                      <textarea className="mt-1 min-h-16 w-full rounded-md border bg-background px-2 py-1.5" value={reasonById[s.shiftId] ?? ""} onChange={event => setReasonById(prev => ({ ...prev, [s.shiftId]: event.target.value }))} placeholder="Explain the reviewed inventory shortage (minimum 10 characters)" />
+                    </label>
+                    <label className="flex items-start gap-2 text-xs"><input type="checkbox" className="mt-0.5" checked={confirmedById[s.shiftId] ?? false} onChange={event => setConfirmedById(prev => ({ ...prev, [s.shiftId]: event.target.checked }))} /><span>I reviewed the counts and exact retail-price snapshots. Apply no more than the payable amount now and carry any remainder to a future shift payout as an audited contractor inventory-accountability adjustment.</span></label>
+                  </>}
+                </div>
+
+                <div className="mt-3 rounded-lg border border-border/40 bg-background/40 p-3 text-xs">
+                  <div className="font-semibold">Cash reconciliation (separate from payout)</div>
+                  <div className="mt-1 text-muted-foreground">Opening cash ${s.cashBankStart.toFixed(2)} · Counted cash ${s.cashBankEndReported.toFixed(2)}. Inventory offsets are not cash received and do not increase the deposit.</div>
                 </div>
 
                 <div className="mt-4 flex items-center justify-between flex-wrap gap-3">
@@ -212,7 +252,7 @@ export default function AdminCloseouts() {
                   </div>
                   <Button
                     onClick={() => approve(s.shiftId)}
-                    disabled={busyId === s.shiftId}
+                    disabled={busyId === s.shiftId || hasBlockers || (hasShortage && (!reasonReady || !confirmedById[s.shiftId]))}
                     size="sm"
                     className="gap-1.5 rounded-xl"
                     data-testid={`button-approve-${s.shiftId}`}
