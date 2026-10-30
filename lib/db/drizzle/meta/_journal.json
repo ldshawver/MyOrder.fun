@@ -393,6 +393,13 @@
       "when": 1793318400000,
       "tag": "0081_csr_inventory_accountability",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1793404800000,
+      "tag": "0082_location_pickup_scheduling",
+      "breakpoints": true
     }
   ]
 }

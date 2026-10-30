@@ -27,5 +27,8 @@ export interface CreateOrderBody {
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
+  /** @minimum 1 */
+  pickupLocationId?: number;
+  pickupAt?: Date;
   orderType?: CreateOrderBodyOrderType;
 }

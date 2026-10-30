@@ -899,6 +899,12 @@ export default function OrderDetail() {
                   <span className="text-muted-foreground">Method</span>
                   <span className="font-mono font-semibold uppercase">{(order.deliveryMethod ?? "pickup").replace(/_/g, " ")}</span>
                 </div>
+                {order.pickupAt && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Pickup time</span>
+                    <span className="font-mono text-right">{(order.pickupSchedule as { localLabel?: string } | null)?.localLabel ?? new Date(order.pickupAt).toLocaleString()}</span>
+                  </div>
+                )}
                 {order.deliveryQuoteId && (
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-muted-foreground">Uber quote</span>
