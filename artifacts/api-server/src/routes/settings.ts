@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, eq, sql } from "drizzle-orm";
-import { db, adminSettingsTable, customerDisclaimerAcceptancesTable, uberDirectSettingsTable } from "@workspace/db";
+import { db, adminSettingsTable, customerDisclaimerAcceptancesTable, inventoryLocationsTable, locationPickupSchedulesTable, uberDirectSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { encrypt, hasConfiguredSettingsEncryptionKey, safeDecrypt } from "../lib/crypto";
@@ -11,6 +11,7 @@ import { getUberDirectAdminSettings, getUberDirectPickupAddress, getUberDirectRu
 import { requireTenantContext } from "../lib/tenantContext";
 import { z } from "zod";
 import { assertWooHttpsOrigin } from "../lib/wooSafeHttp";
+import { pickupScheduleInputSchema } from "../lib/pickupScheduling";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -828,6 +829,42 @@ router.post("/admin/settings/uber-direct/test-quote", requireUberAdmin, requireT
     if (error instanceof UberDirectConfigError) { res.status(422).json({ error: error.message }); return; }
     if (error instanceof UberDirectApiError) { res.status(error.status >= 400 && error.status < 500 ? 422 : 502).json({ error: error.message }); return; }
     res.status(502).json({ error: "Uber Direct test quote failed." });
+  }
+});
+
+router.get("/admin/settings/pickup-hours", requireRole("admin", "global_admin"), requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const tenantId = req.authorizedTenantId!;
+  const locations = await db.select({ id: inventoryLocationsTable.id, name: inventoryLocationsTable.name, type: inventoryLocationsTable.type, isActive: inventoryLocationsTable.isActive }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.type, "storefront")));
+  const schedules = await db.select().from(locationPickupSchedulesTable).where(eq(locationPickupSchedulesTable.tenantId, tenantId));
+  const byLocation = new Map(schedules.map(schedule => [schedule.locationId, schedule]));
+  res.json({ locations: locations.map(location => ({ ...location, schedule: byLocation.has(location.id) ? { timeZone: byLocation.get(location.id)!.timeZone, weeklyHours: byLocation.get(location.id)!.weeklyHours, exceptions: byLocation.get(location.id)!.exceptions, slotMinutes: byLocation.get(location.id)!.slotMinutes, maxAdvanceDays: byLocation.get(location.id)!.maxAdvanceDays, version: byLocation.get(location.id)!.version, updatedAt: byLocation.get(location.id)!.updatedAt } : null })) });
+});
+
+router.put("/admin/settings/pickup-hours/:locationId", requireRole("admin", "global_admin"), requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const tenantId = req.authorizedTenantId!;
+  const locationId = Number(req.params.locationId);
+  const input = pickupScheduleInputSchema.safeParse(req.body);
+  if (!Number.isSafeInteger(locationId) || locationId <= 0 || !input.success) { res.status(400).json({ error: "Invalid pickup schedule", details: input.success ? undefined : input.error.issues }); return; }
+  const [location] = await db.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.id, locationId), eq(inventoryLocationsTable.type, "storefront"), eq(inventoryLocationsTable.isActive, true))).limit(1);
+  if (!location) { res.status(404).json({ error: "Active tenant storefront location not found" }); return; }
+  try {
+    const result = await db.transaction(async tx => {
+      const [existing] = await tx.select().from(locationPickupSchedulesTable).where(and(eq(locationPickupSchedulesTable.tenantId, tenantId), eq(locationPickupSchedulesTable.locationId, locationId))).for("update").limit(1);
+      if (existing && existing.version !== input.data.version) throw new Error("VERSION_CONFLICT");
+      const nextVersion = existing ? existing.version + 1 : 1;
+      const values = { tenantId, locationId, timeZone: input.data.timeZone, weeklyHours: input.data.weeklyHours, exceptions: input.data.exceptions, slotMinutes: input.data.slotMinutes, maxAdvanceDays: input.data.maxAdvanceDays, version: nextVersion, updatedAt: new Date() };
+      const [row] = existing
+        ? await tx.update(locationPickupSchedulesTable).set(values).where(and(eq(locationPickupSchedulesTable.tenantId, tenantId), eq(locationPickupSchedulesTable.locationId, locationId))).returning()
+        : await tx.insert(locationPickupSchedulesTable).values(values).returning();
+      return { row, previous: existing ?? null };
+    });
+    const saved = result.row;
+    const auditSchedule = (schedule: typeof saved | null) => schedule ? ({ timeZone: schedule.timeZone, weeklyHours: schedule.weeklyHours, exceptions: schedule.exceptions, slotMinutes: schedule.slotMinutes, maxAdvanceDays: schedule.maxAdvanceDays, version: schedule.version }) : null;
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId, action: "settings.pickup_hours.updated", resourceType: "inventory_location", resourceId: String(locationId), metadata: { before: auditSchedule(result.previous), after: auditSchedule(saved) }, ipAddress: req.ip });
+    res.json({ timeZone: saved.timeZone, weeklyHours: saved.weeklyHours, exceptions: saved.exceptions, slotMinutes: saved.slotMinutes, maxAdvanceDays: saved.maxAdvanceDays, version: saved.version, updatedAt: saved.updatedAt });
+  } catch (error) {
+    if (error instanceof Error && error.message === "VERSION_CONFLICT") { res.status(409).json({ error: "Pickup schedule changed; reload before saving" }); return; }
+    throw error;
   }
 });
 

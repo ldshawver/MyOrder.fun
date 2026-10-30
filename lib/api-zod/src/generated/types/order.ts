@@ -11,6 +11,7 @@ import type { OrderCheckoutConfirmation } from './orderCheckoutConfirmation';
 import type { OrderFulfillmentStatus } from './orderFulfillmentStatus';
 import type { OrderItem } from './orderItem';
 import type { OrderPaymentStatus } from './orderPaymentStatus';
+import type { OrderPickupSchedule } from './orderPickupSchedule';
 import type { OrderRouteSource } from './orderRouteSource';
 import type { OrderStatus } from './orderStatus';
 import type { OrderTaxSnapshot } from './orderTaxSnapshot';
@@ -38,6 +39,9 @@ export interface Order {
   taxSnapshot?: OrderTaxSnapshot;
   shippingAddress?: string;
   deliveryMethod?: string | null;
+  pickupLocationId?: number | null;
+  pickupAt?: Date | null;
+  pickupSchedule?: OrderPickupSchedule;
   deliveryQuoteId?: string | null;
   deliveryFee?: number | null;
   deliveryCurrency?: string | null;

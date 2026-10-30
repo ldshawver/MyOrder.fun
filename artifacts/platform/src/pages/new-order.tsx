@@ -91,7 +91,9 @@ type CheckoutQuote = {
   finalAmountDue: number;
   tenderDue: number;
   checkoutTaxQuoteToken?: string;
+  pickup?: { locationId: number; pickupAt: string; mode: "immediate" | "scheduled"; timeZone: string } | null;
 };
+type PickupLocationAvailability = { locationId: number; locationName: string; configured: boolean; timeZone: string | null; openNow: boolean; immediateAvailable: boolean; slots: Array<{ at: string; label: string }>; nextOpenAt: string | null; message: string; regularHours?: Array<{ dayOfWeek: number; day: string; hours: string }> };
 
 const FINAL_SALE_TEXT = "All sales are final. I confirm the item list, quantities, pricing, fees, and fulfillment instructions before payment.";
 const CHECKOUT_NOTE = "We verify items, availability, taxes, and eligible payment methods before payment.";
@@ -156,6 +158,10 @@ export default function NewOrder() {
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
   const [orderSubmitError, setOrderSubmitError] = useState<string | null>(null);
+  const [pickupLocations, setPickupLocations] = useState<PickupLocationAvailability[]>([]);
+  const [pickupLocationId, setPickupLocationId] = useState<number | null>(null);
+  const [pickupChoice, setPickupChoice] = useState("");
+  const [pickupAvailabilityError, setPickupAvailabilityError] = useState<string | null>(null);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { notifyOrderPlaced } = usePushNotifications({
@@ -216,6 +222,24 @@ export default function NewOrder() {
       .then((items: PromotedItem[]) => setPromotedItems(Array.isArray(items) ? items.filter(item => item.isAvailable) : []))
       .catch(() => setPromotedItems([]));
   }, [getToken]);
+
+  useEffect(() => {
+    getToken().then(token => fetch("/api/orders/pickup-availability", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
+      .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data?.error ?? "Pickup availability is unavailable."); return data as { locations: PickupLocationAvailability[] }; })
+      .then(data => {
+        const locations = Array.isArray(data.locations) ? data.locations : [];
+        setPickupLocations(locations);
+        setPickupLocationId(current => current && locations.some(location => location.locationId === current) ? current : locations[0]?.locationId ?? null);
+        setPickupAvailabilityError(null);
+      })
+      .catch(error => { setPickupLocations([]); setPickupAvailabilityError(error instanceof Error ? error.message : "Pickup availability is unavailable."); });
+  }, [getToken]);
+
+  const selectedPickupLocation = pickupLocations.find(location => location.locationId === pickupLocationId) ?? null;
+  useEffect(() => {
+    if (!selectedPickupLocation) { setPickupChoice(""); return; }
+    setPickupChoice(selectedPickupLocation.immediateAvailable ? "immediate" : "");
+  }, [pickupLocationId, selectedPickupLocation]);
 
   // Fetch active CSR delivery status — drives whether "CSR Delivery" option is shown
   useEffect(() => {
@@ -346,6 +370,8 @@ export default function NewOrder() {
           paymentMethod,
           csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? 0 : undefined,
           deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
+          pickupLocationId: deliveryMethod === "pickup" ? pickupLocationId ?? undefined : undefined,
+          pickupAt: deliveryMethod === "pickup" && pickupChoice && pickupChoice !== "immediate" ? pickupChoice : undefined,
           checkoutConfirmation,
         }
       });
@@ -362,7 +388,7 @@ export default function NewOrder() {
       toast({ title: "Order failed", description: message, variant: "destructive" });
       throw error;
     }
-  }, [cart, checkoutQuote, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, selectedPaymentMethod, shippingAddress, tipAmount, tipMode]);
+  }, [cart, checkoutQuote, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, pickupChoice, pickupLocationId, selectedPaymentMethod, shippingAddress, tipAmount, tipMode]);
 
   const finishCheckout = useCallback(async (orderId: number) => {
     notifyOrderPlaced(orderId, user?.firstName || undefined);
@@ -391,7 +417,7 @@ export default function NewOrder() {
   const displayedTotal = checkoutQuote?.finalAmountDue ?? (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
   const requiresDeliveryAddress = deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct";
   const lastItemPromptRequired = promotedItems.length > 0 && cart.length > 0 && !reviewedLastItemPrompt;
-  const deliveryReady = deliveryMethod === "pickup"
+  const deliveryReady = (deliveryMethod === "pickup" && !!selectedPickupLocation?.configured && (pickupChoice === "immediate" ? selectedPickupLocation.immediateAvailable : selectedPickupLocation.slots.some(slot => slot.at === pickupChoice)))
     || (deliveryMethod === "csr_delivery" && csrDeliveryAllowed)
     || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
@@ -417,6 +443,8 @@ export default function NewOrder() {
           tipAmount,
           deliveryMethod,
           ...(deliveryQuote ? { deliveryQuoteId: deliveryQuote.quoteId } : {}),
+          ...(deliveryMethod === "pickup" && pickupLocationId ? { pickupLocationId } : {}),
+          ...(deliveryMethod === "pickup" && pickupChoice && pickupChoice !== "immediate" ? { pickupAt: pickupChoice } : {}),
         }),
       })).then(async response => {
         const data = await response.json();
@@ -427,7 +455,7 @@ export default function NewOrder() {
       }).finally(() => { if (!cancelled) setIsQuotingCheckout(false); });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryMethod, deliveryQuote, getToken]);
+  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryMethod, deliveryQuote, pickupChoice, pickupLocationId, getToken]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">
@@ -593,6 +621,35 @@ export default function NewOrder() {
                       </button>
                     ))}
                   </div>
+
+                  {deliveryMethod === "pickup" && (
+                    <div className="rounded-sm border border-border/50 bg-muted/10 p-3 space-y-3" data-testid="pickup-scheduling">
+                      <div className="font-semibold text-sm">Pickup time</div>
+                      {pickupAvailabilityError && <p className="text-xs text-destructive">{pickupAvailabilityError}</p>}
+                      {pickupLocations.length > 1 && (
+                        <label className="block text-xs space-y-1">
+                          <span className="text-muted-foreground">Pickup location</span>
+                          <select className="w-full rounded-sm border border-border bg-background p-2" value={pickupLocationId ?? ""} onChange={event => setPickupLocationId(Number(event.target.value))} data-testid="select-pickup-location">
+                            {pickupLocations.map(location => <option key={location.locationId} value={location.locationId}>{location.locationName}</option>)}
+                          </select>
+                        </label>
+                      )}
+                      {selectedPickupLocation && (
+                        <>
+                          <p className={`text-xs ${selectedPickupLocation.immediateAvailable ? "text-emerald-700" : "text-muted-foreground"}`}>{selectedPickupLocation.message}</p>
+                          {selectedPickupLocation.timeZone && <p className="text-[11px] text-muted-foreground">Times shown in the store’s local time ({selectedPickupLocation.timeZone}).</p>}
+                          {selectedPickupLocation.regularHours && <details className="text-xs"><summary className="cursor-pointer font-medium">Regular store hours</summary><div className="mt-2 grid grid-cols-[6rem_1fr] gap-x-2 gap-y-1">{selectedPickupLocation.regularHours.map(row => <div key={row.dayOfWeek} className="contents"><span>{row.day}</span><span className="text-muted-foreground">{row.hours}</span></div>)}</div></details>}
+                          {(selectedPickupLocation.immediateAvailable || selectedPickupLocation.slots.length > 0) ? (
+                            <select className="w-full rounded-sm border border-border bg-background p-2 text-sm" value={pickupChoice} onChange={event => setPickupChoice(event.target.value)} data-testid="select-pickup-time">
+                              <option value="">Select a pickup time</option>
+                              {selectedPickupLocation.immediateAvailable && <option value="immediate">Immediate pickup</option>}
+                              {selectedPickupLocation.slots.map(slot => <option key={slot.at} value={slot.at}>{slot.label}</option>)}
+                            </select>
+                          ) : <p className="text-xs font-medium text-destructive">No upcoming pickup times are available.</p>}
+                        </>
+                      )}
+                    </div>
+                  )}
 
                   {deliveryMethod === "csr_delivery" && (
                     <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 text-xs space-y-1">

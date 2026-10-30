@@ -40,6 +40,9 @@ export const ordersTable = pgTable("orders", {
   financialFinalizedAt: timestamp("financial_finalized_at", { withTimezone: true }),
   shippingAddress: text("shipping_address"),
   deliveryMethod: text("delivery_method"),
+  pickupLocationId: integer("pickup_location_id"),
+  pickupAt: timestamp("pickup_at", { withTimezone: true }),
+  pickupScheduleSnapshot: jsonb("pickup_schedule_snapshot"),
   orderType: text("order_type").notNull().default("ONLINE"),
   deliveryQuoteId: text("delivery_quote_id"),
   deliveryQuoteSnapshot: jsonb("delivery_quote_snapshot"),
@@ -106,6 +109,7 @@ export const ordersTable = pgTable("orders", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
   tenantIdUnique: unique("orders_tenant_id_id_unique").on(table.tenantId, table.id),
+  tenantPickupLocation: foreignKey({ name: "orders_tenant_pickup_location_fk", columns: [table.tenantId, table.pickupLocationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
 }));
 
 export const orderItemsTable = pgTable("order_items", {

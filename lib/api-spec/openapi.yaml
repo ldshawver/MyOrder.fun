@@ -2106,6 +2106,17 @@ components:
         deliveryMethod:
           type: string
           nullable: true
+        pickupLocationId:
+          type: integer
+          nullable: true
+        pickupAt:
+          type: string
+          format: date-time
+          nullable: true
+        pickupSchedule:
+          type: object
+          additionalProperties: true
+          nullable: true
         deliveryQuoteId:
           type: string
           nullable: true
@@ -2290,6 +2301,12 @@ components:
           type: string
           enum: [pickup, manual_delivery, uber_direct, uber_courier, csr_delivery]
           nullable: true
+        pickupLocationId:
+          type: integer
+          minimum: 1
+        pickupAt:
+          type: string
+          format: date-time
         orderType:
           type: string
           enum: [WALK_IN, CSR, ONLINE]

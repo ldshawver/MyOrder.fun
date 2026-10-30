@@ -100,6 +100,7 @@ import {
   type UberManifestItem,
 } from "../lib/uberDirect";
 import { getUberDirectPickupAddress, getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
+import { calculatePickupAvailability, loadPickupSchedule, pickupScheduleSnapshot, resolvePickupLocation, validatePickupSelection } from "../lib/pickupScheduling";
 import {
   IllegalOrderTransitionError,
   normalizeOrderLifecycleState,
@@ -127,6 +128,7 @@ class InsufficientInventoryError extends Error {
 }
 class OptionSelectionError extends Error {}
 class CheckoutReplayConflictError extends Error {}
+class PickupScheduleChangedError extends Error {}
 type OptionCheckoutRequest = Request & { selectedOptionByCatalog?: Map<number, number> };
 
 class UberQuoteConsumedError extends Error {}
@@ -463,6 +465,8 @@ const CheckoutQuoteBody = z.object({
   tipAmount: z.number().finite().nonnegative().optional(),
   deliveryMethod: z.enum(["pickup", "manual_delivery", "csr_delivery", "uber_direct"]).default("pickup"),
   deliveryQuoteId: z.string().min(1).optional(),
+  pickupLocationId: z.number().int().positive().optional(),
+  pickupAt: z.string().datetime().optional(),
 }).strict();
 
 function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[] {
@@ -624,7 +628,18 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     }
     if (processor === "paypal" && !(await loadTenantPaymentConfig(tenantId)).enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
     const { targetLocationId } = await resolveCheckoutRouting(tenantId);
-    const taxSettings = await getCheckoutTaxSettings(tenantId, targetLocationId ?? undefined);
+    let pickup: { locationId: number; pickupAt: string; mode: "immediate" | "scheduled"; timeZone: string } | null = null;
+    let checkoutLocationId = targetLocationId;
+    if (parsed.data.deliveryMethod === "pickup") {
+      const location = await resolvePickupLocation(tenantId, parsed.data.pickupLocationId);
+      const schedule = await loadPickupSchedule(tenantId, location.id);
+      const selection = validatePickupSelection(schedule, parsed.data.pickupAt);
+      checkoutLocationId = location.id;
+      pickup = { locationId: location.id, pickupAt: selection.pickupAt.toISOString(), mode: selection.mode, timeZone: schedule.timeZone };
+    } else if (parsed.data.pickupLocationId != null || parsed.data.pickupAt != null) {
+      res.status(422).json({ error: "PICKUP_SELECTION_NOT_ALLOWED" }); return;
+    }
+    const taxSettings = await getCheckoutTaxSettings(tenantId, checkoutLocationId ?? undefined);
     const cashDiscount = { enabled: Boolean(settings?.cashDiscountEnabled), type: settings?.cashDiscountType === "fixed" ? "fixed" as const : "percentage" as const, value: Number(settings?.cashDiscountValue ?? 0) };
     const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings.taxRate, taxMode: "added", taxJurisdiction: taxSettings.taxJurisdiction, taxConfigurationId: taxSettings.taxConfigurationId, tender, cashDiscount });
     const merchandiseCents = dollarsToCents(financial.taxableSubtotal) + dollarsToCents(financial.nonTaxableSubtotal);
@@ -652,11 +667,26 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const dueCents = totalCents - creditCents;
     if (tender === "customer_credit" && dueCents !== 0) { res.status(422).json({ error: "CUSTOMER_CREDIT_INCOMPLETE" }); return; }
     const amount = (cents: number) => Number(centsToDollars(cents));
-    const checkoutTaxQuoteToken = createCheckoutTaxQuoteToken({ tenantId, userId: actor.id, cartFingerprint: checkoutFingerprint(lines), locationId: targetLocationId, taxConfigurationId: taxSettings.taxConfigurationId, taxRate: taxSettings.taxRate, taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase), taxCents });
-    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
+    const checkoutTaxQuoteToken = createCheckoutTaxQuoteToken({ tenantId, userId: actor.id, cartFingerprint: checkoutFingerprint(lines), locationId: checkoutLocationId, taxConfigurationId: taxSettings.taxConfigurationId, taxRate: taxSettings.taxRate, taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase), taxCents });
+    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, pickup, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
   } catch (error) {
-    res.status(error instanceof CustomerCreditError ? error.status : 422).json({ error: error instanceof CustomerCreditError ? error.code : "CHECKOUT_QUOTE_UNAVAILABLE" });
+    const pickupCode = error instanceof Error && error.message.startsWith("PICKUP_") ? error.message : null;
+    res.status(error instanceof CustomerCreditError ? error.status : pickupCode === "PICKUP_LOCATION_UNAVAILABLE" ? 404 : 422).json({ error: error instanceof CustomerCreditError ? error.code : pickupCode ?? "CHECKOUT_QUOTE_UNAVAILABLE" });
   }
+});
+
+router.get("/orders/pickup-availability", async (req, res): Promise<void> => {
+  const tenantId = req.authorizedTenantId!;
+  const locations = await db.select({ id: inventoryLocationsTable.id, name: inventoryLocationsTable.name }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.type, "storefront"), eq(inventoryLocationsTable.isActive, true)));
+  const results = await Promise.all(locations.map(async location => {
+    try {
+      const schedule = await loadPickupSchedule(tenantId, location.id);
+      return { locationId: location.id, locationName: location.name, configured: true, ...calculatePickupAvailability(schedule) };
+    } catch {
+      return { locationId: location.id, locationName: location.name, configured: false, timeZone: null, openNow: false, immediateAvailable: false, slots: [], nextOpenAt: null, message: "Pickup hours are not configured for this location." };
+    }
+  }));
+  res.json({ locations: results });
 });
 
 // POST /api/orders/delivery-quote
@@ -920,9 +950,39 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
   const requestedCreditAmount = (body.data.checkoutConfirmation as { customerCreditAmount?: number } | undefined)?.customerCreditAmount;
   const { routing, targetLocationId } = await resolveCheckoutRouting(houseTenantId);
+  const requestedDeliveryMethod = body.data.deliveryMethod ?? "pickup";
+  let checkoutLocationId = targetLocationId;
+  let pickupLocation: { id: number; name: string } | null = null;
+  let pickupSchedule: Awaited<ReturnType<typeof loadPickupSchedule>> | null = null;
+  let pickupSelection: ReturnType<typeof validatePickupSelection> | null = null;
+  let pickupSnapshot: ReturnType<typeof pickupScheduleSnapshot> | null = null;
+  if (requestedDeliveryMethod === "pickup") {
+    try {
+      pickupLocation = await resolvePickupLocation(houseTenantId, body.data.pickupLocationId);
+      pickupSchedule = await loadPickupSchedule(houseTenantId, pickupLocation.id);
+      pickupSelection = validatePickupSelection(pickupSchedule, body.data.pickupAt);
+      pickupSnapshot = pickupScheduleSnapshot(pickupSchedule, pickupLocation, pickupSelection);
+      checkoutLocationId = pickupLocation.id;
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "PICKUP_UNAVAILABLE";
+      res.status(code === "PICKUP_LOCATION_UNAVAILABLE" ? 404 : 422).json({ error: code });
+      return;
+    }
+  } else if (body.data.pickupLocationId != null || body.data.pickupAt != null) {
+    res.status(422).json({ error: "PICKUP_SELECTION_NOT_ALLOWED" });
+    return;
+  }
+  if (requestedDeliveryMethod === "pickup" && body.data.shippingAddress?.trim()) {
+    res.status(422).json({ error: "PICKUP_ADDRESS_NOT_ALLOWED" });
+    return;
+  }
+  if (requestedDeliveryMethod === "manual_delivery" && !body.data.shippingAddress?.trim()) {
+    res.status(422).json({ error: "DELIVERY_ADDRESS_REQUIRED" });
+    return;
+  }
   let checkoutTaxSettings: Awaited<ReturnType<typeof getCheckoutTaxSettings>>;
   try {
-    checkoutTaxSettings = await getCheckoutTaxSettings(houseTenantId, targetLocationId ?? undefined);
+    checkoutTaxSettings = await getCheckoutTaxSettings(houseTenantId, checkoutLocationId ?? undefined);
   } catch (error) {
     if (error instanceof TaxConfigurationError) {
       res.status(422).json({ error: "TAX_CONFIGURATION_UNAVAILABLE" });
@@ -935,7 +995,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     tenantId: houseTenantId,
     userId: actor.id,
     cartFingerprint: checkoutFingerprint(normalizedLines),
-    locationId: targetLocationId,
+    locationId: checkoutLocationId,
     taxConfigurationId: checkoutTaxSettings.taxConfigurationId,
     taxRate: checkoutTaxSettings.taxRate,
     taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase),
@@ -1044,7 +1104,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   });
   const checkoutTaxSnapshot = {
     ...taxSnapshot,
-    locationId: targetLocationId,
+    locationId: checkoutLocationId,
     pendingTender: false,
     taxableMerchandiseBase: financial.taxableSubtotal,
     tenderAllocation: {
@@ -1117,6 +1177,23 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         replayed = true;
         return concurrentOrder;
       }
+      if (pickupLocation && pickupSchedule) {
+        // Hold the schedule row stable until the order and its immutable
+        // snapshot commit. Admin edits wait for this transaction, and a
+        // schedule changed after the preflight is rejected rather than mixed
+        // with stale availability.
+        const scheduleRows = queryRows<{ version: number }>(await tx.execute(sql`
+          SELECT version
+          FROM location_pickup_schedules
+          WHERE tenant_id = ${houseTenantId} AND location_id = ${pickupLocation.id}
+          FOR SHARE
+        `));
+        if (scheduleRows.length !== 1 || Number(scheduleRows[0].version) !== pickupSchedule.version) {
+          throw new PickupScheduleChangedError();
+        }
+        pickupSelection = validatePickupSelection(pickupSchedule, body.data.pickupAt, now);
+        pickupSnapshot = pickupScheduleSnapshot(pickupSchedule, pickupLocation, pickupSelection);
+      }
       if (trustedUberQuote) {
         const consumed = await tx.update(uberDeliveryQuotesTable).set({ status: "consumed", consumedAt: now })
           .where(and(eq(uberDeliveryQuotesTable.id, trustedUberQuote.id), eq(uberDeliveryQuotesTable.status, "quoted")))
@@ -1142,7 +1219,10 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         shippingAddress: trustedUberQuote ? formatUberAddress(trustedUberQuote.dropoffAddress as UberAddress) : (body.data.shippingAddress ?? null),
         deliveryMethod: isCsrDelivery
           ? "csr_delivery"
-          : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
+          : (deliveryQuote?.provider ?? requestedDeliveryMethod),
+        pickupLocationId: pickupLocation?.id ?? null,
+        pickupAt: pickupSelection?.pickupAt ?? null,
+        pickupScheduleSnapshot: pickupSnapshot,
         orderType,
         deliveryQuoteId: deliveryQuote?.quoteId ?? null,
         deliveryQuoteSnapshot: deliveryQuote ? { ...deliveryQuote, fulfillment: isCsrDelivery ? "csr" : "uber_direct" } : null,
@@ -1374,7 +1454,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       // insert it once so refund records can safely use the original details.
       await tx.insert(orderTaxSnapshotsTable).values({
         tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: checkoutTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction,
-        locationId: targetLocationId, taxConfigurationId: checkoutTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId,
+        locationId: checkoutLocationId, taxConfigurationId: checkoutTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId,
         grossSales: String(trustedTotals.subtotal.toFixed(2)),
         taxRate: String(checkoutTaxSettings?.taxRate ?? trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
@@ -1447,6 +1527,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     });
   } catch (err) {
     if (err instanceof CheckoutReplayConflictError) { res.status(409).json({ error: err.message }); return; }
+    if (err instanceof PickupScheduleChangedError) { res.status(409).json({ error: "PICKUP_SCHEDULE_CHANGED" }); return; }
     if (err instanceof CustomerCreditError) { res.status(err.status).json({ error: err.code }); return; }
     if (err instanceof UberQuoteConsumedError) {
       res.status(409).json({ error: "This Uber delivery quote was already used or refreshed. Please calculate delivery again." });
@@ -1492,7 +1573,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       checkoutConversionExpiresAt: conversionExpiresAt,
       deliveryMethod: isCsrDelivery
         ? "csr_delivery"
-        : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
+        : (deliveryQuote?.provider ?? requestedDeliveryMethod),
       deliveryQuoteId: deliveryQuote?.quoteId ?? null,
       deliveryFee,
       tipAmount,
@@ -1527,7 +1608,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       createdAt: order.createdAt,
       customerName,
       customerFirstName: actor.firstName,
-      fulfillmentType: body.data.shippingAddress ? "delivery" : "pickup",
+      fulfillmentType: requestedDeliveryMethod === "pickup" ? "pickup" : "delivery",
       shippingAddress: body.data.shippingAddress ?? null,
       tenantId: houseTenantId,
       assignedShiftId,

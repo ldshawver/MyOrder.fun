@@ -455,6 +455,8 @@ export const OrderPaymentStatus = {
 
 export type OrderTaxSnapshot = { [key: string]: unknown };
 
+export type OrderPickupSchedule = { [key: string]: unknown } | null;
+
 export type OrderCheckoutConfirmationPaymentMethod = typeof OrderCheckoutConfirmationPaymentMethod[keyof typeof OrderCheckoutConfirmationPaymentMethod];
 
 
@@ -586,6 +588,9 @@ export interface Order {
   taxSnapshot?: OrderTaxSnapshot;
   shippingAddress?: string;
   deliveryMethod?: string | null;
+  pickupLocationId?: number | null;
+  pickupAt?: string | null;
+  pickupSchedule?: OrderPickupSchedule;
   deliveryQuoteId?: string | null;
   deliveryFee?: number | null;
   deliveryCurrency?: string | null;
@@ -700,6 +705,9 @@ export interface CreateOrderBody {
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
+  /** @minimum 1 */
+  pickupLocationId?: number;
+  pickupAt?: string;
   orderType?: CreateOrderBodyOrderType;
 }
 

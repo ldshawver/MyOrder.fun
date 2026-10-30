@@ -68,6 +68,11 @@ type UberDirectSettings = {
   pickupLocations: Array<{ id: number; name: string; type: string; eligible: boolean }>;
 };
 const EMPTY_UBER: UberDirectSettings = { enabled: false, environment: "sandbox", customerId: null, clientId: null, clientSecret: { configured: false }, webhookSigningKey: { configured: false }, pickupLocationId: null, dispatchEnabled: false, pickupLocations: [] };
+type PickupHours = { dayOfWeek: number; intervals: Array<{ open: string; close: string }> };
+type PickupException = { date: string; closed: boolean; intervals?: Array<{ open: string; close: string }>; label?: string };
+type PickupSchedule = { timeZone: string; weeklyHours: PickupHours[]; exceptions: PickupException[]; slotMinutes: 10 | 15 | 20 | 30 | 45 | 60; maxAdvanceDays: number; version: number };
+type PickupAdminLocation = { id: number; name: string; type: string; isActive: boolean; schedule: (PickupSchedule & { updatedAt: string }) | null };
+const emptyPickupSchedule = (timeZone = "America/Los_Angeles"): PickupSchedule => ({ timeZone, weeklyHours: [], exceptions: [], slotMinutes: 30, maxAdvanceDays: 14, version: 1 });
 
 type AdminSettings = {
   menuImportEnabled: boolean;
@@ -217,6 +222,11 @@ export default function AdminSettingsPage() {
   const [uberTesting, setUberTesting] = useState<"connection" | "quote" | null>(null);
   const [uberDestination, setUberDestination] = useState("");
   const [uberMessage, setUberMessage] = useState<string | null>(null);
+  const [pickupLocations, setPickupLocations] = useState<PickupAdminLocation[]>([]);
+  const [pickupLocationId, setPickupLocationId] = useState<number | null>(null);
+  const [pickupDraft, setPickupDraft] = useState<PickupSchedule>(emptyPickupSchedule());
+  const [pickupSaving, setPickupSaving] = useState(false);
+  const [pickupMessage, setPickupMessage] = useState<string | null>(null);
 
   const [business, setBusiness] = useState<TenantBusinessSettings>(EMPTY_BUSINESS);
   const [businessSaving, setBusinessSaving] = useState(false);
@@ -233,13 +243,14 @@ export default function AdminSettingsPage() {
     (async () => {
       try {
         const token = await getToken();
-        const [genRes, wcRes, tenantRes, brandingRes, paypalRes, uberRes] = await Promise.all([
+        const [genRes, wcRes, tenantRes, brandingRes, paypalRes, uberRes, pickupRes] = await Promise.all([
           fetch("/api/admin/settings", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/admin/settings/woocommerce", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/settings", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/branding", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/admin/settings/paypal-status", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/admin/settings/uber-direct", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/admin/settings/pickup-hours", { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         let merged: Partial<AdminSettings> = {};
         if (genRes.ok) merged = { ...merged, ...(await genRes.json()) };
@@ -255,6 +266,12 @@ export default function AdminSettingsPage() {
           if (status.environment === "sandbox" || status.environment === "live") setPayPalEnvironment(status.environment);
         }
         if (uberRes.ok) setUber(await uberRes.json() as UberDirectSettings);
+        if (pickupRes.ok) {
+          const data = await pickupRes.json() as { locations: PickupAdminLocation[] };
+          setPickupLocations(data.locations);
+          const first = data.locations.find(location => location.isActive) ?? data.locations[0];
+          if (first) { setPickupLocationId(first.id); setPickupDraft(first.schedule ?? emptyPickupSchedule()); }
+        }
         if (wcRes.ok) {
           const wc = await wcRes.json();
           merged = {
@@ -503,6 +520,41 @@ export default function AdminSettingsPage() {
     finally { setUberTesting(null); }
   }
 
+  function selectPickupLocation(id: number) {
+    const location = pickupLocations.find(candidate => candidate.id === id);
+    setPickupLocationId(id);
+    setPickupDraft(location?.schedule ?? emptyPickupSchedule(business.timezone));
+    setPickupMessage(null);
+  }
+
+  function setPickupDay(dayOfWeek: number, enabled: boolean, field?: "open" | "close", value?: string) {
+    setPickupDraft(current => {
+      const existing = current.weeklyHours.find(day => day.dayOfWeek === dayOfWeek);
+      let weeklyHours = current.weeklyHours.filter(day => day.dayOfWeek !== dayOfWeek);
+      if (enabled) {
+        const interval = existing?.intervals[0] ?? { open: "09:00", close: "17:00" };
+        weeklyHours = [...weeklyHours, { dayOfWeek, intervals: [{ ...interval, ...(field && value ? { [field]: value } : {}) }] }].sort((a, b) => a.dayOfWeek - b.dayOfWeek);
+      }
+      return { ...current, weeklyHours };
+    });
+  }
+
+  async function savePickupHours() {
+    if (!pickupLocationId) return;
+    setPickupSaving(true); setPickupMessage(null);
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/admin/settings/pickup-hours/${pickupLocationId}`, { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(pickupDraft) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error ?? "Pickup hours could not be saved");
+      const saved = data as PickupSchedule & { updatedAt: string };
+      setPickupDraft(saved);
+      setPickupLocations(locations => locations.map(location => location.id === pickupLocationId ? { ...location, schedule: saved } : location));
+      setPickupMessage("Pickup hours saved");
+    } catch (error) { setPickupMessage(error instanceof Error ? error.message : "Pickup hours could not be saved"); }
+    finally { setPickupSaving(false); }
+  }
+
   function set<K extends keyof AdminSettings>(key: K, value: AdminSettings[K]) {
     setSettings(s => ({ ...s, [key]: value }));
   }
@@ -556,6 +608,7 @@ export default function AdminSettingsPage() {
           <TabsTrigger value="branding" className="rounded-lg text-xs">Branding</TabsTrigger>
           <TabsTrigger value="products" className="rounded-lg text-xs">Products</TabsTrigger>
           <TabsTrigger value="checkout" className="rounded-lg text-xs">Checkout</TabsTrigger>
+          <TabsTrigger value="pickup-hours" className="rounded-lg text-xs">Pickup Hours</TabsTrigger>
           <TabsTrigger value="uber" className="rounded-lg text-xs">Delivery · Uber Direct</TabsTrigger>
           <TabsTrigger value="printing" className="rounded-lg text-xs">Printing</TabsTrigger>
           <TabsTrigger value="purge" className="rounded-lg text-xs">Purge</TabsTrigger>
@@ -924,6 +977,24 @@ export default function AdminSettingsPage() {
                 }}>{paypalTesting ? "Testing…" : "Test Connection"}</Button>
               </div>
             </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="pickup-hours">
+          <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-5">
+            <div><h2 className="font-semibold">Location pickup hours</h2><p className="text-xs text-muted-foreground mt-1">Customers see these hours in the selected store’s local time. A closing time earlier than opening time creates an overnight period.</p></div>
+            {pickupLocations.length ? <>
+              <label className="space-y-1 text-xs block"><span className="font-semibold text-muted-foreground uppercase tracking-widest">Storefront location</span><select className="w-full rounded-xl border border-border bg-background p-2" value={pickupLocationId ?? ""} onChange={event => selectPickupLocation(Number(event.target.value))}>{pickupLocations.map(location => <option key={location.id} value={location.id} disabled={!location.isActive}>{location.name}{location.isActive ? "" : " (inactive)"}</option>)}</select></label>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <label className="space-y-1 text-xs"><span>Time zone</span><Input value={pickupDraft.timeZone} onChange={event => setPickupDraft(current => ({ ...current, timeZone: event.target.value }))} placeholder="America/Los_Angeles" /></label>
+                <label className="space-y-1 text-xs"><span>Pickup slot length</span><select className="w-full h-9 rounded-xl border border-border bg-background px-2" value={pickupDraft.slotMinutes} onChange={event => setPickupDraft(current => ({ ...current, slotMinutes: Number(event.target.value) as PickupSchedule["slotMinutes"] }))}>{[10, 15, 20, 30, 45, 60].map(value => <option key={value} value={value}>{value} minutes</option>)}</select></label>
+                <label className="space-y-1 text-xs"><span>Schedule up to</span><Input type="number" min={1} max={90} value={pickupDraft.maxAdvanceDays} onChange={event => setPickupDraft(current => ({ ...current, maxAdvanceDays: Number(event.target.value) }))} /></label>
+              </div>
+              <div className="space-y-2"><div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Regular weekly hours</div>{["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map((day, dayOfWeek) => { const row = pickupDraft.weeklyHours.find(value => value.dayOfWeek === dayOfWeek); return <div key={day} className="grid grid-cols-[7rem_1fr_1fr] gap-2 items-center border-b border-border/30 pb-2"><label className="flex items-center gap-2 text-sm"><Switch checked={!!row} onCheckedChange={enabled => setPickupDay(dayOfWeek, enabled)} />{day}</label><Input type="time" disabled={!row} value={row?.intervals[0]?.open ?? "09:00"} onChange={event => setPickupDay(dayOfWeek, true, "open", event.target.value)} /><Input type="time" disabled={!row} value={row?.intervals[0]?.close ?? "17:00"} onChange={event => setPickupDay(dayOfWeek, true, "close", event.target.value)} /></div>; })}</div>
+              <div className="space-y-3"><div className="flex justify-between items-center"><div><div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Temporary closures and holiday hours</div><p className="text-[11px] text-muted-foreground">Date-specific entries replace regular hours for that date.</p></div><Button type="button" variant="outline" size="sm" onClick={() => setPickupDraft(current => ({ ...current, exceptions: [...current.exceptions, { date: new Date().toISOString().slice(0, 10), closed: true, label: "" }] }))}>Add date</Button></div>{pickupDraft.exceptions.map((exception, index) => <div key={`${exception.date}-${index}`} className="grid sm:grid-cols-[1fr_auto_1fr_1fr_1fr_auto] gap-2 items-center"><Input type="date" value={exception.date} onChange={event => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, date: event.target.value } : row) }))} /><label className="flex items-center gap-1 text-xs"><Switch checked={exception.closed} onCheckedChange={closed => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, closed, intervals: closed ? undefined : row.intervals?.length ? row.intervals : [{ open: "09:00", close: "17:00" }] } : row) }))} />Closed</label><Input type="time" disabled={exception.closed} value={exception.intervals?.[0]?.open ?? "09:00"} onChange={event => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, intervals: [{ open: event.target.value, close: row.intervals?.[0]?.close ?? "17:00" }] } : row) }))} /><Input type="time" disabled={exception.closed} value={exception.intervals?.[0]?.close ?? "17:00"} onChange={event => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, intervals: [{ open: row.intervals?.[0]?.open ?? "09:00", close: event.target.value }] } : row) }))} /><Input placeholder="Holiday label" value={exception.label ?? ""} onChange={event => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, label: event.target.value } : row) }))} /><Button type="button" variant="ghost" size="sm" onClick={() => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.filter((_, rowIndex) => rowIndex !== index) }))}>Remove</Button></div>)}</div>
+              {pickupMessage && <p className="text-xs text-muted-foreground">{pickupMessage}</p>}
+              <Button onClick={savePickupHours} disabled={pickupSaving || !pickupLocationId} className="gap-2">{pickupSaving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}{pickupSaving ? "Saving…" : "Save pickup hours"}</Button>
+            </> : <p className="text-sm text-muted-foreground">Create an active Storefront inventory location before configuring pickup hours.</p>}
           </div>
         </TabsContent>
 

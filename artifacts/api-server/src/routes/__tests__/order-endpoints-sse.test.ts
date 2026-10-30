@@ -22,12 +22,13 @@ const dbState: {
   tenants: Array<Record<string, unknown>>;
   catalog: Array<Record<string, unknown>>;
   inventoryLocations: Array<Record<string, unknown>>;
+  pickupSchedules: Array<Record<string, unknown>>;
   inventoryBalances: Array<Record<string, unknown>>;
   taxSnapshots: Array<Record<string, unknown>>;
   uberQuotes: Array<Record<string, unknown>>;
   disclaimerAcceptances: Array<Record<string, unknown>>;
   auditLogs: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [], auditLogs: [] };
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], pickupSchedules: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [], auditLogs: [] };
 
 let mockActor: Record<string, unknown> = {};
 const reservationMocks = vi.hoisted(() => ({
@@ -210,7 +211,8 @@ vi.mock("@workspace/db", () => {
   const tenantsTable = { __t: "tenants", id: "id", name: "name", settings: "settings" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId", catalogItemId: "catalogItemId" };
   const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId" };
-  const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
+  const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", name: "name", type: "type", isActive: "isActive", csrBoxId: "csrBoxId" };
+  const locationPickupSchedulesTable = { __t: "pickup_schedules", tenantId: "tenantId", locationId: "locationId" };
   const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand", inventoryKind: "inventoryKind", isSellable: "isSellable", quarantinedAt: "quarantinedAt", quarantinedByUserId: "quarantinedByUserId", quarantineReason: "quarantineReason" };
   const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
   const orderTaxSnapshotsTable = { __t: "order_tax_snapshots", id: "id", tenantId: "tenantId", orderId: "orderId" };
@@ -227,6 +229,7 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "order_items") return orderItems;
     if (t.__t === "catalog") return dbState.catalog;
     if (t.__t === "inventory_locations") return dbState.inventoryLocations;
+    if (t.__t === "pickup_schedules") return dbState.pickupSchedules;
     if (t.__t === "inventory_balances") return dbState.inventoryBalances;
     if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
     if (t.__t === "order_tax_snapshots") return dbState.taxSnapshots;
@@ -344,8 +347,8 @@ vi.mock("@workspace/db", () => {
   });
 
   return {
-    db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve({ rows: [{ id: "test-event" }] })) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
+    db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve({ rows: [{ id: "test-event", version: 1 }] })) })) },
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, locationPickupSchedulesTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
     orderNotesTable: { __t: "order_notes" },
     cashLedgerEntriesTable: { __t: "cash_ledger", tenantId: "tenantId", idempotencyKey: "idempotencyKey" },
   };
@@ -420,7 +423,7 @@ async function createConvertedOrder(app = buildApp()) {
   const payload = await convertedCheckoutPayload(app);
   const res = await supertest(app)
     .post("/api/orders")
-    .send({ ...payload, shippingAddress: "x", notes: "" });
+    .send({ ...payload, notes: "" });
   expect([200, 201]).toContain(res.status);
   return dbState.orders[0]!;
 }
@@ -454,7 +457,19 @@ beforeEach(() => {
   }];
   dbState.tenants = [{ id: 1, name: "Test Tenant" }];
   dbState.catalog = [{ id: 1, name: "Alavont Internal", price: "10.00", isAvailable: true, tenantId: 1 }];
-  dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
+  dbState.inventoryLocations = [{ id: 50, tenantId: 1, name: "Storefront", type: "storefront", isActive: true, csrBoxId: null }];
+  dbState.pickupSchedules = [{
+    id: 80,
+    tenantId: 1,
+    locationId: 50,
+    timeZone: "UTC",
+    weeklyHours: [0, 1, 2, 3, 4, 5, 6].map(dayOfWeek => ({ dayOfWeek, intervals: [{ open: "00:00", close: "23:59" }] })),
+    exceptions: [],
+    slotMinutes: 30,
+    maxAdvanceDays: 14,
+    version: 1,
+    updatedAt: new Date("2026-10-30T00:00:00.000Z"),
+  }];
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null }];
   dbState.uberQuotes = [];
   dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
@@ -572,7 +587,6 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
       .post("/api/orders")
       .send({
         items: convertedItems,
-        shippingAddress: "x",
         notes: "",
         paymentMethod: "cash",
         selectedPaymentMethod: "cash",
@@ -611,7 +625,6 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
       .post("/api/orders")
       .send({
         items: alavontShapedSkuRegressionItems,
-        shippingAddress: "x",
         notes: "",
         paymentMethod: "cash",
         selectedPaymentMethod: "cash",
@@ -687,7 +700,7 @@ describe("POST /api/orders — customer hourglass default 30 min", () => {
     const payload = await convertedCheckoutPayload(app);
     const res = await supertest(app)
       .post("/api/orders")
-      .send({ ...payload, shippingAddress: "x", notes: "" });
+      .send({ ...payload, notes: "" });
     expect([200, 201]).toContain(res.status);
     const inserted = dbState.orders[0]!;
     expect(inserted.promisedMinutes).toBe(30);
