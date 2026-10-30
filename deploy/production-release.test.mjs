@@ -849,18 +849,18 @@ test("production rollback baseline matches the verified PR 205 production images
   assert.equal(PRESERVED_SNAPSHOT.rehearsalWorkflowRun, "39771000177");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.manifests).sort(), ["api", "migrate", "platform"]);
   assert.deepEqual(Object.keys(APPROVED_RELEASE.configs).sort(), ["api", "migrate", "platform"]);
-  assert.equal(APPROVED_RELEASE.manifests.api, "sha256:7d51b579936c623cdf711c96001b707de561391ade3719a546ada0a0b4f8e791");
-  assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:6f39211f7a0490141f1481c6ee8128c8985d55117384f9838059e954da9caafe");
-  assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:c1296e3484b9c5fcdf3f360bde7bae74a2a0f61c99125efede1a90a2d5188dd5");
-  assert.equal(APPROVED_RELEASE.configs.api, "sha256:d64a1851542eab3c34058bd56f653e4075d737e9697689d90449317083706b50");
-  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:83be7e9e99886542163ee700868113071d7e16d817c934418c494bdb2e5f34ce");
-  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:22c258c07af018c6dd5c0571491afba3c2933ef2a01d2ffb2bf7b70c7304fb6f");
+  assert.equal(APPROVED_RELEASE.manifests.api, "sha256:db33bc237f28b89b3c1af3cbc60c2dab3ba556502ade97c3d5a3d649116e04d1");
+  assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:342c24069cc60c9dfbf983f5cf32a39bb2ea7fbbbdbabe34526fbc8c7665a40d");
+  assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:59a10be3fe6a5486fc9e4b6e95b26fac49b4c43cfa3efde43ede2eb86567a1e5");
+  assert.equal(APPROVED_RELEASE.configs.api, "sha256:834b9aa7b46f21245f94d56b07771f7e15a9b91f38729b3369a53bbad2623076");
+  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:d369a18c60ac1c0dbe9fc8a4b44ac68c03fb11d13cb525811beab8abbd6bcc83");
+  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:3994159d052cf24e9bf5638ba9c4c5e62125c8c169b0973c685369ad14e3449d");
   assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.platform, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.migrate, APPROVED_RELEASE.sha);
-  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:7d51b579936c623cdf711c96001b707de561391ade3719a546ada0a0b4f8e791");
-  assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:6f39211f7a0490141f1481c6ee8128c8985d55117384f9838059e954da9caafe");
-  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:c1296e3484b9c5fcdf3f360bde7bae74a2a0f61c99125efede1a90a2d5188dd5");
+  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:db33bc237f28b89b3c1af3cbc60c2dab3ba556502ade97c3d5a3d649116e04d1");
+  assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:342c24069cc60c9dfbf983f5cf32a39bb2ea7fbbbdbabe34526fbc8c7665a40d");
+  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:59a10be3fe6a5486fc9e4b6e95b26fac49b4c43cfa3efde43ede2eb86567a1e5");
   assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, ["0079_verified_zero_opening_counts"]);
   assert.equal(MIGRATION_0077.timestamp, "1792440000000");
   assert.equal(MIGRATION_0077.sha256, "29b98289bd97b1c4781495a93d3d034f03a0daa503a96adfda035d2a3aeecd6b");
@@ -888,8 +888,8 @@ test("candidate builder and deployment approval are frozen to the exact verified
     "utf8",
   );
   const proposed = {
-    sha: "5c68c81600f31fd9781bcf2d47746d64b10ae81e",
-    tree: "a765b25f0636a44d117353652ed82fd4316348c2",
+    sha: "bf618373c49c73334060e50cca751400e331036f",
+    tree: "2e526826b0576b15cdd38fcc3edee08a8e0c3244",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${proposed.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${proposed.tree}`));
@@ -1127,8 +1127,8 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
   const globalEnv = workflow.match(/^env:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
-  assert.equal(APPROVED_RELEASE.sha, "5c68c81600f31fd9781bcf2d47746d64b10ae81e");
-  assert.equal(APPROVED_RELEASE.tree, "a765b25f0636a44d117353652ed82fd4316348c2");
+  assert.equal(APPROVED_RELEASE.sha, "bf618373c49c73334060e50cca751400e331036f");
+  assert.equal(APPROVED_RELEASE.tree, "2e526826b0576b15cdd38fcc3edee08a8e0c3244");
   for (const [key, value] of [["SHA", APPROVED_RELEASE.sha], ["TREE", APPROVED_RELEASE.tree]]) {
     const pin = `PINNED_RELEASE_${key}`;
     assert.deepEqual(globalEnv.match(new RegExp(`^  ${pin}: ([a-f0-9]{40})$`, "gm")), [`  ${pin}: ${value}`]);
