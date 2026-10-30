@@ -59,6 +59,13 @@ export type InventoryHistoryRepairPreview = {
     bridgeQuantityDelta: string;
   }>;
   unresolvedCosts: Array<{ inventoryItemId: number; catalogItemId: number; reason: string }>;
+  verifiedAt: string;
+  serverChecks: {
+    reservations: { status: "clear" | "blocked"; count: number; message: string };
+    openOrders: { status: "clear" | "blocked"; count: number; message: string };
+    costEvidence: { status: "documented" | "unknown_explained" | "mixed"; documentedCount: number; unresolvedCount: number; message: string };
+    freshness: { status: "current_at_generation"; checkedAt: string; message: string };
+  };
   fingerprint: string;
 };
 
@@ -219,7 +226,51 @@ export async function previewInventoryHistoryBaselineRepair(
   const unresolvedCosts = [...new Map(corrections.filter(row => row.documentedUnitCost == null).map(row => [row.inventoryItemId,
     { inventoryItemId: row.inventoryItemId, catalogItemId: row.catalogItemId, reason: row.costBasisNote }])).values()];
   const fingerprint = reconciliationFingerprint({ tenantId, productId, state, evidence: [...evidence].sort((a,b) => a.inventoryItemId-b.inventoryItemId || a.locationId-b.locationId), blockers });
-  return { tenantId, productId, productName, blockers: [...new Set(blockers)], blockingReservations, blockingOrders, corrections, unresolvedCosts, fingerprint };
+  const checkedAt = new Date().toISOString();
+  const documentedCount = corrections.filter(row => row.documentedUnitCost != null).length;
+  const unresolvedCount = unresolvedCosts.length;
+  const costStatus = unresolvedCount === 0 ? "documented" : documentedCount === 0 ? "unknown_explained" : "mixed";
+  return {
+    tenantId,
+    productId,
+    productName,
+    blockers: [...new Set(blockers)],
+    blockingReservations,
+    blockingOrders,
+    corrections,
+    unresolvedCosts,
+    verifiedAt: checkedAt,
+    serverChecks: {
+      reservations: {
+        status: blockingReservations.length ? "blocked" : "clear",
+        count: blockingReservations.length,
+        message: blockingReservations.length
+          ? `${blockingReservations.length} active reservation(s) must resolve through the normal order lifecycle.`
+          : "No active reservations block this history repair.",
+      },
+      openOrders: {
+        status: blockingOrders.length ? "blocked" : "clear",
+        count: blockingOrders.length,
+        message: blockingOrders.length
+          ? `${blockingOrders.length} open order line(s) must resolve through the normal order lifecycle.`
+          : "No open order lines block this history repair.",
+      },
+      costEvidence: {
+        status: costStatus,
+        documentedCount,
+        unresolvedCount,
+        message: unresolvedCount
+          ? `${unresolvedCount} inventory item(s) have an explained unknown cost; quantity history may be bridged but valuation will remain unknown.`
+          : "Every proposed correction has a documented unit cost.",
+      },
+      freshness: {
+        status: "current_at_generation",
+        checkedAt,
+        message: "Current when generated. Apply rechecks balances, ledger history, reservations, open orders, and valuation under a database lock; refresh after any inventory or order activity.",
+      },
+    },
+    fingerprint,
+  };
 }
 
 export function repairConfirmation(correction: InventoryHistoryRepairPreview["corrections"][number]): InventoryHistoryRepairConfirmation {

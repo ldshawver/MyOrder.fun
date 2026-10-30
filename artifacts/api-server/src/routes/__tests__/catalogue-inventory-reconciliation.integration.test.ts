@@ -279,6 +279,7 @@ async function snapshot() {
       expect.objectContaining({ orderId: openOrder.rows[0].id, status: "pending" }),
     ]));
     await client.query("DELETE FROM inventory_reservations WHERE order_id=$1", [openOrder.rows[0].id]);
+    await client.query("DELETE FROM order_items WHERE order_id=$1", [openOrder.rows[0].id]);
     await client.query("DELETE FROM orders WHERE id=$1", [openOrder.rows[0].id]);
     const preview = await previewInventoryHistoryBaselineRepair(tenantId, local.body.productId, evidence);
     expect(preview.blockers).toEqual([]); expect(preview.corrections[0]).toMatchObject({ bridgeQuantityDelta: "2.000000", ledgerQuantity: "0" });
@@ -339,7 +340,14 @@ async function snapshot() {
     const preview = await requestAs("admin").post(`${route}/preview`).send({ evidence });
     expect(preview.status, preview.text).toBe(200);
     expect(preview.body).toMatchObject({ blockers: [], unresolvedCosts: [{ inventoryItemId: created.body.inventoryItemId }],
-      corrections: [{ verifiedPhysicalQuantity: "0", bridgeQuantityDelta: "1.000000", documentedUnitCost: null }] });
+      corrections: [{ verifiedPhysicalQuantity: "0", bridgeQuantityDelta: "1.000000", documentedUnitCost: null }],
+      serverChecks: {
+        reservations: { status: "clear", count: 0 },
+        openOrders: { status: "clear", count: 0 },
+        costEvidence: { status: "unknown_explained", documentedCount: 0, unresolvedCount: 1 },
+        freshness: { status: "current_at_generation" },
+      } });
+    expect(new Date(preview.body.verifiedAt).toISOString()).toBe(preview.body.verifiedAt);
     const confirmation = preview.body.corrections.map((row: any) => ({ inventoryItemId: row.inventoryItemId, locationId: row.locationId,
       verifiedPhysicalQuantity: row.verifiedPhysicalQuantity, bridgeQuantityDelta: row.bridgeQuantityDelta, documentedUnitCost: row.documentedUnitCost }));
     const badConfirmation = await requestAs("admin").post(`${route}/apply`).send({ evidence, previewFingerprint: preview.body.fingerprint,
