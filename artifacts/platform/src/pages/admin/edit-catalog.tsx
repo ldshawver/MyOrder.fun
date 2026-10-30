@@ -188,22 +188,28 @@ function EditDialog({
     }
   }
 
-  const input = (label: string, key: string, disabled = false, type = "text") => (
-    <label className="flex flex-col gap-1">
-      <span className="text-xs text-muted-foreground font-medium">{label}{["alavontName", "alavontCategory", "price"].includes(key) ? " *" : ""}</span>
-      <Input
-        type={type}
-        value={fieldVal(form[key])}
-        onChange={set(key)}
-        disabled={disabled || requestPending}
-        className="text-sm"
-        placeholder={disabled ? "WooCommerce managed" : undefined}
-      />
-      {(key === "alavontName" ? fieldErrors.name : key === "alavontCategory" ? fieldErrors.category : fieldErrors[key as keyof typeof fieldErrors]) && (
-        <span className="text-xs text-red-400">{key === "alavontName" ? fieldErrors.name : key === "alavontCategory" ? fieldErrors.category : fieldErrors[key as keyof typeof fieldErrors]}</span>
-      )}
-    </label>
-  );
+  const input = (label: string, key: string, disabled = false, type = "text", help?: string) => {
+    const error = key === "alavontName" ? fieldErrors.name : key === "alavontCategory" ? fieldErrors.category : fieldErrors[key as keyof typeof fieldErrors];
+    return (
+      <div className="flex flex-col gap-1">
+        <label htmlFor={`catalog-editor-${key}`} className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground font-medium">{label}{["alavontName", "alavontCategory", "price"].includes(key) ? " *" : ""}</span>
+          <Input
+            id={`catalog-editor-${key}`}
+            type={type}
+            value={fieldVal(form[key])}
+            onChange={set(key)}
+            disabled={disabled || requestPending}
+            aria-describedby={help ? `catalog-editor-help-${key}` : undefined}
+            className="text-sm"
+            placeholder={disabled ? "WooCommerce managed" : undefined}
+          />
+        </label>
+        {help && <p id={`catalog-editor-help-${key}`} className="text-xs leading-relaxed text-muted-foreground">{help}</p>}
+        {error && <span className="text-xs text-red-400">{error}</span>}
+      </div>
+    );
+  };
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !requestPending) onClose(); }}>
@@ -231,13 +237,14 @@ function EditDialog({
             <div className="text-xs font-bold uppercase tracking-widest text-blue-400 mb-3 flex items-center gap-1.5">
               <FlaskConical size={11} /> Alavont Therapeutics
             </div>
+            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">These fields describe the Alavont customer catalogue. Alavont Name and Category are the customer-facing label and category; the internal base name/category identify the underlying product record and are fallbacks. The base name is not a variant option.</p>
             <div className="grid grid-cols-2 gap-3">
-              {input("Alavont Name", "alavontName", isWoo)}
-              {input("Internal Name (base, optional)", "name", isWoo)}
-              {input("Alavont Category", "alavontCategory", isWoo)}
-              {input("Internal Category (base, optional)", "category", isWoo)}
-              {input("Alavont Image URL", "alavontImageUrl", isWoo)}
-              {input("Lab Name / Internal", "labName", isWoo)}
+              {input("Alavont Name", "alavontName", isWoo, "text", "Shown as the product name in the Alavont catalogue. Checkout conversion also uses this as its display-name fallback.")}
+              {input("Internal Name (base, optional)", "name", isWoo, "text", "Canonical base product name for the record and operations. Used when a branded name is missing; it is not a variant/option name.")}
+              {input("Alavont Category", "alavontCategory", isWoo, "text", "Shown as the category in the Alavont catalogue and preferred over the internal category in checkout conversion.")}
+              {input("Internal Category (base, optional)", "category", isWoo, "text", "Operational/base category and fallback when a brand-specific category is blank.")}
+              {input("Alavont Image URL", "alavontImageUrl", isWoo, "text", "Alavont-specific image fallback. The Base Image URL is tried first on the Alavont catalogue card and product details.")}
+              {input("Lab Name / Internal", "labName", isWoo, "text", "Internal lab/import identifier. It is not the customer-facing product name.")}
               {input("SKU", "sku")}
               {input("Price ($)", "price", isWoo, "number")}
               {input("Regular / Compare-at Price ($)", "regularPrice", false, "number")}
@@ -246,7 +253,7 @@ function EditDialog({
               {input("PAR", "parLevel", false, "number")}
               {input("Minimum Order Quantity", "moq", false, "number")}
               {input("Preferred Reorder Quantity", "preferredReorderQuantity", false, "number")}
-              {input("Receipt Name", "receiptName")}
+              {input("Receipt Name", "receiptName", false, "text", "Internal receipt/label name used by operational print flows; it does not replace the Alavont catalogue name.")}
             </div>
             <label className="flex flex-col gap-1 mt-3">
               <span className="text-xs text-muted-foreground font-medium">Alavont Description</span>
@@ -265,11 +272,12 @@ function EditDialog({
             <div className="text-xs font-bold uppercase tracking-widest mb-3 flex items-center gap-1.5" style={{ color: "#DC143C" }}>
               <Globe size={11} /> Lucifer Cruz Mapping
             </div>
+            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">These fields map the item to Lucifer Cruz branding for converted checkout and merchant processing. A mapping alone does not publish an Alavont item in the Lucifer Cruz storefront; that storefront is sourced from WooCommerce-managed products.</p>
             <div className="grid grid-cols-2 gap-3">
-              {input("LC Display Name", "luciferCruzName")}
-              {input("LC Category", "luciferCruzCategory")}
-              {input("LC Image URL", "luciferCruzImageUrl")}
-              {input("Base Image URL", "imageUrl")}
+              {input("LC Display Name", "luciferCruzName", false, "text", "Branded mapping name used in the converted checkout and merchant payload when Customer Safe Name is blank; it can also label WooCommerce products in the Lucifer Cruz catalogue.")}
+              {input("LC Category", "luciferCruzCategory", false, "text", "Branded category used by the Lucifer Cruz catalogue for WooCommerce products and as the safe-category fallback during checkout conversion.")}
+              {input("LC Image URL", "luciferCruzImageUrl", false, "text", "Branded image used for Lucifer Cruz WooCommerce catalogue items and as the first image fallback in converted checkout/merchant data.")}
+              {input("Base Image URL", "imageUrl", false, "text", "Primary image shown on the Alavont catalogue card and product details. For Lucifer Cruz catalogue items, the LC Image URL is preferred.")}
             </div>
             <label className="flex flex-col gap-1 mt-3">
               <span className="text-xs text-muted-foreground font-medium">LC Description</span>
@@ -290,12 +298,10 @@ function EditDialog({
             <div className="text-xs font-bold uppercase tracking-widest mb-3 flex items-center gap-1.5 text-emerald-500">
               <CheckCircle size={11} /> Safe Checkout Presentation
             </div>
+            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">This is the final discreet presentation used in the converted checkout/order review and passed to the payment/merchant payload. It is separate from the Lucifer Cruz mapping: an explicit Customer Safe Name or Description takes priority; otherwise the mapped Lucifer Cruz fields and then other server-side fallbacks are used. Category and image are derived from the mapping/fallbacks below; they are not separate overrides here.</p>
             <div className="grid grid-cols-2 gap-3">
-              {input("Customer Safe Name", "customerSafeName")}
-              {input("Lucifer Cruz Category", "luciferCruzCategory")}
-              {input("Lucifer Cruz Image URL (optional)", "luciferCruzImageUrl")}
+              {input("Customer Safe Name", "customerSafeName", false, "text", "Explicit checkout-safe name. If blank, conversion falls back to the Lucifer Cruz name, merchant name, Alavont name, then base name.")}
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">Safe image is optional.</p>
             <label className="flex flex-col gap-1 mt-3">
               <span className="text-xs text-muted-foreground font-medium">Customer Safe Description</span>
               <textarea
@@ -306,6 +312,7 @@ function EditDialog({
                 className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
               />
             </label>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">If blank, the converted checkout description falls back to the Lucifer Cruz description, merchant description, then base description. The safe category falls back to LC Category, merchant category, then base Category; the safe image falls back to LC Image, merchant image, optional Display Image, then Base Image.</p>
           </div>
 
           {/* Availability */}
@@ -343,12 +350,19 @@ function EditDialog({
 
           <div>
             <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Optional presentation</div>
+            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">These are supporting fields for the staff-facing POS conversion preview and fallback display values. They do not decide catalogue visibility, availability, price, or merchant routing. Alavont name/category/description/image take precedence when present; Customer Safe Name/Description remain the explicit safe-checkout overrides.</p>
             <div className="grid grid-cols-2 gap-3">
-              {input("Display Name", "displayName")}{input("Display Category", "displayCategory")}{input("Display Image URL", "displayImage")}{input("Promo Badges (comma separated)", "promoBadges")}
-              {input("Marketing Copy", "marketingCopy")}{input("Upsell Copy", "upsellCopy")}
+              {input("Display Name", "displayName", false, "text", "Fallback name in the converted POS preview; Alavont Name is preferred when set.")}
+              {input("Display Category", "displayCategory", false, "text", "Fallback category in the converted POS preview; Alavont Category is preferred when set.")}
+              {input("Display Image URL", "displayImage", false, "text", "Fallback image in the converted POS preview. It does not replace the main catalogue image or LC image mapping.")}
+              {input("Promo Badges (comma separated)", "promoBadges", false, "text", "Badges shown on the POS conversion preview, such as a promotion label. They do not change price or discount rules.")}
+              {input("Marketing Copy", "marketingCopy", false, "text", "Supporting copy shown in the POS conversion preview; it is separate from the product’s safe checkout description.")}
+              {input("Upsell Copy", "upsellCopy", false, "text", "Optional upsell text carried in the conversion data. The current POS preview does not display this field.")}
             </div>
             <label className="flex flex-col gap-1 mt-3"><span className="text-xs text-muted-foreground font-medium">Display Description</span><textarea value={fieldVal(form.displayDescription)} onChange={e => setForm(f => ({ ...f, displayDescription: e.target.value }))} disabled={requestPending} rows={2} className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none" /></label>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Fallback description in the converted POS preview when Alavont Description is absent; the safe description may take precedence.</p>
             <label className="flex flex-col gap-1 mt-3"><span className="text-xs text-muted-foreground font-medium">Media Gallery JSON</span><textarea value={fieldVal(form.mediaGallery)} onChange={e => setForm(f => ({ ...f, mediaGallery: e.target.value }))} disabled={requestPending} rows={2} className="w-full font-mono text-xs rounded-md border border-input bg-background px-3 py-2 resize-none" /></label>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Gallery images/videos appear in product details and rotate through the catalogue-card preview. Use valid JSON because this field is saved as structured media.</p>
           </div>
 
           <div className="flex gap-2 pt-2">
