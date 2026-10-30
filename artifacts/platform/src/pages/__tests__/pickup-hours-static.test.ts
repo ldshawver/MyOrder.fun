@@ -27,4 +27,14 @@ describe("location pickup-hours UI wiring", () => {
     expect(orderDetail).toContain("pickupSchedule");
     expect(orderDetail).toContain("localLabel");
   });
+
+  it("configures authoritative Uber quote inputs and uses server pickup slots", () => {
+    expect(settings).toContain("Pickup latitude");
+    expect(settings).toContain("Pickup longitude");
+    expect(settings).toContain("Uber external store ID");
+    expect(settings).toContain("Pickup window (minutes)");
+    expect(settings).toContain("Delivery window after pickup (minutes)");
+    expect(checkout).toContain('deliveryMethod === "pickup" || deliveryMethod === "uber_direct"');
+    expect(checkout).toContain("Courier pickup time");
+  });
 });

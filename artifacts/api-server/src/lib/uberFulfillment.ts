@@ -3,7 +3,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, ordersTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, usersTable } from "@workspace/db";
 import { cancelUberDelivery, createUberDelivery, createUberDeliveryQuote, getUberDelivery, getUberPickupAction, listUberDeliveries, type UberAddress, type UberManifestItem } from "./uberDirect";
 import { nextUberDeliveryStatus } from "./uberDeliveryState";
-import { getUberDirectPickupContact, getUberDirectRuntimeConfig, isUberDirectDispatchEnabledForTenant } from "./uberDirectConfig";
+import { getUberDirectPickupContact, getUberDirectQuoteSettings, getUberDirectRuntimeConfig, isUberDirectDispatchEnabledForTenant } from "./uberDirectConfig";
+import { loadPickupSchedule, pickupOperatingWindow, validatePickupSelection } from "./pickupScheduling";
 import { logger } from "./logger";
 import { isUberDeliveryFullySettled } from "./uberDeliveryEligibility";
 
@@ -63,8 +64,15 @@ export async function requestUberDelivery(tenantId: number, orderId: number): Pr
   if (quote.expiresAt <= new Date()) {
     try {
       const config = await getUberDirectRuntimeConfig(tenantId);
-      if (!config) throw new Error("configuration_required");
-      const refreshed = await createUberDeliveryQuote({ pickupAddress: quote.pickupAddress as UberAddress, dropoffAddress: quote.dropoffAddress as UberAddress, manifestItems: quote.manifestItems as UberManifestItem[], pickupAction: getUberPickupAction() }, config);
+      const quoteSettings = await getUberDirectQuoteSettings(tenantId);
+      const [customer] = await db.select({ phone: usersTable.contactPhone }).from(usersTable).where(and(eq(usersTable.tenantId, tenantId), eq(usersTable.id, order.customerId))).limit(1);
+      if (!config || !quoteSettings || !customer?.phone || quote.manifestTotalValue == null) throw new Error("configuration_required");
+      const schedule = await loadPickupSchedule(tenantId, quoteSettings.pickupLocationId);
+      const selection = validatePickupSelection(schedule, undefined);
+      const operatingWindow = pickupOperatingWindow(schedule, selection.pickupAt);
+      const pickupDeadlineAt = new Date(Math.min(selection.pickupAt.getTime() + quoteSettings.pickupWindowMinutes * 60_000, operatingWindow.closesAt.getTime()));
+      const dropoffReadyAt = pickupDeadlineAt;
+      const refreshed = await createUberDeliveryQuote({ pickupAddress: quoteSettings.pickupAddress, dropoffAddress: quote.dropoffAddress as UberAddress, pickupLatitude: quoteSettings.pickupLatitude, pickupLongitude: quoteSettings.pickupLongitude, pickupReadyAt: selection.pickupAt, pickupDeadlineAt, dropoffReadyAt, dropoffDeadlineAt: new Date(dropoffReadyAt.getTime() + quoteSettings.dropoffWindowMinutes * 60_000), pickupPhoneNumber: quoteSettings.pickupContact.phone, dropoffPhoneNumber: customer.phone, manifestTotalValue: quote.manifestTotalValue, externalStoreId: quoteSettings.externalStoreId }, config);
       const expires = refreshed.expires ? new Date(refreshed.expires) : null;
       const dropoffEta = refreshed.dropoff_eta ? new Date(refreshed.dropoff_eta) : null;
       const durationSeconds = refreshed.duration == null ? null : Number(refreshed.duration);
@@ -79,7 +87,7 @@ export async function requestUberDelivery(tenantId: number, orderId: number): Pr
       }
       nextQuoteId = randomUUID();
       await db.transaction(async tx => {
-        await tx.insert(uberDeliveryQuotesTable).values({ id: nextQuoteId, tenantId, customerId: order.customerId, providerQuoteId: refreshed.id, cartFingerprint: quote.cartFingerprint, pickupAddress: quote.pickupAddress, dropoffAddress: quote.dropoffAddress, manifestItems: quote.manifestItems, feeCents: refreshed.fee!, currency: quote.currency, dropoffEta, durationSeconds, pickupDurationSeconds, providerCreatedAt: refreshed.created ? new Date(refreshed.created) : null, expiresAt: expires, status: "consumed", consumedAt: new Date() });
+        await tx.insert(uberDeliveryQuotesTable).values({ id: nextQuoteId, tenantId, customerId: order.customerId, providerQuoteId: refreshed.id, cartFingerprint: quote.cartFingerprint, pickupAddress: quoteSettings.pickupAddress, dropoffAddress: quote.dropoffAddress, manifestItems: quote.manifestItems, pickupLocationId: quoteSettings.pickupLocationId, pickupAt: selection.pickupAt, pickupScheduleSnapshot: quote.pickupScheduleSnapshot, manifestTotalValue: quote.manifestTotalValue, externalStoreId: quoteSettings.externalStoreId, feeCents: refreshed.fee!, currency: quote.currency, dropoffEta, durationSeconds, pickupDurationSeconds, providerCreatedAt: refreshed.created ? new Date(refreshed.created) : null, expiresAt: expires, status: "consumed", consumedAt: new Date() });
         await tx.update(uberDeliveryFulfillmentsTable).set({ quoteId: nextQuoteId, updatedAt: new Date() }).where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "staff_requesting")));
         await tx.update(ordersTable).set({ deliveryQuoteId: nextQuoteId, updatedAt: new Date() }).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.deliveryQuoteId, quote.id)));
       });

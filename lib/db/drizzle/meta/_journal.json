@@ -400,6 +400,13 @@
       "when": 1793404800000,
       "tag": "0082_location_pickup_scheduling",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1793408400000,
+      "tag": "0083_uber_quote_authoritative_settings",
+      "breakpoints": true
     }
   ]
 }

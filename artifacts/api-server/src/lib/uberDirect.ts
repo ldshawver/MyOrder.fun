@@ -39,6 +39,21 @@ export type UberManifestItem = {
   special_instructions?: string;
 };
 
+export type UberQuotePayload = {
+  pickup_address: string;
+  dropoff_address: string;
+  pickup_latitude: number;
+  pickup_longitude: number;
+  pickup_ready_dt: string;
+  pickup_deadline_dt: string;
+  dropoff_ready_dt: string;
+  dropoff_deadline_dt: string;
+  pickup_phone_number: string;
+  dropoff_phone_number: string;
+  manifest_total_value: number;
+  external_store_id: string;
+};
+
 export function formatUberAddress(address: UberAddress): string {
   return [...address.street_address, address.city, `${address.state} ${address.zip_code}`, address.country]
     .filter((part): part is string => Boolean(part?.trim()))
@@ -188,6 +203,53 @@ function validateUberAddress(value: UberAddress): UberAddress {
   return { street_address: street, city, state, zip_code: zip, country };
 }
 
+export function normalizeUberPhone(value: string): string {
+  const normalized = value.trim().replace(/[\s().-]/g, "");
+  if (!/^\+[1-9]\d{7,14}$/.test(normalized)) throw new UberDirectConfigError("Uber Direct requires a valid saved contact phone number.");
+  return normalized;
+}
+
+export function buildUberQuotePayload(input: {
+  pickupAddress: string | UberAddress;
+  dropoffAddress: string | UberAddress;
+  pickupLatitude: number;
+  pickupLongitude: number;
+  pickupReadyAt: Date;
+  pickupDeadlineAt: Date;
+  dropoffReadyAt: Date;
+  dropoffDeadlineAt: Date;
+  pickupPhoneNumber: string;
+  dropoffPhoneNumber: string;
+  manifestTotalValue: number;
+  externalStoreId: string;
+}): UberQuotePayload {
+  const dates = [input.pickupReadyAt, input.pickupDeadlineAt, input.dropoffReadyAt, input.dropoffDeadlineAt];
+  if (dates.some(value => !(value instanceof Date) || Number.isNaN(value.getTime()))
+    || !(input.pickupReadyAt < input.pickupDeadlineAt)
+    || !(input.pickupDeadlineAt <= input.dropoffReadyAt)
+    || !(input.dropoffReadyAt < input.dropoffDeadlineAt)) throw new UberDirectConfigError("Uber Direct quote time windows are invalid.");
+  if (!Number.isFinite(input.pickupLatitude) || input.pickupLatitude < -90 || input.pickupLatitude > 90
+    || !Number.isFinite(input.pickupLongitude) || input.pickupLongitude < -180 || input.pickupLongitude > 180) throw new UberDirectConfigError("Uber Direct pickup coordinates are invalid.");
+  if (!Number.isSafeInteger(input.manifestTotalValue) || input.manifestTotalValue < 0) throw new UberDirectConfigError("Uber Direct manifest value is invalid.");
+  const externalStoreId = input.externalStoreId.trim();
+// eslint-disable-next-line no-control-regex -- reject ASCII control bytes in the saved provider identifier
+  if (!externalStoreId || externalStoreId.length > 200 || /[\u0000-\u001f\u007f]/.test(externalStoreId)) throw new UberDirectConfigError("Uber Direct external store ID is invalid.");
+  return {
+    pickup_address: formatUberAddress(normalizeUberAddress(input.pickupAddress)),
+    dropoff_address: formatUberAddress(normalizeUberAddress(input.dropoffAddress)),
+    pickup_latitude: input.pickupLatitude,
+    pickup_longitude: input.pickupLongitude,
+    pickup_ready_dt: input.pickupReadyAt.toISOString(),
+    pickup_deadline_dt: input.pickupDeadlineAt.toISOString(),
+    dropoff_ready_dt: input.dropoffReadyAt.toISOString(),
+    dropoff_deadline_dt: input.dropoffDeadlineAt.toISOString(),
+    pickup_phone_number: normalizeUberPhone(input.pickupPhoneNumber),
+    dropoff_phone_number: normalizeUberPhone(input.dropoffPhoneNumber),
+    manifest_total_value: input.manifestTotalValue,
+    external_store_id: externalStoreId,
+  };
+}
+
 async function parseUberResponse(res: Response): Promise<unknown> {
   const text = await res.text();
   if (!text) return null;
@@ -233,19 +295,22 @@ export async function getUberAccessToken(config: UberDirectRuntimeConfig): Promi
 export async function createUberDeliveryQuote(input: {
   pickupAddress: string | UberAddress;
   dropoffAddress: string | UberAddress;
-  manifestItems: UberManifestItem[];
-  pickupAction?: "default" | "pick_pack_pay";
+  pickupLatitude: number;
+  pickupLongitude: number;
+  pickupReadyAt: Date;
+  pickupDeadlineAt: Date;
+  dropoffReadyAt: Date;
+  dropoffDeadlineAt: Date;
+  pickupPhoneNumber: string;
+  dropoffPhoneNumber: string;
+  manifestTotalValue: number;
+  externalStoreId: string;
 }, config: UberDirectRuntimeConfig): Promise<UberDeliveryQuote> {
   const token = await getUberAccessToken(config);
-  const payload = {
-    pickup_address: JSON.stringify(normalizeUberAddress(input.pickupAddress)),
-    dropoff_address: JSON.stringify(normalizeUberAddress(input.dropoffAddress)),
-    manifest_items: input.manifestItems,
-    pickup_action: input.pickupAction ?? getUberPickupAction(),
-  };
+  const payload = buildUberQuotePayload(input);
 
   let res: Response;
-  try { res = await fetch(`${UBER_API_BASE_URL}/v1/customers/${config.customerId}/delivery_quotes`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(15_000) }); }
+  try { res = await fetch(`${UBER_API_BASE_URL}/v1/customers/${encodeURIComponent(config.customerId)}/delivery_quotes`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(15_000) }); }
   catch { throw new UberDirectApiError(502, "Uber Direct quote service is unavailable.", "quote_unavailable"); }
   const data = await parseUberResponse(res);
   if (!res.ok) {

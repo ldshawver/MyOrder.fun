@@ -829,8 +829,11 @@ export const createDeliveryQuoteBodyDropoffAddressMin = 8;
 
 
 
+
 export const CreateDeliveryQuoteBody = zod.object({
   "dropoffAddress": zod.string().min(createDeliveryQuoteBodyDropoffAddressMin),
+  "pickupLocationId": zod.number().min(1),
+  "pickupAt": zod.coerce.date().optional(),
   "items": zod.array(zod.object({
   "catalogItemId": zod.number().min(1),
   "quantity": zod.number().min(1)

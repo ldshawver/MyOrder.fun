@@ -721,6 +721,9 @@ export type CreateDeliveryQuoteBodyItemsItem = {
 export interface CreateDeliveryQuoteBody {
   /** @minLength 8 */
   dropoffAddress: string;
+  /** @minimum 1 */
+  pickupLocationId: number;
+  pickupAt?: string;
   /** @minItems 1 */
   items: CreateDeliveryQuoteBodyItemsItem[];
 }
