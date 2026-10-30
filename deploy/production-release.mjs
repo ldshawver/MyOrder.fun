@@ -178,7 +178,7 @@ const preReleaseSchemaInvariants = (ledgerRows) => Object.freeze([
 export const PRE_RELEASE_SCHEMA_INVARIANTS = preReleaseSchemaInvariants(53);
 
 export function assertPreReleaseSchemaInvariantDiagnostics(rows, ledgerRows = 53) {
-  if (![51, 52, 53].includes(ledgerRows))
+  if (![51, 52, 53, 54].includes(ledgerRows))
     throw new Error("Isolated restore migration ledger length is not a recognized release predecessor");
   const invariants = preReleaseSchemaInvariants(ledgerRows);
   if (!Array.isArray(rows) || rows.length !== invariants.length)
@@ -200,6 +200,18 @@ export function assertPreReleaseSchemaInvariantDiagnostics(rows, ledgerRows = 53
   if (failures.length)
     throw new Error(`Isolated restore pre-release schema invariants failed: ${failures.join("; ")}`);
   return true;
+}
+
+export function migrationsForRestoredLedger(ledgerRows) {
+  if (![51, 52, 53, 54].includes(ledgerRows))
+    throw new Error("Isolated restore migration ledger length is not a recognized release predecessor");
+  return [
+    ...(ledgerRows === 51 ? [[MIGRATION_0077, "0077_catalogue_inventory_reconciliation.sql"]] : []),
+    ...(ledgerRows <= 52 ? [[MIGRATION_0078, "0078_inventory_history_baseline_repair.sql"]] : []),
+    ...(ledgerRows <= 53 ? [[MIGRATION_0079, "0079_verified_zero_opening_counts.sql"]] : []),
+    [MIGRATION_0080, "0080_csr_delivery_closeout_accounting.sql"],
+    [MIGRATION_0081, "0081_csr_inventory_accountability.sql"],
+  ];
 }
 
 export function selectPreservedSnapshotMetadata(candidates) {
@@ -1376,7 +1388,7 @@ function restoreSnapshotInIsolation(snapshot) {
         "Isolated restore migration ledger differs from snapshot source",
       );
     const ledgerRows = recoveredLedger.trim().split("\n").filter(Boolean).length;
-    if (![51, 52, 53].includes(ledgerRows))
+    if (![51, 52, 53, 54].includes(ledgerRows))
       throw new Error("Isolated restore does not have a recognized 0077/0078/0079 predecessor lineage");
     const invariantJson = run("docker", [
       "exec",
@@ -1417,13 +1429,7 @@ function restoreSnapshotInIsolation(snapshot) {
       throw new Error(
         "Restored representative table counts differ from snapshot metadata",
       );
-    const migrations = [
-      ...(ledgerRows === 51 ? [[MIGRATION_0077, "0077_catalogue_inventory_reconciliation.sql"]] : []),
-      ...(ledgerRows <= 52 ? [[MIGRATION_0078, "0078_inventory_history_baseline_repair.sql"]] : []),
-      [MIGRATION_0079, "0079_verified_zero_opening_counts.sql"],
-      [MIGRATION_0080, "0080_csr_delivery_closeout_accounting.sql"],
-      [MIGRATION_0081, "0081_csr_inventory_accountability.sql"],
-    ];
+    const migrations = migrationsForRestoredLedger(ledgerRows);
     for (const [migration, filename] of migrations) {
       const migrationPath = path.join(
         PRODUCTION.root,

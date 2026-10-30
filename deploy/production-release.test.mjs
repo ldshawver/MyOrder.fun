@@ -22,6 +22,7 @@ import {
   PRE_RELEASE_SCHEMA_INVARIANTS,
   assertApprovedImageMetadata,
   assertPreReleaseSchemaInvariantDiagnostics,
+  migrationsForRestoredLedger,
   assertProductionConfig,
   assertRelease,
   assertReleaseIdentityManifest,
@@ -442,6 +443,48 @@ test("isolated restore schema diagnostics name only safe expected and actual fac
     () => assertPreReleaseSchemaInvariantDiagnostics(passing.slice(1)),
     /result set is incomplete/,
   );
+});
+
+test("isolated restore accepts each exact 0077-0079 predecessor, including production's 54-row baseline", () => {
+  for (const ledgerRows of [51, 52, 53, 54]) {
+    const passing = PRE_RELEASE_SCHEMA_INVARIANTS.map(({ id, expected }) => ({
+      id,
+      actual: id === "migration_ledger_rows"
+        ? String(ledgerRows)
+        : id === "public.catalogue_inventory_reconciliation_events"
+          ? ledgerRows === 51 ? "missing" : "table"
+          : id === "public.inventory_history_baseline_repair_events"
+            ? ledgerRows < 53 ? "missing" : "table"
+            : expected,
+    }));
+    assert.equal(assertPreReleaseSchemaInvariantDiagnostics(passing, ledgerRows), true);
+  }
+
+  assert.deepEqual(migrationsForRestoredLedger(51).map(([migration]) => migration.tag), [
+    "0077_catalogue_inventory_reconciliation",
+    "0078_inventory_history_baseline_repair",
+    "0079_verified_zero_opening_counts",
+    "0080_csr_delivery_closeout_accounting",
+    "0081_csr_inventory_accountability",
+  ]);
+  assert.deepEqual(migrationsForRestoredLedger(52).map(([migration]) => migration.tag), [
+    "0078_inventory_history_baseline_repair",
+    "0079_verified_zero_opening_counts",
+    "0080_csr_delivery_closeout_accounting",
+    "0081_csr_inventory_accountability",
+  ]);
+  assert.deepEqual(migrationsForRestoredLedger(53).map(([migration]) => migration.tag), [
+    "0079_verified_zero_opening_counts",
+    "0080_csr_delivery_closeout_accounting",
+    "0081_csr_inventory_accountability",
+  ]);
+  assert.deepEqual(migrationsForRestoredLedger(54).map(([migration]) => migration.tag), [
+    "0080_csr_delivery_closeout_accounting",
+    "0081_csr_inventory_accountability",
+  ]);
+  for (const unsupported of [50, 55]) {
+    assert.throws(() => migrationsForRestoredLedger(unsupported), /not a recognized release predecessor/);
+  }
 });
 
 test("pre-release slug uniqueness requires the canonical valid and ready lower(slug) index", () => {
