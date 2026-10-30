@@ -213,7 +213,7 @@ export default function NewOrder() {
   useEffect(() => {
     setDeliveryQuote(null);
     setDeliveryQuoteError(null);
-  }, [cart, shippingAddress, deliveryMethod]);
+  }, [cart, shippingAddress, deliveryMethod, pickupChoice, pickupLocationId]);
 
   useEffect(() => {
     getToken()
@@ -320,6 +320,8 @@ export default function NewOrder() {
           checkoutConversionToken: conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken,
           checkoutConversionSnapshot: checkoutSnapshotFromConversion(conversionPreview),
           checkoutConfirmation: conversionPreview.confirmation,
+          pickupLocationId,
+          ...(pickupChoice && pickupChoice !== "immediate" ? { pickupAt: pickupChoice } : {}),
         }),
       });
       const data = await res.json();
@@ -370,8 +372,8 @@ export default function NewOrder() {
           paymentMethod,
           csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? 0 : undefined,
           deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
-          pickupLocationId: deliveryMethod === "pickup" ? pickupLocationId ?? undefined : undefined,
-          pickupAt: deliveryMethod === "pickup" && pickupChoice && pickupChoice !== "immediate" ? pickupChoice : undefined,
+          pickupLocationId: deliveryMethod === "pickup" || deliveryMethod === "uber_direct" ? pickupLocationId ?? undefined : undefined,
+          pickupAt: (deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && pickupChoice && pickupChoice !== "immediate" ? pickupChoice : undefined,
           checkoutConfirmation,
         }
       });
@@ -443,8 +445,8 @@ export default function NewOrder() {
           tipAmount,
           deliveryMethod,
           ...(deliveryQuote ? { deliveryQuoteId: deliveryQuote.quoteId } : {}),
-          ...(deliveryMethod === "pickup" && pickupLocationId ? { pickupLocationId } : {}),
-          ...(deliveryMethod === "pickup" && pickupChoice && pickupChoice !== "immediate" ? { pickupAt: pickupChoice } : {}),
+          ...((deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && pickupLocationId ? { pickupLocationId } : {}),
+          ...((deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && pickupChoice && pickupChoice !== "immediate" ? { pickupAt: pickupChoice } : {}),
         }),
       })).then(async response => {
         const data = await response.json();
@@ -622,9 +624,9 @@ export default function NewOrder() {
                     ))}
                   </div>
 
-                  {deliveryMethod === "pickup" && (
+                  {(deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && (
                     <div className="rounded-sm border border-border/50 bg-muted/10 p-3 space-y-3" data-testid="pickup-scheduling">
-                      <div className="font-semibold text-sm">Pickup time</div>
+                      <div className="font-semibold text-sm">{deliveryMethod === "uber_direct" ? "Courier pickup time" : "Pickup time"}</div>
                       {pickupAvailabilityError && <p className="text-xs text-destructive">{pickupAvailabilityError}</p>}
                       {pickupLocations.length > 1 && (
                         <label className="block text-xs space-y-1">
@@ -678,7 +680,7 @@ export default function NewOrder() {
                         type="button"
                         variant="outline"
                         className="w-full rounded-sm h-9 text-xs font-semibold uppercase tracking-wider"
-                        disabled={cart.length === 0 || !shippingAddress.trim() || isQuotingDelivery}
+                        disabled={cart.length === 0 || !shippingAddress.trim() || !pickupLocationId || !pickupChoice || isQuotingDelivery}
                         onClick={handleDeliveryQuote}
                         data-testid="button-uber-quote"
                       >

@@ -94,7 +94,8 @@ vi.mock("../../payments/customerCredit", () => ({
   consumeCustomerCredit: vi.fn(async () => undefined),
   releaseCustomerCredit: vi.fn(async () => undefined),
 }));
-const uberQuoteCalls: Array<{ manifestItems: unknown[] }> = [];
+const uberQuoteCalls: Array<Record<string, unknown>> = [];
+let mockUberQuoteSettingsComplete = true;
 vi.mock("../../lib/uberDirect", () => {
   class UberDirectConfigError extends Error {}
   class UberDirectApiError extends Error { status = 422; }
@@ -102,8 +103,8 @@ vi.mock("../../lib/uberDirect", () => {
     hasUberDirectConfig: () => true,
     getConfiguredPickupAddress: () => "123 Pickup St, Test City, CA",
     getUberPickupAction: () => "default",
-    createUberDeliveryQuote: async (input: { manifestItems: unknown[] }) => {
-      uberQuoteCalls.push({ manifestItems: input.manifestItems });
+    createUberDeliveryQuote: async (input: Record<string, unknown>) => {
+      uberQuoteCalls.push(input);
       return { id: "quote_safe_1", fee: 599, currency_type: "USD", pickup_action: "default", dropoff_eta: new Date(Date.now() + 30 * 60_000).toISOString(), duration: 1800, pickup_duration: 300, expires: new Date(Date.now() + 15 * 60_000).toISOString() };
     },
     normalizeUberAddress: (value: string) => ({ street_address: [value], city: "Test City", state: "CA", zip_code: "94105", country: "US" }),
@@ -114,8 +115,7 @@ vi.mock("../../lib/uberDirect", () => {
 });
 vi.mock("../../lib/uberDirectConfig", () => ({
   getUberDirectRuntimeConfig: async () => ({ tenantId: 1, environment: "sandbox", customerId: "customer-test", clientId: "client-test", clientSecret: "test-only" }),
-  getUberDirectPickupAddress: async () => ({ street_address: ["123 Pickup St"], city: "Test City", state: "CA", zip_code: "94105", country: "US" }),
-  requirePickupAddress: (value: unknown) => value,
+  getUberDirectQuoteSettings: async () => mockUberQuoteSettingsComplete ? ({ pickupLocationId: 50, pickupAddress: { street_address: ["123 Synthetic Pickup St"], city: "Test City", state: "CA", zip_code: "94105", country: "US" }, pickupLatitude: 34.000001, pickupLongitude: -118.000001, externalStoreId: "synthetic-store-fixture", pickupWindowMinutes: 20, dropoffWindowMinutes: 60, pickupContact: { name: "Synthetic Store", phone: "+15555550101" } }) : null,
   getUberDirectPickupContact: async () => null,
   isUberDirectDispatchEnabledForTenant: async () => false,
   verifyUberWebhookSignatureForAnyTenant: async () => false,
@@ -447,7 +447,7 @@ beforeEach(() => {
   dbState.orders = [];
   dbState.auditLogs = [];
   dbState.users = [
-    { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", role: "user", status: "approved", tenantId: 1 },
+    { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", contactPhone: "+15555550102", role: "user", status: "approved", tenantId: 1 },
     { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "csr", status: "approved", isActive: true, tenantId: 1 },
     { id: 9, clerkId: "admin", email: "admin@x.com", firstName: "Ad", lastName: "Min", role: "admin", status: "approved", isActive: true, tenantId: 1 },
   ];
@@ -476,6 +476,7 @@ beforeEach(() => {
   mockActor = {};
   reservationMocks.reserve.mockClear();
   uberQuoteCalls.length = 0;
+  mockUberQuoteSettingsComplete = true;
   _resetBus();
 });
 
@@ -658,7 +659,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
     mockActor = dbState.users[0]!;
     const res = await supertest(buildApp())
       .post("/api/orders/delivery-quote")
-      .send({ items: [{ catalogItemId: 1, quantity: 1 }], dropoffAddress: "456 Dropoff St, Test City, CA" });
+      .send({ items: [{ catalogItemId: 1, quantity: 1 }], dropoffAddress: "456 Dropoff St, Test City, CA", pickupLocationId: 50 });
 
     expect(res.status).toBe(422);
     expect(res.body.error).toMatch(/prepared/i);
@@ -680,15 +681,28 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
         checkoutConversionToken: preview.body.checkoutConversionToken,
         checkoutConversionSnapshot: preview.body,
         checkoutConfirmation: confirmation,
+        pickupLocationId: 50,
       });
 
     expect(res.status).toBe(200);
     expect(res.body.provider).toBe("uber_direct");
     expect(uberQuoteCalls).toHaveLength(1);
-    expect(uberQuoteCalls[0].manifestItems).toEqual([expect.objectContaining({ name: "Safe Item", special_instructions: "Safe category", quantity: 1, price: 1000 })]);
-    const payloadText = JSON.stringify(uberQuoteCalls[0].manifestItems);
+    expect(uberQuoteCalls[0]).toMatchObject({ manifestTotalValue: 1000, pickupLatitude: 34.000001, pickupLongitude: -118.000001, externalStoreId: "synthetic-store-fixture" });
+    const payloadText = JSON.stringify(uberQuoteCalls[0]);
     expect(payloadText).not.toContain("Test LC");
     expect(payloadText).not.toContain("LC-TEST");
+  });
+
+  it("POST /api/orders/delivery-quote fails before the provider when authoritative quote configuration is missing", async () => {
+    mockActor = dbState.users[0]!;
+    mockUberQuoteSettingsComplete = false;
+    const items = [{ catalogItemId: 1, quantity: 1 }];
+    const confirmation = { acceptedAllSalesFinal: true as const, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final." };
+    const preview = await supertest(buildApp()).post("/api/orders/preview-conversion").send({ items, confirmation });
+    const res = await supertest(buildApp()).post("/api/orders/delivery-quote").send({ items, dropoffAddress: "456 Synthetic Dropoff St, Test City, CA", checkoutConversionToken: preview.body.checkoutConversionToken, checkoutConversionSnapshot: preview.body, checkoutConfirmation: confirmation, pickupLocationId: 50 });
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/settings are incomplete/i);
+    expect(uberQuoteCalls).toHaveLength(0);
   });
 });
 

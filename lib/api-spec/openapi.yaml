@@ -2320,6 +2320,12 @@ components:
         dropoffAddress:
           type: string
           minLength: 8
+        pickupLocationId:
+          type: integer
+          minimum: 1
+        pickupAt:
+          type: string
+          format: date-time
         items:
           type: array
           minItems: 1
@@ -2334,7 +2340,7 @@ components:
                 type: integer
                 minimum: 1
             required: [catalogItemId, quantity]
-      required: [dropoffAddress, items]
+      required: [dropoffAddress, items, pickupLocationId]
 
     DeliveryQuoteSelection:
       type: object

@@ -64,10 +64,12 @@ type PayPalStatus = {
 type UberDirectSettings = {
   enabled: boolean; environment: "sandbox" | "production"; customerId: string | null; clientId: string | null;
   clientSecret: { configured: boolean }; webhookSigningKey: { configured: boolean };
-  pickupLocationId: number | null; dispatchEnabled: boolean;
+  pickupLocationId: number | null; pickupLatitude: number | null; pickupLongitude: number | null;
+  externalStoreId: string | null; pickupWindowMinutes: number | null; dropoffWindowMinutes: number | null;
+  quoteConfigurationComplete: boolean; dispatchEnabled: boolean;
   pickupLocations: Array<{ id: number; name: string; type: string; eligible: boolean }>;
 };
-const EMPTY_UBER: UberDirectSettings = { enabled: false, environment: "sandbox", customerId: null, clientId: null, clientSecret: { configured: false }, webhookSigningKey: { configured: false }, pickupLocationId: null, dispatchEnabled: false, pickupLocations: [] };
+const EMPTY_UBER: UberDirectSettings = { enabled: false, environment: "sandbox", customerId: null, clientId: null, clientSecret: { configured: false }, webhookSigningKey: { configured: false }, pickupLocationId: null, pickupLatitude: null, pickupLongitude: null, externalStoreId: null, pickupWindowMinutes: null, dropoffWindowMinutes: null, quoteConfigurationComplete: false, dispatchEnabled: false, pickupLocations: [] };
 type PickupHours = { dayOfWeek: number; intervals: Array<{ open: string; close: string }> };
 type PickupException = { date: string; closed: boolean; intervals?: Array<{ open: string; close: string }>; label?: string };
 type PickupSchedule = { timeZone: string; weeklyHours: PickupHours[]; exceptions: PickupException[]; slotMinutes: 10 | 15 | 20 | 30 | 45 | 60; maxAdvanceDays: number; version: number };
@@ -500,7 +502,7 @@ export default function AdminSettingsPage() {
     setUberSaving(true); setUberMessage(null);
     try {
       const token = await getToken();
-      const res = await fetch("/api/admin/settings/uber-direct", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ enabled: uber.enabled, environment: uber.environment, customerId: uber.customerId?.trim() || undefined, clientId: uber.clientId?.trim() || undefined, clientSecret: uberClientSecret, webhookSigningKey: uberWebhookKey, pickupLocationId: uber.pickupLocationId, dispatchEnabled: uber.dispatchEnabled }) });
+      const res = await fetch("/api/admin/settings/uber-direct", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ enabled: uber.enabled, environment: uber.environment, customerId: uber.customerId?.trim() || undefined, clientId: uber.clientId?.trim() || undefined, clientSecret: uberClientSecret, webhookSigningKey: uberWebhookKey, pickupLocationId: uber.pickupLocationId, pickupLatitude: uber.pickupLatitude, pickupLongitude: uber.pickupLongitude, externalStoreId: uber.externalStoreId?.trim() || null, pickupWindowMinutes: uber.pickupWindowMinutes, dropoffWindowMinutes: uber.dropoffWindowMinutes, dispatchEnabled: uber.dispatchEnabled }) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? "Uber Direct settings save failed");
       setUber(data as UberDirectSettings); setUberClientSecret(""); setUberWebhookKey(""); setUberMessage("Uber Direct settings saved");
@@ -1002,11 +1004,17 @@ export default function AdminSettingsPage() {
           <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
             <div><div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Uber Direct</div><p className="mt-1 text-xs text-muted-foreground">Tenant-scoped credentials are encrypted and write-only. Dispatch remains separately controlled.</p></div>
             {uberMessage && <div className="rounded-xl border border-border/40 bg-muted/20 p-3 text-xs">{uberMessage}</div>}
+            <div className={`rounded-xl border p-3 text-xs ${uber.quoteConfigurationComplete ? "border-emerald-500/30 bg-emerald-500/10" : "border-amber-500/30 bg-amber-500/10"}`}>{uber.quoteConfigurationComplete ? "Quote configuration is complete." : "Quotes remain blocked until pickup coordinates, time windows, external store ID, location, store hours, and contacts are configured."}</div>
             <SettingRow label="Enabled" description="Allows this tenant to request quotes after configuration is complete."><Switch checked={uber.enabled} onCheckedChange={value => setUber(current => ({ ...current, enabled: value }))} /></SettingRow>
             <SettingRow label="Dispatch enabled" description="When off, payment can never create a courier. Keep this off for staging acceptance."><Switch checked={uber.dispatchEnabled} onCheckedChange={value => setUber(current => ({ ...current, dispatchEnabled: value }))} /></SettingRow>
             <div className="grid gap-3 md:grid-cols-2">
               <BusinessField label="Environment"><Select value={uber.environment} onValueChange={value => setUber(current => ({ ...current, environment: value as "sandbox" | "production" }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="sandbox">Sandbox</SelectItem><SelectItem value="production">Production</SelectItem></SelectContent></Select></BusinessField>
               <BusinessField label="Pickup location"><Select value={uber.pickupLocationId ? String(uber.pickupLocationId) : "none"} onValueChange={value => setUber(current => ({ ...current, pickupLocationId: value === "none" ? null : Number(value) }))}><SelectTrigger><SelectValue placeholder="Select Storefront" /></SelectTrigger><SelectContent><SelectItem value="none">Select Storefront</SelectItem>{uber.pickupLocations.filter(location => location.eligible).map(location => <SelectItem key={location.id} value={String(location.id)}>{location.name}</SelectItem>)}</SelectContent></Select></BusinessField>
+              <BusinessField label="Pickup latitude"><Input type="number" step="0.000001" min={-90} max={90} value={uber.pickupLatitude ?? ""} onChange={event => setUber(current => ({ ...current, pickupLatitude: event.target.value === "" ? null : Number(event.target.value) }))} placeholder="Saved store coordinate" /></BusinessField>
+              <BusinessField label="Pickup longitude"><Input type="number" step="0.000001" min={-180} max={180} value={uber.pickupLongitude ?? ""} onChange={event => setUber(current => ({ ...current, pickupLongitude: event.target.value === "" ? null : Number(event.target.value) }))} placeholder="Saved store coordinate" /></BusinessField>
+              <BusinessField label="Uber external store ID"><Input value={uber.externalStoreId ?? ""} onChange={event => setUber(current => ({ ...current, externalStoreId: event.target.value }))} placeholder="Approved Uber store identifier" /></BusinessField>
+              <BusinessField label="Pickup window (minutes)"><Input type="number" min={5} max={240} value={uber.pickupWindowMinutes ?? ""} onChange={event => setUber(current => ({ ...current, pickupWindowMinutes: event.target.value === "" ? null : Number(event.target.value) }))} /></BusinessField>
+              <BusinessField label="Delivery window after pickup (minutes)"><Input type="number" min={15} max={480} value={uber.dropoffWindowMinutes ?? ""} onChange={event => setUber(current => ({ ...current, dropoffWindowMinutes: event.target.value === "" ? null : Number(event.target.value) }))} /></BusinessField>
               <BusinessField label="Customer ID"><Input value={uber.customerId ?? ""} onChange={event => setUber(current => ({ ...current, customerId: event.target.value }))} /></BusinessField>
               <BusinessField label="Client ID"><Input value={uber.clientId ?? ""} onChange={event => setUber(current => ({ ...current, clientId: event.target.value }))} /></BusinessField>
               <BusinessField label={`Client Secret ${uber.clientSecret.configured ? "(saved; blank preserves)" : ""}`}><Input type="password" value={uberClientSecret} onChange={event => setUberClientSecret(event.target.value)} placeholder={uber.clientSecret.configured ? "Leave blank to preserve" : "Required"} /></BusinessField>

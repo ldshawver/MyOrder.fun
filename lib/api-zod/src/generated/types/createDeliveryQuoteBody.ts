@@ -10,6 +10,9 @@ import type { CreateDeliveryQuoteBodyItemsItem } from './createDeliveryQuoteBody
 export interface CreateDeliveryQuoteBody {
   /** @minLength 8 */
   dropoffAddress: string;
+  /** @minimum 1 */
+  pickupLocationId: number;
+  pickupAt?: Date;
   /** @minItems 1 */
   items: CreateDeliveryQuoteBodyItemsItem[];
 }

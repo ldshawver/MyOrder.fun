@@ -163,6 +163,18 @@ export function validatePickupSelection(schedule: PickupScheduleInput, requested
   return { pickupAt: requested, mode: "scheduled" as const, availability };
 }
 
+/** Return the authoritative store-hours window containing a validated pickup. */
+export function pickupOperatingWindow(schedule: PickupScheduleInput, pickupAt: Date): { opensAt: Date; closesAt: Date } {
+  const localDate = dateKey(localParts(pickupAt, schedule.timeZone));
+  for (const date of [addDate(localDate, -1), localDate]) {
+    for (const interval of intervalsForDate(schedule, date)) {
+      const window = intervalInstants(schedule, date, interval);
+      if (window && window.opensAt <= pickupAt && pickupAt < window.closesAt) return window;
+    }
+  }
+  throw new Error("PICKUP_TIME_UNAVAILABLE");
+}
+
 export async function loadPickupSchedule(tenantId: number, locationId: number): Promise<PickupScheduleInput & { updatedAt: Date }> {
   const [row] = await db.select().from(locationPickupSchedulesTable).where(and(eq(locationPickupSchedulesTable.tenantId, tenantId), eq(locationPickupSchedulesTable.locationId, locationId))).limit(1);
   if (!row) throw new Error("PICKUP_SCHEDULE_UNAVAILABLE");

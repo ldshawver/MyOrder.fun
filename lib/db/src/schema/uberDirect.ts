@@ -1,4 +1,4 @@
-import { bigint, bigserial, boolean, check, foreignKey, integer, jsonb, pgTable, serial, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { bigint, bigserial, boolean, check, foreignKey, integer, jsonb, numeric, pgTable, serial, text, timestamp, unique } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
@@ -17,19 +17,31 @@ export const uberDirectSettingsTable = pgTable("uber_direct_settings", {
   clientSecretCiphertext: text("client_secret_ciphertext"),
   webhookSigningKeyCiphertext: text("webhook_signing_key_ciphertext"),
   pickupLocationId: integer("pickup_location_id"),
+  pickupLatitude: numeric("pickup_latitude", { precision: 9, scale: 6 }),
+  pickupLongitude: numeric("pickup_longitude", { precision: 9, scale: 6 }),
+  externalStoreId: text("external_store_id"),
+  pickupWindowMinutes: integer("pickup_window_minutes"),
+  dropoffWindowMinutes: integer("dropoff_window_minutes"),
   dispatchEnabled: boolean("dispatch_enabled").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, table => ({
   tenant: unique("uber_direct_settings_tenant_unique").on(table.tenantId),
   environmentCheck: check("uber_direct_settings_environment_check", sql`${table.environment} IN ('sandbox', 'production')`),
+  pickupLatitudeCheck: check("uber_direct_settings_pickup_latitude_check", sql`${table.pickupLatitude} IS NULL OR (${table.pickupLatitude} >= -90 AND ${table.pickupLatitude} <= 90)`),
+  pickupLongitudeCheck: check("uber_direct_settings_pickup_longitude_check", sql`${table.pickupLongitude} IS NULL OR (${table.pickupLongitude} >= -180 AND ${table.pickupLongitude} <= 180)`),
+  pickupWindowCheck: check("uber_direct_settings_pickup_window_check", sql`${table.pickupWindowMinutes} IS NULL OR (${table.pickupWindowMinutes} >= 5 AND ${table.pickupWindowMinutes} <= 240)`),
+  dropoffWindowCheck: check("uber_direct_settings_dropoff_window_check", sql`${table.dropoffWindowMinutes} IS NULL OR (${table.dropoffWindowMinutes} >= 15 AND ${table.dropoffWindowMinutes} <= 480)`),
   tenantPickupLocation: foreignKey({ name: "uber_direct_settings_tenant_pickup_location_fk", columns: [table.tenantId, table.pickupLocationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
 }));
 
 export const uberDeliveryQuotesTable = pgTable("uber_delivery_quotes", {
   id: text("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id), customerId: integer("customer_id").notNull().references(() => usersTable.id),
   providerQuoteId: text("provider_quote_id").notNull(), cartFingerprint: text("cart_fingerprint").notNull(), pickupAddress: jsonb("pickup_address").notNull(), dropoffAddress: jsonb("dropoff_address").notNull(), manifestItems: jsonb("manifest_items").notNull(),
+  pickupLocationId: integer("pickup_location_id"), pickupAt: timestamp("pickup_at", { withTimezone: true }), pickupScheduleSnapshot: jsonb("pickup_schedule_snapshot"), manifestTotalValue: integer("manifest_total_value"), externalStoreId: text("external_store_id"),
   feeCents: integer("fee_cents").notNull(), currency: text("currency").notNull(), dropoffEta: timestamp("dropoff_eta", { withTimezone: true }), durationSeconds: integer("duration_seconds"), pickupDurationSeconds: integer("pickup_duration_seconds"), providerCreatedAt: timestamp("provider_created_at", { withTimezone: true }), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(), status: text("status").notNull().default("quoted"), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), consumedAt: timestamp("consumed_at", { withTimezone: true }),
-});
+}, table => ({
+  tenantPickupLocation: foreignKey({ name: "uber_delivery_quotes_tenant_pickup_location_fk", columns: [table.tenantId, table.pickupLocationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+}));
 
 export const uberDeliveryFulfillmentsTable = pgTable("uber_delivery_fulfillments", {
   id: bigserial("id", { mode: "number" }).primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id), orderId: integer("order_id").notNull(), quoteId: text("quote_id").notNull().references(() => uberDeliveryQuotesTable.id), externalOrderReference: text("external_order_reference").notNull(), providerDeliveryId: text("provider_delivery_id"), providerStatus: text("provider_status"), requestState: text("request_state").notNull().default("delivery_create_pending"), attemptCount: integer("attempt_count").notNull().default(0), lastSanitizedError: text("last_sanitized_error"), lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

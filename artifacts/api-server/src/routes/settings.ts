@@ -7,11 +7,11 @@ import { encrypt, hasConfiguredSettingsEncryptionKey, safeDecrypt } from "../lib
 import { getTenantPayPalStatus, loadTenantPaymentConfig, paypalSettingsBody, saveTenantPayPalSettings } from "../payments/tenantConfig";
 import { PayPalProvider } from "../payments/paypal";
 import { createUberDeliveryQuote, getUberAccessToken, normalizeUberAddress, UberDirectApiError, UberDirectConfigError } from "../lib/uberDirect";
-import { getUberDirectAdminSettings, getUberDirectPickupAddress, getUberDirectRuntimeConfig, requirePickupAddress } from "../lib/uberDirectConfig";
+import { getUberDirectAdminSettings, getUberDirectQuoteSettings, getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
 import { requireTenantContext } from "../lib/tenantContext";
 import { z } from "zod";
 import { assertWooHttpsOrigin } from "../lib/wooSafeHttp";
-import { pickupScheduleInputSchema } from "../lib/pickupScheduling";
+import { loadPickupSchedule, pickupOperatingWindow, pickupScheduleInputSchema, validatePickupSelection } from "../lib/pickupScheduling";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -733,6 +733,11 @@ const UberSettingsBody = z.object({
   clientSecret: z.string().max(4096).optional(),
   webhookSigningKey: z.string().max(4096).optional(),
   pickupLocationId: z.number().int().positive().nullable().optional(),
+  pickupLatitude: z.number().finite().min(-90).max(90).nullable().optional(),
+  pickupLongitude: z.number().finite().min(-180).max(180).nullable().optional(),
+  externalStoreId: z.string().trim().min(1).max(200).nullable().optional(),
+  pickupWindowMinutes: z.number().int().min(5).max(240).nullable().optional(),
+  dropoffWindowMinutes: z.number().int().min(15).max(480).nullable().optional(),
   dispatchEnabled: z.boolean().optional(),
 }).strict();
 
@@ -780,6 +785,11 @@ router.put("/admin/settings/uber-direct", requireUberAdmin, requireTenantAssigne
   if (input.clientSecret !== undefined && input.clientSecret.trim()) update.clientSecretCiphertext = encrypt(input.clientSecret.trim());
   if (input.webhookSigningKey !== undefined && input.webhookSigningKey.trim()) update.webhookSigningKeyCiphertext = encrypt(input.webhookSigningKey.trim());
   if (input.pickupLocationId !== undefined) update.pickupLocationId = input.pickupLocationId;
+  if (input.pickupLatitude !== undefined) update.pickupLatitude = input.pickupLatitude == null ? null : String(input.pickupLatitude);
+  if (input.pickupLongitude !== undefined) update.pickupLongitude = input.pickupLongitude == null ? null : String(input.pickupLongitude);
+  if (input.externalStoreId !== undefined) update.externalStoreId = input.externalStoreId;
+  if (input.pickupWindowMinutes !== undefined) update.pickupWindowMinutes = input.pickupWindowMinutes;
+  if (input.dropoffWindowMinutes !== undefined) update.dropoffWindowMinutes = input.dropoffWindowMinutes;
   if (input.dispatchEnabled !== undefined) update.dispatchEnabled = input.dispatchEnabled;
   const [existing] = await db.select({ id: uberDirectSettingsTable.id }).from(uberDirectSettingsTable).where(eq(uberDirectSettingsTable.tenantId, tenantId)).limit(1);
   if (existing) {
@@ -789,7 +799,11 @@ router.put("/admin/settings/uber-direct", requireUberAdmin, requireTenantAssigne
       tenantId, enabled: input.enabled ?? false, environment: input.environment ?? "sandbox", customerId: input.customerId ?? null,
       clientId: input.clientId ?? null, clientSecretCiphertext: update.clientSecretCiphertext as string | undefined,
       webhookSigningKeyCiphertext: update.webhookSigningKeyCiphertext as string | undefined,
-      pickupLocationId: input.pickupLocationId ?? null, dispatchEnabled: input.dispatchEnabled ?? false,
+      pickupLocationId: input.pickupLocationId ?? null,
+      pickupLatitude: input.pickupLatitude == null ? null : String(input.pickupLatitude),
+      pickupLongitude: input.pickupLongitude == null ? null : String(input.pickupLongitude),
+      externalStoreId: input.externalStoreId ?? null, pickupWindowMinutes: input.pickupWindowMinutes ?? null,
+      dropoffWindowMinutes: input.dropoffWindowMinutes ?? null, dispatchEnabled: input.dispatchEnabled ?? false,
     });
   }
   await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId, action: "settings.uber_direct.updated", resourceType: "uber_direct_settings", resourceId: String(tenantId), metadata: { fields: Object.keys(input).filter(key => !["clientSecret", "webhookSigningKey"].includes(key)), clientSecretUpdated: Boolean(input.clientSecret?.trim()), webhookSigningKeyUpdated: Boolean(input.webhookSigningKey?.trim()) }, ipAddress: req.ip });
@@ -809,7 +823,7 @@ router.post("/admin/settings/uber-direct/test-connection", requireUberAdmin, req
   } catch { res.status(502).json({ connection: "failed" }); }
 });
 
-const UberTestQuoteBody = z.object({ dropoffAddress: z.string().trim().min(8).max(300) }).strict();
+const UberTestQuoteBody = z.object({ dropoffAddress: z.string().trim().min(8).max(300), pickupAt: z.string().datetime().optional() }).strict();
 router.post("/admin/settings/uber-direct/test-quote", requireUberAdmin, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   const tenantId = uberTenantId(req);
   if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required for Uber Direct settings." }); return; }
@@ -819,7 +833,14 @@ router.post("/admin/settings/uber-direct/test-quote", requireUberAdmin, requireT
   try {
     const config = await getUberDirectRuntimeConfig(tenantId);
     if (!config) { res.status(503).json({ error: "Uber Direct is not configured." }); return; }
-    const quote = await createUberDeliveryQuote({ pickupAddress: requirePickupAddress(await getUberDirectPickupAddress(tenantId)), dropoffAddress: normalizeUberAddress(body.data.dropoffAddress), manifestItems: [{ name: "Uber Direct connection test", quantity: 1, price: 0 }], pickupAction: "default" }, config);
+    const quoteSettings = await getUberDirectQuoteSettings(tenantId);
+    if (!quoteSettings) { res.status(503).json({ error: "Uber Direct quote settings are incomplete." }); return; }
+    const schedule = await loadPickupSchedule(tenantId, quoteSettings.pickupLocationId);
+    const selection = validatePickupSelection(schedule, body.data.pickupAt);
+    const operatingWindow = pickupOperatingWindow(schedule, selection.pickupAt);
+    const pickupDeadlineAt = new Date(Math.min(selection.pickupAt.getTime() + quoteSettings.pickupWindowMinutes * 60_000, operatingWindow.closesAt.getTime()));
+    const dropoffReadyAt = pickupDeadlineAt;
+    const quote = await createUberDeliveryQuote({ pickupAddress: quoteSettings.pickupAddress, dropoffAddress: normalizeUberAddress(body.data.dropoffAddress), pickupLatitude: quoteSettings.pickupLatitude, pickupLongitude: quoteSettings.pickupLongitude, pickupReadyAt: selection.pickupAt, pickupDeadlineAt, dropoffReadyAt, dropoffDeadlineAt: new Date(dropoffReadyAt.getTime() + quoteSettings.dropoffWindowMinutes * 60_000), pickupPhoneNumber: quoteSettings.pickupContact.phone, dropoffPhoneNumber: req.dbUser!.contactPhone ?? "", manifestTotalValue: 0, externalStoreId: quoteSettings.externalStoreId }, config);
     const fee = Number(quote.fee);
     const expires = quote.expires ? new Date(quote.expires) : null;
     if (!quote.id || !Number.isSafeInteger(fee) || fee < 0 || !expires || Number.isNaN(expires.getTime())) throw new UberDirectApiError(502, "Uber Direct returned an invalid delivery quote.");

@@ -99,8 +99,8 @@ import {
   type UberAddress,
   type UberManifestItem,
 } from "../lib/uberDirect";
-import { getUberDirectPickupAddress, getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
-import { calculatePickupAvailability, loadPickupSchedule, pickupScheduleSnapshot, resolvePickupLocation, validatePickupSelection } from "../lib/pickupScheduling";
+import { getUberDirectQuoteSettings, getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
+import { calculatePickupAvailability, loadPickupSchedule, pickupOperatingWindow, pickupScheduleSnapshot, resolvePickupLocation, validatePickupSelection } from "../lib/pickupScheduling";
 import {
   IllegalOrderTransitionError,
   normalizeOrderLifecycleState,
@@ -456,6 +456,8 @@ const DeliveryQuoteBody = z.object({
     confirmedAt: z.string().datetime().optional(),
     legalDisclaimerText: z.string().min(1).max(1000),
   }).optional(),
+  pickupLocationId: z.number().int().positive(),
+  pickupAt: z.string().datetime().optional(),
 }).strict();
 
 const CheckoutQuoteBody = z.object({
@@ -479,6 +481,12 @@ function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[]
     replacement_type: "contact_customer",
     special_instructions: line.customer_safe_category,
   }));
+}
+
+function uberManifestTotalValue(lines: NormalizedCartLine[]): number {
+  const total = lines.reduce((sum, line) => sum + Math.round(line.unit_price * 100) * line.quantity, 0);
+  if (!Number.isSafeInteger(total) || total < 0) throw new UberDirectConfigError("Uber Direct manifest value is invalid.");
+  return total;
 }
 
 function checkoutFingerprint(lines: NormalizedCartLine[]): string {
@@ -630,7 +638,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const { targetLocationId } = await resolveCheckoutRouting(tenantId);
     let pickup: { locationId: number; pickupAt: string; mode: "immediate" | "scheduled"; timeZone: string } | null = null;
     let checkoutLocationId = targetLocationId;
-    if (parsed.data.deliveryMethod === "pickup") {
+    if (parsed.data.deliveryMethod === "pickup" || parsed.data.deliveryMethod === "uber_direct") {
       const location = await resolvePickupLocation(tenantId, parsed.data.pickupLocationId);
       const schedule = await loadPickupSchedule(tenantId, location.id);
       const selection = validatePickupSelection(schedule, parsed.data.pickupAt);
@@ -653,7 +661,9 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
         eq(uberDeliveryQuotesTable.status, "quoted"),
         gt(uberDeliveryQuotesTable.expiresAt, new Date()),
       )).limit(1);
-      if (!quote || quote.cartFingerprint !== checkoutFingerprint(lines)) { res.status(422).json({ error: "DELIVERY_QUOTE_UNAVAILABLE" }); return; }
+      if (!quote || quote.cartFingerprint !== checkoutFingerprint(lines)
+        || quote.pickupLocationId !== parsed.data.pickupLocationId
+        || (parsed.data.pickupAt != null && quote.pickupAt?.toISOString() !== new Date(parsed.data.pickupAt).toISOString())) { res.status(422).json({ error: "DELIVERY_QUOTE_UNAVAILABLE" }); return; }
       if (!quote.dropoffEta) { res.status(409).json({ error: "Delivery quote is missing provider ETA; request a fresh quote" }); return; }
       deliveryFeeCents = quote.feeCents;
       deliveryEta = quote.dropoffEta.toISOString();
@@ -730,21 +740,43 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
     return;
   }
 
-  const pickupAddress = await getUberDirectPickupAddress(tenantId);
-  if (!pickupAddress) {
-    res.status(503).json({ error: "Uber Courier pickup address is not configured." });
+  const quoteSettings = await getUberDirectQuoteSettings(tenantId);
+  if (!quoteSettings) {
+    res.status(503).json({ error: "Uber Courier quote settings are incomplete." });
+    return;
+  }
+  if (body.data.pickupLocationId !== quoteSettings.pickupLocationId) {
+    res.status(422).json({ error: "Uber Courier pickup location is unavailable." });
     return;
   }
 
   try {
     const manifestItems = buildUberManifestItems(normalizedLines);
-    const normalizedPickup = normalizeUberAddress(pickupAddress);
+    const manifestTotalValue = uberManifestTotalValue(normalizedLines);
+    const normalizedPickup = normalizeUberAddress(quoteSettings.pickupAddress);
     const normalizedDropoff = normalizeUberAddress(body.data.dropoffAddress);
+    const pickupLocation = await resolvePickupLocation(tenantId, quoteSettings.pickupLocationId);
+    const schedule = await loadPickupSchedule(tenantId, quoteSettings.pickupLocationId);
+    const selection = validatePickupSelection(schedule, body.data.pickupAt);
+    const scheduleSnapshot = pickupScheduleSnapshot(schedule, pickupLocation, selection);
+    const operatingWindow = pickupOperatingWindow(schedule, selection.pickupAt);
+    const configuredPickupDeadline = new Date(selection.pickupAt.getTime() + quoteSettings.pickupWindowMinutes * 60_000);
+    const pickupDeadlineAt = new Date(Math.min(configuredPickupDeadline.getTime(), operatingWindow.closesAt.getTime()));
+    const dropoffReadyAt = pickupDeadlineAt;
+    const dropoffDeadlineAt = new Date(dropoffReadyAt.getTime() + quoteSettings.dropoffWindowMinutes * 60_000);
     const quote = await createUberDeliveryQuote({
       pickupAddress: normalizedPickup,
       dropoffAddress: normalizedDropoff,
-      manifestItems,
-      pickupAction: getUberPickupAction(),
+      pickupLatitude: quoteSettings.pickupLatitude,
+      pickupLongitude: quoteSettings.pickupLongitude,
+      pickupReadyAt: selection.pickupAt,
+      pickupDeadlineAt,
+      dropoffReadyAt,
+      dropoffDeadlineAt,
+      pickupPhoneNumber: quoteSettings.pickupContact.phone,
+      dropoffPhoneNumber: actor.contactPhone ?? "",
+      manifestTotalValue,
+      externalStoreId: quoteSettings.externalStoreId,
     }, uberConfig);
     const feeCents = Number(quote.fee);
     const expiresAt = quote.expires ? new Date(quote.expires) : null;
@@ -764,6 +796,8 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
       id: localQuoteId, tenantId, customerId: actor.id, providerQuoteId: quote.id,
       cartFingerprint: checkoutFingerprint(normalizedLines), pickupAddress: normalizedPickup,
       dropoffAddress: normalizedDropoff, manifestItems, feeCents,
+      pickupLocationId: quoteSettings.pickupLocationId, pickupAt: selection.pickupAt,
+      pickupScheduleSnapshot: scheduleSnapshot, manifestTotalValue, externalStoreId: quoteSettings.externalStoreId,
       currency: String(quote.currency_type ?? "USD").toUpperCase(),
       dropoffEta, durationSeconds, pickupDurationSeconds,
       providerCreatedAt: quote.created ? new Date(quote.created) : null, expiresAt,
@@ -956,7 +990,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   let pickupSchedule: Awaited<ReturnType<typeof loadPickupSchedule>> | null = null;
   let pickupSelection: ReturnType<typeof validatePickupSelection> | null = null;
   let pickupSnapshot: ReturnType<typeof pickupScheduleSnapshot> | null = null;
-  if (requestedDeliveryMethod === "pickup") {
+  if (requestedDeliveryMethod === "pickup" || requestedDeliveryMethod === "uber_direct") {
     try {
       pickupLocation = await resolvePickupLocation(houseTenantId, body.data.pickupLocationId);
       pickupSchedule = await loadPickupSchedule(houseTenantId, pickupLocation.id);
@@ -1034,7 +1068,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       gt(uberDeliveryQuotesTable.expiresAt, new Date()),
     )).limit(1);
     const normalizedAddress = normalizeUberAddress(body.data.shippingAddress);
-    if (!quote || !quote.dropoffEta || quote.cartFingerprint !== checkoutFingerprint(normalizedLines) || !sameUberAddress(normalizeUberAddress(quote.dropoffAddress as UberAddress), normalizedAddress)) {
+    if (!quote || !quote.dropoffEta || quote.cartFingerprint !== checkoutFingerprint(normalizedLines) || !sameUberAddress(normalizeUberAddress(quote.dropoffAddress as UberAddress), normalizedAddress)
+      || (explicitDeliveryMethod === "uber_direct" && (quote.pickupLocationId !== pickupLocation?.id
+        || !quote.pickupAt || (body.data.pickupAt != null && quote.pickupAt.toISOString() !== new Date(body.data.pickupAt).toISOString())))) {
       res.status(422).json({ error: "Your Uber delivery quote is missing, expired, or no longer matches this checkout. Please calculate delivery again." });
       return;
     }

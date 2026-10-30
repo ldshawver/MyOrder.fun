@@ -13,12 +13,59 @@ export type UberDirectAdminSettings = {
   clientSecret: { configured: boolean };
   webhookSigningKey: { configured: boolean };
   pickupLocationId: number | null;
+  pickupLatitude: number | null;
+  pickupLongitude: number | null;
+  externalStoreId: string | null;
+  pickupWindowMinutes: number | null;
+  dropoffWindowMinutes: number | null;
+  quoteConfigurationComplete: boolean;
   dispatchEnabled: boolean;
   pickupLocations: Array<{ id: number; name: string; type: string; eligible: boolean }>;
 };
 
+export type UberDirectQuoteSettings = {
+  pickupLocationId: number;
+  pickupAddress: UberAddress;
+  pickupLatitude: number;
+  pickupLongitude: number;
+  externalStoreId: string;
+  pickupWindowMinutes: number;
+  dropoffWindowMinutes: number;
+  pickupContact: { name: string; phone: string };
+};
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function finiteNumber(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+export function validateUberQuoteSettings(value: {
+  pickupLocationId?: number | null;
+  pickupLatitude?: unknown;
+  pickupLongitude?: unknown;
+  externalStoreId?: string | null;
+  pickupWindowMinutes?: number | null;
+  dropoffWindowMinutes?: number | null;
+}): Omit<UberDirectQuoteSettings, "pickupAddress" | "pickupContact"> | null {
+  const latitude = finiteNumber(value.pickupLatitude);
+  const longitude = finiteNumber(value.pickupLongitude);
+  const externalStoreId = stringValue(value.externalStoreId);
+  if (!Number.isSafeInteger(value.pickupLocationId) || Number(value.pickupLocationId) <= 0
+    || latitude == null || latitude < -90 || latitude > 90
+    || longitude == null || longitude < -180 || longitude > 180
+    // eslint-disable-next-line no-control-regex -- reject ASCII control bytes in the saved provider identifier
+    || !externalStoreId || externalStoreId.length > 200 || /[\u0000-\u001f\u007f]/.test(externalStoreId)
+    || !Number.isSafeInteger(value.pickupWindowMinutes) || Number(value.pickupWindowMinutes) < 5 || Number(value.pickupWindowMinutes) > 240
+    || !Number.isSafeInteger(value.dropoffWindowMinutes) || Number(value.dropoffWindowMinutes) < 15 || Number(value.dropoffWindowMinutes) > 480) return null;
+  return {
+    pickupLocationId: Number(value.pickupLocationId), pickupLatitude: latitude, pickupLongitude: longitude,
+    externalStoreId, pickupWindowMinutes: Number(value.pickupWindowMinutes), dropoffWindowMinutes: Number(value.dropoffWindowMinutes),
+  };
 }
 
 function businessAddressToUberAddress(value: unknown): UberAddress | null {
@@ -62,9 +109,28 @@ export async function getUberDirectAdminSettings(tenantId: number): Promise<Uber
     clientSecret: { configured: Boolean(stored?.clientSecretCiphertext) },
     webhookSigningKey: { configured: Boolean(stored?.webhookSigningKeyCiphertext) },
     pickupLocationId: stored?.pickupLocationId ?? null,
+    pickupLatitude: finiteNumber(stored?.pickupLatitude),
+    pickupLongitude: finiteNumber(stored?.pickupLongitude),
+    externalStoreId: stored?.externalStoreId ?? null,
+    pickupWindowMinutes: stored?.pickupWindowMinutes ?? null,
+    dropoffWindowMinutes: stored?.dropoffWindowMinutes ?? null,
+    quoteConfigurationComplete: Boolean(stored && validateUberQuoteSettings(stored)),
     dispatchEnabled: stored?.dispatchEnabled ?? false,
     pickupLocations: locations.map(location => ({ id: location.id, name: location.name, type: location.type, eligible: location.type === "storefront" })),
   };
+}
+
+/** Resolve every non-secret value used in a quote from this tenant's saved data. */
+export async function getUberDirectQuoteSettings(tenantId: number): Promise<UberDirectQuoteSettings | null> {
+  const [stored] = await db.select().from(uberDirectSettingsTable).where(eq(uberDirectSettingsTable.tenantId, tenantId)).limit(1);
+  const validated = stored ? validateUberQuoteSettings(stored) : null;
+  if (!stored?.enabled || !validated) return null;
+  const [pickupAddress, pickupContact] = await Promise.all([
+    resolvePickupAddress(tenantId, validated.pickupLocationId),
+    getUberDirectPickupContact(tenantId),
+  ]);
+  if (!pickupAddress || !pickupContact) return null;
+  return { ...validated, pickupAddress, pickupContact };
 }
 
 /** Database configuration is the only runtime authority. No env fallback exists. */
