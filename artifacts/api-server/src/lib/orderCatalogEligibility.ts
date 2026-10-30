@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { db, catalogItemsTable, orderItemsTable } from "@workspace/db";
-import { isCatalogItemForSale } from "./catalogEligibility";
+import { isCatalogItemForSale, isCatalogItemLifecycleEligible } from "./catalogEligibility";
 
 export class OrderCatalogUnavailableError extends Error {
   readonly status = 409;
@@ -23,7 +23,9 @@ export async function requireOrderCatalogForSale(
     .orderBy(asc(catalogItemsTable.id)).for("update");
   // Lock in ID order through payment commit. Finalization also updates catalog
   // stock, so take update locks now to avoid competing shared-lock upgrades.
-  if (products.length !== ids.length || products.some(product => !isCatalogItemForSale(product))) {
+  if (products.length !== ids.length || products.some(product => product.isWooManaged
+    ? !isCatalogItemLifecycleEligible(product)
+    : !isCatalogItemForSale(product))) {
     throw new OrderCatalogUnavailableError();
   }
 }

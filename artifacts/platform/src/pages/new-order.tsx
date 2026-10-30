@@ -258,11 +258,42 @@ export default function NewOrder() {
     }
   }, [cart, upsellMutation]);
 
-  const addToCart = (item: CatalogItem) => addItem(item);
+  const verifyCartAvailability = async (catalogItemId: number, quantity: number): Promise<void> => {
+    const token = await getToken();
+    const response = await fetch("/api/cart/availability", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ catalogItemId, quantity }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result?.error ?? "Could not verify item availability. Please try again.");
+  };
 
-  const addPromotedToCart = (item: PromotedItem) => {
-    addItem(item);
-    setReviewedLastItemPrompt(true);
+  const addToCart = async (item: CatalogItem | PromotedItem): Promise<boolean> => {
+    try {
+      const desiredQuantity = (cart.find(cartItem => cartItem.id === item.id)?.quantity ?? 0) + 1;
+      await verifyCartAvailability(item.id, desiredQuantity);
+      addItem(item);
+      setConversionError(null);
+      return true;
+    } catch (error) {
+      setConversionError(error instanceof Error ? error.message : "Could not verify item availability. Please try again.");
+      return false;
+    }
+  };
+
+  const addPromotedToCart = async (item: PromotedItem) => {
+    if (await addToCart(item)) setReviewedLastItemPrompt(true);
+  };
+
+  const increaseCartQuantity = async (catalogItemId: number, quantity: number) => {
+    try {
+      await verifyCartAvailability(catalogItemId, quantity + 1);
+      updateQuantity(catalogItemId, 1);
+      setConversionError(null);
+    } catch (error) {
+      setConversionError(error instanceof Error ? error.message : "Could not verify item availability. Please try again.");
+    }
   };
 
   const handlePreviewConversion = async () => {
@@ -495,7 +526,7 @@ export default function NewOrder() {
                     type="button"
                     key={item.id}
                     className="flex w-full items-center justify-between gap-3 p-3 text-left border-b border-border/20 last:border-0 hover:bg-muted/50 transition-colors"
-                    onClick={() => addToCart(item)}
+                    onClick={() => void addToCart(item)}
                     data-testid={`catalog-item-${item.id}`}
                   >
                     <span className="min-w-0">
@@ -545,7 +576,7 @@ export default function NewOrder() {
                       <div className="flex items-center border border-border/50 rounded-sm bg-background">
                         <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" onClick={() => updateQuantity(item.id, -1)} data-testid={`button-decrease-${item.id}`}><Minus size={14}/></button>
                         <span className="w-8 text-center text-xs font-mono font-medium">{item.quantity}</span>
-                        <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" onClick={() => updateQuantity(item.id, 1)} data-testid={`button-increase-${item.id}`}><Plus size={14}/></button>
+                        <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" onClick={() => void increaseCartQuantity(item.id, item.quantity)} data-testid={`button-increase-${item.id}`}><Plus size={14}/></button>
                       </div>
                       <button className="text-muted-foreground hover:text-destructive transition-colors p-1" onClick={() => removeItem(item.id)} data-testid={`button-remove-${item.id}`}>
                         <Trash size={14} />
@@ -756,7 +787,7 @@ export default function NewOrder() {
                           <div className="text-xs font-semibold truncate">{item.name}</div>
                           <div className="text-[11px] text-muted-foreground font-mono">${item.price.toFixed(2)}</div>
                         </div>
-                        <Button type="button" size="sm" variant="ghost" className="h-7 rounded-sm px-2 text-[10px] uppercase tracking-wider" onClick={() => addPromotedToCart(item)} data-testid={`button-last-item-add-${item.id}`}>
+                        <Button type="button" size="sm" variant="ghost" className="h-7 rounded-sm px-2 text-[10px] uppercase tracking-wider" onClick={() => void addPromotedToCart(item)} data-testid={`button-last-item-add-${item.id}`}>
                           Add
                         </Button>
                       </div>
@@ -1011,7 +1042,7 @@ export default function NewOrder() {
                     <div className="font-medium text-sm mb-1">{item.name}</div>
                     <div className="flex items-center justify-between mt-2">
                       <div className="text-xs font-mono text-muted-foreground">${item.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
-                      <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2 hover:bg-primary/10 hover:text-primary rounded-sm uppercase tracking-wider" onClick={() => addToCart(item)} disabled={!canCurateSuggestions} data-testid={`button-upsell-add-${item.id}`}>
+                      <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2 hover:bg-primary/10 hover:text-primary rounded-sm uppercase tracking-wider" onClick={() => void addToCart(item)} disabled={!canCurateSuggestions} data-testid={`button-upsell-add-${item.id}`}>
                         Add
                       </Button>
                     </div>

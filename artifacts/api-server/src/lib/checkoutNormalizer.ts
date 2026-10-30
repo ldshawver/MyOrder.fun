@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { db, catalogItemsTable, taxConfigurationsTable } from "@workspace/db";
-import { isCatalogItemForSale } from "./catalogEligibility";
+import { isCatalogItemForSale, isCatalogItemLifecycleEligible } from "./catalogEligibility";
 import { and, eq, gte, isNull, lte, or } from "drizzle-orm";
 import { logger } from "./logger";
 import { dollarsToCents } from "./tenderTax";
@@ -191,7 +191,9 @@ export async function normalizeCheckoutCart(
         `Catalog item ${line.catalogItemId} not found`);
     }
 
-    if (!isCatalogItemForSale(ci)) {
+    // Woo's live response is authoritative for orderability; is_available is
+    // only a synchronized snapshot. Local items keep the existing sale gate.
+    if (ci.isWooManaged === true ? !isCatalogItemLifecycleEligible(ci) : !isCatalogItemForSale(ci)) {
       throw new CheckoutMappingError(line.catalogItemId, "item_unavailable",
         `Catalog item ${line.catalogItemId} is not available for purchase`);
     }

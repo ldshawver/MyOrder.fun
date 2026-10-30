@@ -81,6 +81,7 @@ import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDiscl
 import { allocateOrderLineRefundTax } from "../lib/refundAccounting";
 import { createCheckoutTaxQuoteToken, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError, verifyCheckoutTaxQuoteToken } from "../lib/checkoutConversionGate";
 import { requireOrderCatalogForSale, OrderCatalogUnavailableError } from "../lib/orderCatalogEligibility";
+import { CartItemUnavailableError, requireCartLinesAvailable, WooAvailabilityProviderError } from "../lib/cartAvailability";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import { buildOrderResponse } from "../lib/orderResponse";
 import {
@@ -132,6 +133,18 @@ class PickupScheduleChangedError extends Error {}
 type OptionCheckoutRequest = Request & { selectedOptionByCatalog?: Map<number, number> };
 
 class UberQuoteConsumedError extends Error {}
+
+function sendCartAvailabilityError(res: Response, error: unknown): boolean {
+  if (error instanceof CartItemUnavailableError || error instanceof WooAvailabilityProviderError) {
+    res.status(error.status).json({
+      error: error.message,
+      code: error.code,
+      ...(error instanceof CartItemUnavailableError ? { catalogItemId: error.catalogItemId } : {}),
+    });
+    return true;
+  }
+  return false;
+}
 
 async function resolveCheckoutRouting(tenantId: number) {
   // Keep the same tenant-scoped location lookup used by order fulfillment.
@@ -570,6 +583,28 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
   res.json({ ...preview, ...token, conversionToken });
 });
 
+// POST /api/cart/availability — authoritative add-to-cart gate.
+router.post("/cart/availability", async (req, res): Promise<void> => {
+  const parsed = CartLineInput.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid cart item", details: parsed.error.issues }); return; }
+  try {
+    const lines = await normalizeCheckoutCart([parsed.data], undefined, true, req.authorizedTenantId!, false);
+    await requireCartLinesAvailable(lines, req.authorizedTenantId!);
+    res.json({ available: true });
+  } catch (error) {
+    if (sendCartAvailabilityError(res, error)) return;
+    if (error instanceof CheckoutMappingError) {
+      res.status(409).json({
+        error: "This item is not currently available for purchase.",
+        code: "CART_ITEM_UNAVAILABLE",
+        catalogItemId: error.catalogItemId,
+      });
+      return;
+    }
+    res.status(500).json({ error: "Could not verify item availability. Please try again." });
+  }
+});
+
 // POST /api/cart/convert
 router.post("/cart/convert", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
@@ -581,6 +616,9 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
   const tenantId = req.authorizedTenantId!;
   try {
     const normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, tenantId, true);
+    // Local items keep their established checkout reservation gate; only Woo
+    // needs a provider recheck during conversion because it has no local row.
+    await requireCartLinesAvailable(normalizedLines, tenantId, { includeLocal: false });
     // Static regression guard legacy substring: const preview = await buildConversionPreview(normalizedLines, body.data.confirmation);
     const preview = await buildConversionPreview(normalizedLines, body.data.confirmation, tenantId);
     const token = await createVerifiedCheckoutConversionToken({ tenantId, userId: actor.id, items: body.data.items, snapshot: preview });
@@ -596,6 +634,7 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
     });
     res.json({ ...preview, ...token, conversionToken });
   } catch (normErr) {
+    if (sendCartAvailabilityError(res, normErr)) return;
     if (normErr instanceof CheckoutMappingError) {
       const missingSafeFieldMessage = normErr.missingSafeFields?.length
         ? `Missing safe checkout fields: ${normErr.missingSafeFields.join(", ")}`
@@ -936,7 +975,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     normalizedLines = verified.lines;
     conversionExpiresAt = verified.conversionExpiresAt;
     trustedTotals = verified.totals;
+    // A conversion token cannot freeze provider stock. Recheck Woo immediately
+    // before order creation; local stock remains guarded by reservations.
+    await requireCartLinesAvailable(normalizedLines, houseTenantId, { includeLocal: false });
   } catch (normErr) {
+    if (sendCartAvailabilityError(res, normErr)) return;
     if (normErr instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; }
     if (normErr instanceof CheckoutMappingError) {
       // Audit BEFORE returning so missing-mapping incidents are observable.
@@ -1366,7 +1409,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
           JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
           WHERE co.tenant_id = ${houseTenantId} AND co.catalog_item_id = ${line.catalog_item_id}
-            AND co.active = true AND cp.active = true AND ci.is_available = true
+            AND co.active = true AND cp.active = true
+            AND (ci.is_woo_managed = true OR ci.is_available = true)
             AND COALESCE((ci.metadata->>'isVisible')::boolean, true) = true
             AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
             AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
@@ -1412,7 +1456,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         }).returning({ id: orderItemsTable.id });
         lineTaxAllocations[lineIndex] = { ...lineTaxAllocations[lineIndex]!, orderItemId: orderItem.id };
 
-        if (shouldReserveInventory) {
+        if (shouldReserveInventory && line.source_type !== "woo") {
           const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,
             inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,
             option?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");

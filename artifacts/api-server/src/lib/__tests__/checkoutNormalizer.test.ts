@@ -101,16 +101,24 @@ describe("checkoutNormalizer", () => {
     it.each([
       ["archived", { metadata: { archived: true } }],
       ["compliance hold", { metadata: { complianceHold: true } }],
-      ["not for sale", { isAvailable: false }],
       ["safe duplicate", { metadata: { safeOnlyDuplicate: true } }],
       ["merged", { metadata: { mergedIntoCatalogItemId: 99 } }],
-    ])("rejects %s products for local and Woo checkout even with stale availability flags", async (_state, patch) => {
+    ])("rejects %s products for local and Woo checkout", async (_state, patch) => {
       for (const makeItem of [makeSampleLocalMappedItem, makeSampleWooItem]) {
         const item = makeItem(patch);
         makeDbMock(item);
         await expect(normalizeCheckoutCart([{ catalogItemId: item.id, quantity: 1 }]))
           .rejects.toMatchObject({ reason: "item_unavailable" });
       }
+    });
+
+    it("keeps local availability authoritative but defers a Woo snapshot flag to the live provider check", async () => {
+      makeDbMock(makeSampleLocalMappedItem({ isAvailable: false }));
+      await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]))
+        .rejects.toMatchObject({ reason: "item_unavailable" });
+      makeDbMock(makeSampleWooItem({ isAvailable: false }));
+      await expect(normalizeCheckoutCart([{ catalogItemId: 2, quantity: 1 }]))
+        .resolves.toHaveLength(1);
     });
 
     it("classifies a locally-mapped Alavont item as local_mapped", async () => {
