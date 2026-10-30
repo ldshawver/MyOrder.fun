@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createCipheriv, createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import {
@@ -23,6 +24,7 @@ import {
   PRODUCTION_STEPS,
   PRE_RELEASE_SCHEMA_INVARIANTS,
   assertApprovedImageMetadata,
+  assertSafePrintAssetArchive,
   assertPreReleaseSchemaInvariantDiagnostics,
   migrationsForRestoredLedger,
   assertProductionConfig,
@@ -36,9 +38,11 @@ import {
   assertPublicCatalogSmokePayload,
   assertPlatformSmokeDocument,
   executeProductionSequence,
+  inspectAndExtractPrintAssetArchive,
   loadPreservedSnapshot,
   mayRestoreRollbackApi,
   preReleaseSchemaDiagnosticSql,
+  preservePrintAssetTree,
   requestLoopbackJsonWithHost,
   readSmokeComposeServiceInventory,
   readSmokeRecentServiceLogs,
@@ -453,6 +457,158 @@ test("isolated restore schema diagnostics name only safe expected and actual fac
     () => assertPreReleaseSchemaInvariantDiagnostics(passing.slice(1)),
     /result set is incomplete/,
   );
+});
+
+test("print asset archive rejects traversal, links, special entries, and duplicates without disclosing paths", () => {
+  assert.equal(
+    assertSafePrintAssetArchive(
+      ["./", "./7/", `./7/${"a".repeat(64)}.png`],
+      ["d", "d", "-"],
+    ),
+    true,
+  );
+  for (const [entries, types, check] of [
+    [["./", "../tenant-secret.png"], ["d", "-"], "archive-entry-path"],
+    [["./", "/absolute/tenant-secret.png"], ["d", "-"], "archive-entry-path"],
+    [["./", "./tenant-secret"], ["d", "l"], "archive-entry-type"],
+    [["./", "./tenant-secret"], ["d", "h"], "archive-entry-type"],
+    [["./", "./tenant-secret", "./tenant-secret"], ["d", "d", "d"], "archive-entry-duplicate"],
+  ]) {
+    assert.throws(
+      () => assertSafePrintAssetArchive(entries, types),
+      (error) => error.message === `Print asset preservation check failed: ${check}` &&
+        !error.message.includes("tenant-secret"),
+    );
+  }
+});
+
+test("print asset archive normalizes root-owned mode-0700 directories only inside its private extraction", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "myorder-print-archive-"));
+  try {
+    const source = path.join(root, "source");
+    const extracted = path.join(root, "extracted");
+    const destination = path.join(root, "destination");
+    mkdirSync(path.join(source, "7"), { recursive: true });
+    mkdirSync(extracted);
+    mkdirSync(destination);
+    const untouchedLegacyDirectory = path.join(destination, "profile-images");
+    mkdirSync(untouchedLegacyDirectory, { mode: 0o700 });
+    chmodSync(untouchedLegacyDirectory, 0o000);
+    const bytes = Buffer.from("root-owned-fixture");
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    writeFileSync(path.join(source, "7", `${digest}.png`), bytes);
+    const archive = path.join(root, "assets.tar");
+    const created = spawnSync(
+      "tar",
+      ["--create", "--file", archive, "--owner=0", "--group=0", "--mode=u=rwx,go=", "--directory", source, "."],
+      { encoding: "utf8" },
+    );
+    assert.equal(created.status, 0, created.stderr);
+    inspectAndExtractPrintAssetArchive(archive, extracted);
+    assert.equal(statSync(path.join(extracted, "7")).uid, process.getuid());
+    assert.equal(statSync(path.join(extracted, "7")).mode & 0o777, 0o700);
+    assert.deepEqual(preservePrintAssetTree(extracted, destination), { fileCount: 1 });
+    assert.deepEqual(readFileSync(path.join(destination, "7", `${digest}.png`)), bytes);
+    assert.equal(statSync(untouchedLegacyDirectory).mode & 0o777, 0o000);
+    chmodSync(untouchedLegacyDirectory, 0o700);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("print asset extraction integration rejects traversal and symlink archives before writing", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "myorder-print-unsafe-archive-"));
+  try {
+    const source = path.join(root, "source");
+    const destination = path.join(root, "destination");
+    mkdirSync(source);
+    mkdirSync(destination);
+    writeFileSync(path.join(source, "safe"), "not-an-asset");
+    const traversalArchive = path.join(root, "traversal.tar");
+    const traversalCreated = spawnSync(
+      "tar",
+      ["--create", "--file", traversalArchive, "--transform=s#safe#../private-secret#", "--directory", source, "safe"],
+      { encoding: "utf8" },
+    );
+    assert.equal(traversalCreated.status, 0, traversalCreated.stderr);
+    assert.throws(
+      () => inspectAndExtractPrintAssetArchive(traversalArchive, destination),
+      (error) => error.message === "Print asset preservation check failed: archive-entry-path" &&
+        !error.message.includes("private-secret"),
+    );
+    symlinkSync("safe", path.join(source, "unsafe-link"));
+    const symlinkArchive = path.join(root, "symlink.tar");
+    const symlinkCreated = spawnSync(
+      "tar",
+      ["--create", "--file", symlinkArchive, "--directory", source, "unsafe-link"],
+      { encoding: "utf8" },
+    );
+    assert.equal(symlinkCreated.status, 0, symlinkCreated.stderr);
+    assert.throws(
+      () => inspectAndExtractPrintAssetArchive(symlinkArchive, destination),
+      /Print asset preservation check failed: archive-entry-type/,
+    );
+    assert.deepEqual(readdirSync(destination), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("print asset preservation fails closed on inaccessible trees and symlinks with safe diagnostics", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "myorder-print-safety-"));
+  try {
+    const source = path.join(root, "source");
+    const destination = path.join(root, "destination");
+    mkdirSync(source);
+    mkdirSync(destination);
+    const inaccessible = path.join(source, "private-secret-directory");
+    mkdirSync(inaccessible, { mode: 0o700 });
+    chmodSync(inaccessible, 0o000);
+    assert.throws(
+      () => preservePrintAssetTree(source, destination),
+      (error) => error.message === "Print asset preservation check failed: source-tree-readable" &&
+        !error.message.includes("private-secret-directory"),
+    );
+    chmodSync(inaccessible, 0o700);
+    rmSync(inaccessible, { recursive: true });
+    symlinkSync("../outside-secret", path.join(source, "unsafe-link"));
+    assert.throws(
+      () => preservePrintAssetTree(source, destination),
+      (error) => error.message === "Print asset preservation check failed: source-entry-type" &&
+        !error.message.includes("unsafe-link"),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("print asset preservation enforces source hashes and immutable destination contents", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "myorder-print-integrity-"));
+  try {
+    const source = path.join(root, "source");
+    const destination = path.join(root, "destination");
+    mkdirSync(path.join(source, "12"), { recursive: true });
+    mkdirSync(destination);
+    const bytes = Buffer.from("verified-print-asset");
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const sourceFile = path.join(source, "12", `${digest}.webp`);
+    writeFileSync(sourceFile, bytes);
+    assert.deepEqual(preservePrintAssetTree(source, destination), { fileCount: 1 });
+    assert.deepEqual(preservePrintAssetTree(source, destination), { fileCount: 1 });
+    writeFileSync(path.join(destination, "12", `${digest}.webp`), "different-bytes");
+    assert.throws(
+      () => preservePrintAssetTree(source, destination),
+      /Print asset preservation check failed: destination-content-mismatch/,
+    );
+    rmSync(path.join(destination, "12", `${digest}.webp`));
+    writeFileSync(sourceFile, "tampered-source");
+    assert.throws(
+      () => preservePrintAssetTree(source, destination),
+      /Print asset preservation check failed: source-content-hash/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("isolated restore accepts each exact 0077-0081 predecessor, including production's 56-row baseline", () => {
@@ -1152,7 +1308,10 @@ test("production workflow uses versioned release archives and never deletes or s
     /Deployment controller is outside its versioned production control directory/,
   );
   assert.match(runner, /docker",\s*\["cp", `\$\{apiId\}:/);
-  assert.match(runner, /existing print asset differs/);
+  assert.match(runner, /Print asset preservation check failed:/);
+  assert.match(runner, /--no-same-owner/);
+  assert.match(runner, /archive-entry-path/);
+  assert.match(runner, /destination-content-mismatch/);
   assert.doesNotMatch(runner, /rsync|--delete/);
   assert.match(runner, /\/opt\/alavont\/shared\/print-assets/);
   assert.match(workflow, /production-release\.mjs/);

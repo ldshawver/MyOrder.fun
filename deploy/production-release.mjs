@@ -1157,6 +1157,140 @@ function verifyProductionPayPalReadiness(compose) {
   assertProductionPayPalReadiness(readiness);
 }
 
+function printAssetPreservationFailure(check) {
+  return new Error(`Print asset preservation check failed: ${check}`);
+}
+
+export function assertSafePrintAssetArchive(entries, types) {
+  if (!Array.isArray(entries) || !Array.isArray(types) || entries.length !== types.length)
+    throw printAssetPreservationFailure("archive-metadata");
+  const seen = new Set();
+  for (let index = 0; index < entries.length; index++) {
+    if (types[index] !== "-" && types[index] !== "d")
+      throw printAssetPreservationFailure("archive-entry-type");
+    const raw = entries[index];
+    if (typeof raw !== "string" || raw === "" || /[\\\0\r\n]/.test(raw))
+      throw printAssetPreservationFailure("archive-entry-path");
+    let relative = raw;
+    while (relative.startsWith("./")) relative = relative.slice(2);
+    if (relative.endsWith("/")) relative = relative.slice(0, -1);
+    if (relative === "" || relative === ".") continue;
+    const components = relative.split("/");
+    if (
+      path.posix.isAbsolute(relative) ||
+      components.some((component) => component === "" || component === "." || component === "..") ||
+      path.posix.normalize(relative) !== relative
+    )
+      throw printAssetPreservationFailure("archive-entry-path");
+    if (seen.has(relative))
+      throw printAssetPreservationFailure("archive-entry-duplicate");
+    seen.add(relative);
+  }
+  return true;
+}
+
+export function inspectAndExtractPrintAssetArchive(archive, destination) {
+  const list = spawnSync(
+    "tar",
+    ["--list", "--quoting-style=escape", "--file", archive],
+    { encoding: "utf8" },
+  );
+  const verbose = spawnSync(
+    "tar",
+    ["--list", "--verbose", "--quoting-style=escape", "--file", archive],
+    { encoding: "utf8" },
+  );
+  if (list.status !== 0 || verbose.status !== 0)
+    throw printAssetPreservationFailure("archive-inspection");
+  const entries = String(list.stdout ?? "").split("\n").filter(Boolean);
+  const verboseRows = String(verbose.stdout ?? "").split("\n").filter(Boolean);
+  assertSafePrintAssetArchive(entries, verboseRows.map((row) => row[0]));
+  const extracted = spawnSync(
+    "tar",
+    [
+      "--extract",
+      "--file",
+      archive,
+      "--directory",
+      destination,
+      "--no-same-owner",
+      "--no-same-permissions",
+    ],
+    { encoding: "utf8" },
+  );
+  if (extracted.status !== 0)
+    throw printAssetPreservationFailure("archive-extraction");
+}
+
+export function preservePrintAssetTree(source, destination) {
+  let fileCount = 0;
+  const walk = (directory) => {
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      throw printAssetPreservationFailure("source-tree-readable");
+    }
+    for (const entry of entries) {
+      const sourcePath = path.join(directory, entry.name);
+      let sourceStat;
+      try {
+        sourceStat = lstatSync(sourcePath);
+      } catch {
+        throw printAssetPreservationFailure("source-tree-readable");
+      }
+      if (sourceStat.isSymbolicLink() || (!sourceStat.isDirectory() && !sourceStat.isFile()))
+        throw printAssetPreservationFailure("source-entry-type");
+      if (sourceStat.isDirectory()) {
+        walk(sourcePath);
+        continue;
+      }
+      const relative = path.relative(source, sourcePath).split(path.sep).join("/");
+      const match = /^(\d+)\/([a-f0-9]{64})\.(png|jpg|webp)$/.exec(relative);
+      if (!match)
+        throw printAssetPreservationFailure("source-file-path");
+      let bytes;
+      try {
+        bytes = readFileSync(sourcePath);
+      } catch {
+        throw printAssetPreservationFailure("source-file-readable");
+      }
+      if (createHash("sha256").update(bytes).digest("hex") !== match[2])
+        throw printAssetPreservationFailure("source-content-hash");
+      const target = path.resolve(destination, relative);
+      if (!target.startsWith(`${path.resolve(destination)}${path.sep}`))
+        throw printAssetPreservationFailure("destination-path");
+      const parent = path.dirname(target);
+      try {
+        if (existsSync(parent)) {
+          const parentStat = lstatSync(parent);
+          if (parentStat.isSymbolicLink() || !parentStat.isDirectory())
+            throw printAssetPreservationFailure("destination-entry-type");
+        } else {
+          mkdirSync(parent, { recursive: true, mode: 0o750 });
+          assertRealFilesystemPath(parent, "directory");
+        }
+        if (existsSync(target)) {
+          const targetStat = lstatSync(target);
+          if (targetStat.isSymbolicLink() || !targetStat.isFile())
+            throw printAssetPreservationFailure("destination-entry-type");
+          if (!readFileSync(target).equals(bytes))
+            throw printAssetPreservationFailure("destination-content-mismatch");
+        } else {
+          writeFileSync(target, bytes, { flag: "wx", mode: 0o640 });
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("Print asset preservation check failed:"))
+          throw error;
+        throw printAssetPreservationFailure("destination-write");
+      }
+      fileCount++;
+    }
+  };
+  walk(source);
+  return Object.freeze({ fileCount });
+}
+
 function safePrintAssetsCopy(apiId, sharedRoot) {
   if (!apiId)
     throw new Error(
@@ -1166,39 +1300,36 @@ function safePrintAssetsCopy(apiId, sharedRoot) {
   if (existsSync(destination))
     assertRealFilesystemPath(destination, "directory");
   mkdirSync(destination, { recursive: true, mode: 0o750 });
-  chmodSync(destination, 0o750);
   const temp = path.join(sharedRoot, `.print-assets-import-${process.pid}`);
+  const archive = path.join(sharedRoot, `.print-assets-import-${process.pid}.tar`);
   if (existsSync(temp))
     throw new Error("Print-asset import temporary path already exists");
+  if (existsSync(archive))
+    throw new Error("Print-asset import archive already exists");
   mkdirSync(temp, { mode: 0o700 });
+  const archiveFd = openSync(archive, "wx", 0o600);
   try {
     const copied = spawnSync(
       "docker",
-      ["cp", `${apiId}:/var/lib/myorder/print-assets/.`, temp],
-      { encoding: "utf8" },
+      ["cp", `${apiId}:/var/lib/myorder/print-assets/.`, "-"],
+      { encoding: "utf8", stdio: ["ignore", archiveFd, "pipe"] },
     );
+    closeSync(archiveFd);
     if (copied.status !== 0) {
-      rmSync(temp, { recursive: true, force: true });
       if (
         /could not find the file|no such file or directory/i.test(
           copied.stderr ?? "",
         )
       )
         return;
-      throw new Error(
-        "Could not safely inspect existing print assets in the stopped API container",
-      );
+      throw printAssetPreservationFailure("container-copy");
     }
-    const entries = run("find", [temp, "-type", "l", "-print"]).trim();
-    if (entries)
-      throw new Error("Unexpected symlink in existing print asset tree");
-    const result = run("node", [
-      "-e",
-      `const fs=require('node:fs'),p=require('node:path'),crypto=require('node:crypto');const src=${JSON.stringify(temp)},dst=${JSON.stringify(destination)};function walk(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const s=p.join(d,e.name),r=p.relative(src,s),t=p.join(dst,r);if(e.isDirectory()){fs.mkdirSync(t,{recursive:true,mode:0o750});walk(s)}else if(e.isFile()){const b=fs.readFileSync(s),h=crypto.createHash('sha256').update(b).digest('hex');if(!/^\\d+\\/[a-f0-9]{64}\\.(png|jpg|webp)$/.test(r))throw Error('unexpected asset path');if(fs.existsSync(t)){if(!fs.readFileSync(t).equals(b))throw Error('existing print asset differs')}else{fs.mkdirSync(p.dirname(t),{recursive:true,mode:0o750});fs.writeFileSync(t,b,{flag:'wx',mode:0o640})}if(!r.includes(h))throw Error('asset content hash mismatch')}}}walk(src)`,
-    ]);
-    void result;
+    inspectAndExtractPrintAssetArchive(archive, temp);
+    preservePrintAssetTree(temp, destination);
   } finally {
+    try { closeSync(archiveFd); } catch {}
     rmSync(temp, { recursive: true, force: true });
+    rmSync(archive, { force: true });
   }
 }
 
