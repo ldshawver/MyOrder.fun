@@ -1,4 +1,4 @@
-import { Router, type IRouter, type Request, type Response } from "express";
+import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { eq, and, desc, lt, gt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import { isFinanciallyClosedForFulfillment } from "../lib/orderCloseEligibility";
@@ -42,7 +42,7 @@ import {
   AddOrderNoteParams,
   AddOrderNoteBody,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, requireCustomerCheckoutAccess, writeAuditLog, normalizeRole } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
 import { quantityText, quantityUnits } from "../lib/exactQuantity";
@@ -266,7 +266,23 @@ router.get(
   },
 );
 
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+const CUSTOMER_CHECKOUT_POST_PATHS = new Set([
+  "/orders",
+  "/cart/convert",
+  "/checkout/quote",
+  "/orders/preview-conversion",
+  "/orders/delivery-quote",
+]);
+
+function requireOrderRouteApproval(req: Request, res: Response, next: NextFunction): void {
+  if (req.method === "POST" && CUSTOMER_CHECKOUT_POST_PATHS.has(req.path)) {
+    requireCustomerCheckoutAccess(req, res, next);
+    return;
+  }
+  requireApproved(req, res, next);
+}
+
+router.use(requireAuth, loadDbUser, requireDbUser, requireOrderRouteApproval, requireTenantContext);
 
 function queryRows<T>(value: unknown): T[] {
   if (Array.isArray(value)) return value as T[];
@@ -276,7 +292,7 @@ function queryRows<T>(value: unknown): T[] {
 // The new storefront sends option IDs. Resolve them under the authorized tenant
 // before the existing conversion and order schemas see a catalogue identity.
 router.use(async (req, res, next) => {
-  if (req.method !== "POST" || !["/orders", "/cart/convert", "/checkout/quote", "/orders/preview-conversion", "/orders/delivery-quote"].includes(req.path)) { next(); return; }
+  if (req.method !== "POST" || !CUSTOMER_CHECKOUT_POST_PATHS.has(req.path)) { next(); return; }
   const incoming = (req.body as { items?: unknown } | undefined)?.items;
   if (!Array.isArray(incoming) || !incoming.some(line => line && typeof line === "object" && "optionId" in line)) { next(); return; }
   const count = z.number().int().positive();

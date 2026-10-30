@@ -34,6 +34,7 @@ vi.mock("../../lib/auth", () => ({
   loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => { req.dbUser = { id: 2, tenantId: 1, role: "customer" }; next(); },
   requireDbUser: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireApproved: (_req: unknown, _res: unknown, next: () => void) => next(),
+  requireCustomerCheckoutAccess: (_req: unknown, _res: unknown, next: () => void) => next(),
   writeAuditLog: vi.fn(),
 }));
 vi.mock("../../lib/customerDisclaimerEnforcement", () => ({ requireCurrentCustomerDisclaimerAcceptance: () => (_req: unknown, _res: unknown, next: () => void) => next() }));

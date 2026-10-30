@@ -71,6 +71,7 @@ vi.mock("../../lib/auth", () => ({
   },
   requireDbUser: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
   requireApproved: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  requireCustomerCheckoutAccess: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
   requireRole: (...roles: string[]) => (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const u = (req as unknown as { dbUser?: { role: string } }).dbUser;
     const allowed = roles.map(normalizeTestRole);

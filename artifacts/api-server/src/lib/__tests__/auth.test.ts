@@ -21,7 +21,7 @@ vi.mock("../logger", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
 
-import { isConfiguredAccountOwner, normalizeRole, requireApproved, requireCatalogReadAccess, requireDbUser, requireRole } from "../auth";
+import { isConfiguredAccountOwner, normalizeRole, requireApproved, requireCatalogReadAccess, requireCustomerCheckoutAccess, requireDbUser, requireRole } from "../auth";
 
 function makeRes() {
   const res = {
@@ -119,6 +119,70 @@ describe("requireCatalogReadAccess middleware", () => {
     const res = makeRes();
     requireCatalogReadAccess(req, res, next as NextFunction);
     expect(res.statusCode).toBe(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+});
+
+describe("requireCustomerCheckoutAccess middleware", () => {
+  let next: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    next = vi.fn();
+    process.env.MYORDER_OWNER_CLERK_ID = "configured_owner";
+    // Customer checkout must not depend on a Clerk organization claim.
+    vi.mocked(getAuth).mockReturnValue({ userId: "landon_subject", sessionClaims: {} } as never);
+  });
+
+  it("allows Landon's exact legacy-approved checkout path and server tenant resolution", () => {
+    const req = { dbUser: makeUser({
+      clerkId: "landon_subject",
+      approvedByClerkId: null,
+      approvedAt: null,
+      tenantId: 7,
+    }), query: {}, body: {} } as unknown as Request;
+    const provenanceRes = makeRes();
+
+    requireApproved(req, provenanceRes, next as NextFunction);
+    expect(provenanceRes.statusCode).toBe(403);
+    expect((provenanceRes._json as Record<string, unknown>).code).toBe("ACCOUNT_APPROVAL_PROVENANCE_REQUIRED");
+
+    const checkoutNext = vi.fn();
+    const checkoutRes = makeRes();
+    requireCustomerCheckoutAccess(req, checkoutRes, (() => requireTenantContext(req, checkoutRes, checkoutNext as NextFunction)) as NextFunction);
+    expect(checkoutNext).toHaveBeenCalledOnce();
+    expect(req.authorizedTenantId).toBe(7);
+  });
+
+  it("keeps a fully provenanced customer working", () => {
+    const req = { dbUser: makeUser({ clerkId: "landon_subject", tenantId: 7 }), query: {}, body: {} } as unknown as Request;
+    const res = makeRes();
+    requireCustomerCheckoutAccess(req, res, (() => requireTenantContext(req, res, next as NextFunction)) as NextFunction);
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.authorizedTenantId).toBe(7);
+  });
+
+  it.each([
+    ["pending", { status: "pending" }, "ACCOUNT_PENDING_APPROVAL"],
+    ["deactivated", { isActive: false }, "ACCOUNT_DEACTIVATED"],
+    ["unprovisioned", { provisioningStatus: "pending" }, "ACCOUNT_IDENTITY_REQUIRED"],
+    ["unverified", { identityStatus: "verification_pending" }, "ACCOUNT_IDENTITY_REQUIRED"],
+    ["unassigned", { tenantId: null }, "TENANT_ASSIGNMENT_REQUIRED"],
+    ["privileged without provenance", { role: "admin" }, "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED"],
+  ])("denies %s customer-checkout state", (_label, override, expectedCode) => {
+    const req = { dbUser: makeUser({ approvedByClerkId: null, approvedAt: null, ...override }), query: {}, body: {} } as unknown as Request;
+    const res = makeRes();
+    requireCustomerCheckoutAccess(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).code).toBe(expectedCode);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("rejects a client-selected cross-tenant checkout", () => {
+    const req = { dbUser: makeUser({ clerkId: "landon_subject", approvedByClerkId: null, approvedAt: null, tenantId: 7 }), query: {}, body: { tenantId: 8 } } as unknown as Request;
+    const res = makeRes();
+    requireCustomerCheckoutAccess(req, res, (() => requireTenantContext(req, res, next as NextFunction)) as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).error).toMatch(/tenant assignment does not match/i);
     expect(next).not.toHaveBeenCalled();
   });
 });

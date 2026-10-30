@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { and, eq, sql } from "drizzle-orm";
 import { db, ordersTable, paymentAttemptsTable } from "@workspace/db";
 import { z } from "zod";
-import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireCustomerCheckoutAccess, writeAuditLog } from "../lib/auth";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { reserveCustomerCredit, consumeCustomerCredit, CustomerCreditError } from "../payments/customerCredit";
 import { deductPaidOrderInventory } from "../payments/inventory";
@@ -12,7 +12,10 @@ import { requireOrderCatalogForSale } from "../lib/orderCatalogEligibility";
 export { deductPaidOrderInventory } from "../payments/inventory";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+// Keep this exception on payment URLs only. This router is mounted before
+// several unrelated feature routers, so a router-wide gate would otherwise
+// become an accidental authorization policy for later routes.
+router.use("/payments", requireAuth, loadDbUser, requireDbUser, requireCustomerCheckoutAccess);
 
 // Compatibility endpoints are intentionally retired. They cannot create mock
 // identifiers, contact Stripe, or alter an order.
