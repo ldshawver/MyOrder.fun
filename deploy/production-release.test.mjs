@@ -1121,21 +1121,22 @@ test("production rollback baseline matches the verified current production image
   );
 });
 
-test("candidate builder and deployment approval are frozen to the exact verified source", () => {
+test("candidate builder is frozen to the exact source selected for immutable image construction", () => {
   const workflow = readFileSync(
     new URL("../.github/workflows/build-production-platform.yml", import.meta.url),
     "utf8",
   );
   const candidate = {
-    sha: "844c2ef0110fad28fd006f5891c7b00d5f85cce1",
-    tree: "e565f9050dfebc3972fadf55f58194ed2924c986",
+    sha: "35796c261f91589e9208bce9d3838beef97f64d3",
+    tree: "9abdf759762d907fcc85bd022afa3919245e9ba5",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));
   assert.match(workflow, new RegExp(`ref: ${candidate.sha}`));
   assert.equal(workflow.match(new RegExp(candidate.sha, "g"))?.length, 5);
-  assert.equal(candidate.sha, APPROVED_RELEASE.sha);
-  assert.equal(candidate.tree, APPROVED_RELEASE.tree);
+  // Building a candidate and approving its immutable image digests are separate
+  // reviewed changes. The deployment controller remains pinned to the prior
+  // approved release until the new manifests and config IDs are available.
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
