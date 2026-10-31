@@ -139,6 +139,76 @@ async function snapshot() {
         ["Large",{ Size: "Large" },"2.500000","18.00",`g-bdo-l-${suffix}`,`bdo-l-${suffix}`,false]]);
   });
 
+  it("includes the Standard 1 g base option and shows every source contribution in the location total", async () => {
+    const response = await requestAs("admin").post("/api/admin/catalogue/products").send({
+      name: `Tina source grams ${suffix}`, inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", baseUnit: "each",
+      variants: [
+        { label: "Standard", price: "10", consumptionQuantity: "1" },
+        { label: "Gram", price: "10", consumptionQuantity: "1" },
+        { label: "Ball", price: "30", consumptionQuantity: "3.5" },
+        { label: "Quarter", price: "60", consumptionQuantity: "7" },
+        { label: "Half", price: "100", consumptionQuantity: "14" },
+        { label: "Ounce", price: "180", consumptionQuantity: "28" },
+      ],
+    });
+    expect(response.status, response.text).toBe(201);
+    const variants = (await client.query(`SELECT co.id AS option_id,co.label,co.consumption_quantity::text AS consumption,
+      ii.id AS inventory_item_id,ii.catalog_item_id FROM catalogue_options co
+      JOIN inventory_items ii ON ii.tenant_id=co.tenant_id AND ii.id=co.inventory_item_id
+      WHERE co.tenant_id=$1 AND co.product_id=$2 AND co.active=true ORDER BY co.id`, [tenantId,response.body.productId])).rows;
+    expect(variants.map((row: any) => [row.label,row.consumption])).toEqual([
+      ["Standard","1.000000"],["Gram","1.000000"],["Ball","3.500000"],
+      ["Quarter","7.000000"],["Half","14.000000"],["Ounce","28.000000"],
+    ]);
+    const adminId = Number((await client.query("SELECT id FROM users WHERE clerk_id=$1", [users.admin])).rows[0].id);
+    const sourceCounts = ["4","6","10.5","7","28","28"];
+    for (const [index, variant] of variants.entries()) {
+      await db.transaction(tx => postInventoryMovement(tx, { tenantId, actor: { id: adminId, role: "admin" }, entityType: "catalog",
+        itemId: Number(variant.catalog_item_id), locationId, movementType: "adjustment_increase", quantity: sourceCounts[index], unitCost: "5.00",
+        sourceType: "reconciliation_test_setup", sourceId: suffix, reasonCode: "test_fixture", reasonText: "Synthetic gram-count fixture",
+        idempotencyKey: `tina-gram-fixture:${suffix}:${variant.catalog_item_id}` }));
+    }
+    const sparseLocationId = Number((await client.query("INSERT INTO inventory_locations(tenant_id,type,name,is_active) VALUES($1,'backstock',$2,true) RETURNING id",
+      [tenantId, `Sparse Tina grams ${suffix}`])).rows[0].id);
+    await db.transaction(tx => postInventoryMovement(tx, { tenantId, actor: { id: adminId, role: "admin" }, entityType: "catalog",
+      itemId: Number(variants[0].catalog_item_id), locationId: sparseLocationId, movementType: "adjustment_increase", quantity: "2", unitCost: "5.00",
+      sourceType: "reconciliation_test_setup", sourceId: suffix, reasonCode: "test_fixture", reasonText: "Synthetic sparse gram-count fixture",
+      idempotencyKey: `tina-gram-sparse-fixture:${suffix}:${variants[0].catalog_item_id}` }));
+    const target = { create: { name: `Tina shared grams ${suffix}`, baseUnit: "g" } };
+    const conversions = variants.map((variant: any) => ({ optionId: Number(variant.option_id), sourceUnitQuantityInTargetUnit: "1",
+      targetConsumptionQuantity: String(variant.consumption) }));
+    const missingStandard = await requestAs("admin").post(`/api/admin/catalogue/products/${response.body.productId}/inventory-reconciliation/preview`)
+      .send({ target, variantConversions: conversions.slice(1) });
+    expect(missingStandard.status, missingStandard.text).toBe(200);
+    expect(missingStandard.body.issues).toContain("Provide an explicit source-unit conversion and target consumption for every active variant.");
+    expect(missingStandard.body.locations[0]).toMatchObject({ proposedSharedBalance: "Unavailable: unit conversion required" });
+    expect(missingStandard.body.locations[0].sourceBalances).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "Standard", quantity: "4.000000", proposedSharedQuantity: "Unavailable: unit conversion required" }),
+    ]));
+
+    const preview = await requestAs("admin").post(`/api/admin/catalogue/products/${response.body.productId}/inventory-reconciliation/preview`)
+      .send({ target, variantConversions: conversions });
+    expect(preview.status, preview.text).toBe(200);
+    expect(preview.body.issues).toEqual([]);
+    expect(preview.body.variants.find((variant: any) => variant.label === "Standard")).toMatchObject({
+      sourceUnitQuantityInTargetUnit: "1", proposedConsumption: "1.000000",
+    });
+    const completeLocation = preview.body.locations.find((location: any) => Number(location.locationId) === locationId);
+    expect(completeLocation).toMatchObject({ proposedSharedBalance: "83.500000" });
+    expect(completeLocation.sourceBalances.map((row: any) => [row.label,row.quantity,row.sourceUnitQuantityInTargetUnit,row.proposedSharedQuantity]))
+      .toEqual([
+        ["Standard","4.000000","1","4.000000"], ["Gram","6.000000","1","6.000000"],
+        ["Ball","10.500000","1","10.500000"], ["Quarter","7.000000","1","7.000000"],
+        ["Half","28.000000","1","28.000000"], ["Ounce","28.000000","1","28.000000"],
+      ]);
+    const sparseLocation = preview.body.locations.find((location: any) => Number(location.locationId) === sparseLocationId);
+    expect(sparseLocation).toMatchObject({ proposedSharedBalance: "2.000000" });
+    expect(sparseLocation.sourceBalances).toHaveLength(6);
+    expect(sparseLocation.sourceBalances.find((row: any) => row.label === "Standard")).toMatchObject({ quantity: "2.000000", balancePresent: true });
+    expect(sparseLocation.sourceBalances.find((row: any) => row.label === "Ounce")).toMatchObject({ quantity: "0", balancePresent: false,
+      proposedSharedQuantity: "0.000000" });
+  });
+
   it("converts counted Half packages to grams and enforces shared grams per location", async () => {
     const halfPackages = await requestAs("admin").post("/api/admin/catalogue/products").send({ name: `Half packages ${suffix}`,
       inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", baseUnit: "each", price: "100.00",

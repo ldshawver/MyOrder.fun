@@ -160,10 +160,12 @@ it("submits explicit package-to-gram conversions for a shared inventory preview"
     optionId: number; sourceUnitQuantityInTargetUnit: string; targetConsumptionQuantity: string }> };
   const requests: Array<{ path: string; body?: PreviewBody }> = [];
   const options = [
-    [9, "Gram", "1"], [10, "Ball", "3.5"], [11, "Quarter", "7"], [12, "Half", "14"], [13, "Ounce", "28"],
+    [8, "Standard", "1"], [9, "Gram", "1"], [10, "Ball", "3.5"], [11, "Quarter", "7"], [12, "Half", "14"], [13, "Ounce", "28"],
   ].map(([id,label,consumption], index) => ({ id, catalogItemId: 70 + index, label, optionValues: { Size: label }, sku: null,
     price: "10.00", active: true, isAvailable: true, inventoryItemId: 90 + index, baseUnit: "each", consumptionQuantity: consumption,
     complianceHold: false, complianceReason: null, inventoryStatus: "ready", balanceRowCount: 1, stockOnHand: "11", reservedQuantity: "0", availableQuantity: "11", orderable: true }));
+  const targetConsumptions = ["1","1","3.5","7","14","28"];
+  const sourceCounts = ["4.000000","6.000000","10.500000","7.000000","28.000000","28.000000"];
   vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
     const path = String(input); const body = init?.body ? JSON.parse(String(init.body)) as PreviewBody : undefined; requests.push({ path, body });
     if (path === "/api/admin/catalogue/products") return new Response(JSON.stringify({ products: [{ id: 7, name: "Tina", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", options }] }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -172,8 +174,12 @@ it("submits explicit package-to-gram conversions for a shared inventory preview"
     if (path.endsWith("/inventory-history-repair")) return new Response(JSON.stringify({ discrepancies: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
     if (path.endsWith("/inventory-reconciliation/preview")) return new Response(JSON.stringify({ product: { id: 7, name: "Tina", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION" },
       target: body!.target, targetUnit: "g", variants: options.map((option, index) => ({ ...option, optionId: option.id, inventoryCatalogItemId: option.catalogItemId,
-        sourceUnitQuantityInTargetUnit: ["1","3.5","7","14","28"][index], proposedConsumption: ["1","3.5","7","14","28"][index] })),
-      reservations: [], committed: [], costs: [], legacyHistory: [], locations: [{ locationId: 1, locationName: "Store", sourceBalances: [], proposedSharedBalance: "154.000000" }],
+        sourceUnitQuantityInTargetUnit: "1", proposedConsumption: targetConsumptions[index] })),
+      reservations: [], committed: [], costs: [], legacyHistory: [], locations: [{ locationId: 1, locationName: "Store", sourceBalances: options.map((option,index) => ({
+        catalogItemId: option.catalogItemId, locationId: 1, quantity: sourceCounts[index], ledgerQuantity: sourceCounts[index], movementCount: 1, balancePresent: true,
+        optionId: option.id, label: option.label, inventoryItemId: option.inventoryItemId, baseUnit: option.baseUnit,
+        sourceUnitQuantityInTargetUnit: "1", proposedSharedQuantity: sourceCounts[index],
+      })), proposedSharedBalance: "83.500000" }],
       orderHistory: [], issues: [], costRequired: false, fingerprint: "a".repeat(64) }), { status: 200, headers: { "Content-Type": "application/json" } });
     return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400, headers: { "Content-Type": "application/json" } });
   }));
@@ -199,16 +205,17 @@ it("submits explicit package-to-gram conversions for a shared inventory preview"
     await act(async () => explicit.click());
   }
   for (const [index, option] of options.entries()) {
-    for (const [prefix, value] of [["Source conversion option", ["1","3.5","7","14","28"][index]], ["Target consumption option", ["1","3.5","7","14","28"][index]]] as const) {
+    for (const [prefix, value] of [["Source conversion option", "1"], ["Target consumption option", targetConsumptions[index]]] as const) {
       const input = host!.querySelector(`input[aria-label="${prefix} ${option.id}"]`) as HTMLInputElement;
       await act(async () => setInput(input, value));
     }
   }
   await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent?.includes("Reconcile inventory · preview"))!.click());
-  await vi.waitFor(() => expect(host?.textContent).toContain("proposed shared balance 154.000000 g"));
+  await vi.waitFor(() => expect(host?.textContent).toContain("proposed shared balance 83.500000 g"));
+  expect(host?.textContent).toContain("Standard · option #8, inventory item #90: source count 4.000000 each × 1 g per each = 4.000000 g");
   const preview = requests.find(request => request.path.endsWith("/inventory-reconciliation/preview"))!;
   expect(preview.body!.variantConversions).toEqual(options.map((option, index) => ({ optionId: option.id,
-    sourceUnitQuantityInTargetUnit: ["1","3.5","7","14","28"][index], targetConsumptionQuantity: ["1","3.5","7","14","28"][index] })));
+    sourceUnitQuantityInTargetUnit: "1", targetConsumptionQuantity: targetConsumptions[index] })));
 });
 
 it("guides an explicit per-row append-only history repair and preserves unknown cost", async () => {
