@@ -171,7 +171,13 @@ it("guides an explicit per-row append-only history repair and preserves unknown 
     if (path === "/api/admin/catalogue/recommendations") return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
     if (path === "/api/admin/catalogue/inventory/417/locations") return new Response(JSON.stringify({ locations: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
     if (path.endsWith("/inventory-history-repair") && !init?.method) return new Response(JSON.stringify({ discrepancies: repaired ? [] : [{ inventoryItemId: 417, catalogItemId: 417, itemName: "Ball Tina", baseUnit: "each", locationId: 3, locationName: "CSR Sales Box 1", storedPhysicalQuantity: "5.000000", ledgerQuantity: "1.000000", bridgeQuantityDelta: "4.000000", costStatus: "unknown_baseline" }] }), { status: 200, headers: { "Content-Type": "application/json" } });
-    if (path.endsWith("/inventory-history-repair/preview")) return new Response(JSON.stringify({ blockers: [], fingerprint: "a".repeat(64), unresolvedCosts: [{ inventoryItemId: 417, catalogItemId: 417, reason: body!.evidence![0].costBasisNote }], corrections: [{ ...body!.evidence![0], catalogItemId: 417, locationName: "CSR Sales Box 1", ledgerQuantity: "1.000000", bridgeQuantityDelta: "4.000000" }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.endsWith("/inventory-history-repair/preview")) return new Response(JSON.stringify({ blockers: [], fingerprint: "a".repeat(64), verifiedAt: "2026-10-30T18:05:12.000Z",
+      serverChecks: { reservations: { status: "clear", count: 0, message: "No active reservations block this history repair." }, openOrders: { status: "clear", count: 0, message: "No open order lines block this history repair." },
+        costEvidence: { status: "unknown_explained", documentedCount: 0, unresolvedCount: 1, message: "1 inventory item(s) have an explained unknown cost; quantity history may be bridged but valuation will remain unknown." },
+        freshness: { status: "current_at_generation", checkedAt: "2026-10-30T18:05:12.000Z", message: "Current when generated. Apply rechecks balances, ledger history, reservations, open orders, and valuation under a database lock; refresh after any inventory or order activity." } },
+      recordedCostEvidence: [{ inventoryItemId: 417, catalogItemId: 417, status: "missing", receiptCount: 0, referencedReceiptCount: 0, recordedUnitCost: null,
+        message: "No item-specific receipt cost is recorded; leave documented cost blank unless the source is first recorded through the authorized receipt workflow." }],
+      unresolvedCosts: [{ inventoryItemId: 417, catalogItemId: 417, reason: body!.evidence![0].costBasisNote }], corrections: [{ ...body!.evidence![0], catalogItemId: 417, locationName: "CSR Sales Box 1", ledgerQuantity: "1.000000", bridgeQuantityDelta: "4.000000" }] }), { status: 200, headers: { "Content-Type": "application/json" } });
     if (path.endsWith("/inventory-history-repair/apply")) { repaired = true; return new Response(JSON.stringify({ repairId: "00000000-0000-4000-8000-000000000001", movementIds: [99], idempotent: false }), { status: 201, headers: { "Content-Type": "application/json" } }); }
     return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400, headers: { "Content-Type": "application/json" } });
   }));
@@ -189,9 +195,16 @@ it("guides an explicit per-row append-only history repair and preserves unknown 
   await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent === "Preview exact ledger entries")!.click());
   await vi.waitFor(() => expect(host?.textContent).toContain("append 4.000000"));
   expect(host?.textContent).toContain("unit cost unknown");
+  expect(host?.textContent).toContain("No active reservations block this history repair.");
+  expect(host?.textContent).toContain("No open order lines block this history repair.");
+  expect(host?.textContent).toContain("No item-specific receipt cost is recorded");
+  expect(host?.textContent).toContain("Apply is disabled because:");
+  expect(host?.textContent).toContain("Enter a repair reason of at least 10 characters");
+  expect(host?.textContent).toContain("Confirm inventory #417 at CSR Sales Box 1");
   const confirm = host!.querySelector('section[aria-label="Guided inventory history repair"] input[type="checkbox"]') as HTMLInputElement;
   await act(async () => confirm.click());
   await enter("Inventory history repair reason", "Repair witnessed opening history");
+  expect(host?.textContent).toContain("All Apply prerequisites are complete.");
   await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent === "Apply confirmed append-only repair")!.click());
   await vi.waitFor(() => expect(host?.textContent).toContain("Every active variant balance reconciles"));
   const apply = requests.find(request => request.path.endsWith("/inventory-history-repair/apply"));

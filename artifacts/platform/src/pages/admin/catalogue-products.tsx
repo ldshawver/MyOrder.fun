@@ -21,7 +21,12 @@ type HistoryDiscrepancy = { inventoryItemId: number; catalogItemId: number; item
   storedPhysicalQuantity: string; ledgerQuantity: string; bridgeQuantityDelta: string; costStatus: string };
 type HistoryEvidence = { inventoryItemId: number; locationId: number; verifiedPhysicalQuantity: string; documentedUnitCost: string | null; physicalCountNote: string; costBasisNote: string };
 type HistoryCorrection = HistoryEvidence & { catalogItemId: number; locationName: string; ledgerQuantity: string; bridgeQuantityDelta: string };
-type HistoryRepairPreview = { blockers: string[]; blockingReservations: Array<{ reservationId: number; orderId: number; inventoryItemId: number; locationId: number; locationName: string; status: string; quantity: string; orderStatus: string }>; blockingOrders: Array<{ orderId: number; orderItemId: number; inventoryItemId: number; status: string; quantity: string }>; corrections: HistoryCorrection[]; unresolvedCosts: Array<{ inventoryItemId: number; catalogItemId: number; reason: string }>; fingerprint: string };
+type HistoryRepairPreview = { blockers: string[]; blockingReservations: Array<{ reservationId: number; orderId: number; inventoryItemId: number; locationId: number; locationName: string; status: string; quantity: string; orderStatus: string }>; blockingOrders: Array<{ orderId: number; orderItemId: number; inventoryItemId: number; status: string; quantity: string }>; corrections: HistoryCorrection[]; unresolvedCosts: Array<{ inventoryItemId: number; catalogItemId: number; reason: string }>; recordedCostEvidence: Array<{ inventoryItemId: number; catalogItemId: number; status: "reliable_receipts" | "missing" | "conflicting_receipts"; receiptCount: number; referencedReceiptCount: number; recordedUnitCost: string | null; message: string }>; verifiedAt: string; serverChecks: {
+  reservations: { status: "clear" | "blocked"; count: number; message: string };
+  openOrders: { status: "clear" | "blocked"; count: number; message: string };
+  costEvidence: { status: "documented" | "unknown_explained" | "mixed"; documentedCount: number; unresolvedCount: number; message: string };
+  freshness: { status: "current_at_generation"; checkedAt: string; message: string };
+}; fingerprint: string };
 
 type ProductForm = { name: string; category: string; price: string; sku: string; firstOptionLabel: string;
   inventoryModel: Product["inventoryModel"]; locationEvaluation: Product["locationEvaluation"]; baseUnit: string; consumptionQuantity: string };
@@ -98,6 +103,12 @@ function GuidedHistoryRepair({ productId, request, onApplied }: { productId: num
     return { inventoryItemId: row.inventoryItemId, locationId: row.locationId, verifiedPhysicalQuantity: value?.quantity ?? "",
       documentedUnitCost: value?.unitCost ? value.unitCost : null, physicalCountNote: value?.countNote ?? "", costBasisNote: value?.costNote ?? "" };
   });
+  const applyDisabledReasons = preview ? [
+    ...preview.blockers.map(blocker => `Server blocker: ${blocker}`),
+    ...(preview.corrections.length === 0 ? ["Server blocker: No append-only history corrections are available."] : []),
+    ...(reason.trim().length < 10 ? [`Review required: Enter a repair reason of at least 10 characters (${Math.max(0, 10 - reason.trim().length)} more).`] : []),
+    ...preview.corrections.filter(row => !confirmed[key(row)]).map(row => `Review required: Confirm inventory #${row.inventoryItemId} at ${row.locationName}.`),
+  ] : [];
   async function createPreview() {
     setBusy(true); setError(""); setPreview(null); setConfirmed({});
     try {
@@ -126,7 +137,7 @@ function GuidedHistoryRepair({ productId, request, onApplied }: { productId: num
   }
   if (!discrepancies.length && !error) return <section className="rounded border border-emerald-500/30 p-3"><h3 className="font-semibold">Inventory history</h3><p className="text-sm text-muted-foreground">Every active variant balance reconciles with its append-only ledger.</p></section>;
   return <section className="rounded border border-amber-500/40 p-3 space-y-3" aria-label="Guided inventory history repair">
-    <div><h3 className="font-semibold">Guided inventory-history repair</h3><p className="text-sm text-muted-foreground">This appends an audited history bridge. It never edits balances or prior ledger entries. Physically count each location; do not copy the stored quantity unless the count independently verifies it.</p></div>
+    <div><h3 className="font-semibold">Guided inventory-history repair</h3><p className="text-sm text-muted-foreground">This appends an audited history bridge so ledger history reaches an independently verified physical balance. It never changes the physical balance or edits prior ledger entries. If the physical count differs from the stored balance, use the normal audited inventory adjustment first. Physically count each location; do not copy the stored quantity unless the count independently verifies it.</p></div>
     {error && <div role="alert" className="rounded border border-red-500 p-2 text-sm">{error}</div>}
     {discrepancies.map(row => { const value = evidence[key(row)] ?? { quantity: "", unitCost: "", countNote: "", costNote: "" }; return <div key={key(row)} className="rounded border p-3 space-y-2">
       <p className="font-medium">{row.itemName} · inventory #{row.inventoryItemId} · {row.locationName}</p>
@@ -137,8 +148,16 @@ function GuidedHistoryRepair({ productId, request, onApplied }: { productId: num
         <label>Documented unit cost (optional)<Input aria-label={`Documented cost ${key(row)}`} value={value.unitCost} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, unitCost: event.target.value } })); }} /></label>
         <label>Cost evidence or why unknown<Input aria-label={`Cost evidence ${key(row)}`} value={value.costNote} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, costNote: event.target.value } })); }} placeholder="Invoice/reference, or explain why cost remains unknown" /></label></div>
     </div>; })}
-    <Button disabled={busy || !discrepancies.length} onClick={() => void createPreview()}>{busy ? "Working…" : "Preview exact ledger entries"}</Button>
+    <Button disabled={busy || !discrepancies.length} onClick={() => void createPreview()}>{busy ? "Working…" : preview ? "Refresh server checks and preview" : "Preview exact ledger entries"}</Button>
     {preview && <div className="space-y-3 rounded bg-muted/30 p-3"><h4 className="font-medium">Reviewed preview</h4>
+      <div className="rounded border p-2 text-sm" aria-label="Server verification checks"><strong>Server verification</strong>
+        <ul>
+          <li>Reservations: {preview.serverChecks.reservations.message}</li>
+          <li>Open orders: {preview.serverChecks.openOrders.message}</li>
+          <li>Cost evidence: {preview.serverChecks.costEvidence.message}</li>
+          <li>Preview freshness: {preview.serverChecks.freshness.message} Checked {new Date(preview.verifiedAt).toLocaleString()}.</li>
+        </ul>
+      </div>
       {preview.blockers.length > 0 && <div role="alert"><strong>Blocking issues</strong><ul>{preview.blockers.map(item => <li key={item}>{item}</li>)}</ul>
         {preview.blockingReservations.length > 0 && <div className="mt-2"><strong>Reservations to resolve through the order workflow</strong><ul>{preview.blockingReservations.map(row => <li key={row.reservationId}>Reservation #{row.reservationId}, order #{row.orderId}: {row.status} {row.quantity} at {row.locationName} (location #{row.locationId}); order is {row.orderStatus}. Complete fulfillment or cancel/void the order through its normal workflow so its reservation resolves; do not release it manually.</li>)}</ul></div>}
         {preview.blockingOrders.length > 0 && <div className="mt-2"><strong>Open committed order lines</strong><ul>{preview.blockingOrders.map(row => <li key={row.orderItemId}>Order #{row.orderId}, line #{row.orderItemId}: {row.status}, inventory item #{row.inventoryItemId}, quantity {row.quantity}. Complete fulfillment or cancel/void the order through its normal workflow.</li>)}</ul></div>}
@@ -146,8 +165,12 @@ function GuidedHistoryRepair({ productId, request, onApplied }: { productId: num
       {preview.corrections.map(row => <label key={key(row)} className="block rounded border p-2 text-sm"><span className="flex items-start gap-2"><input type="checkbox" checked={Boolean(confirmed[key(row)])} onChange={event => setConfirmed(current => ({ ...current, [key(row)]: event.target.checked }))} />
         <span>Confirm inventory #{row.inventoryItemId}, {row.locationName}: append {row.bridgeQuantityDelta}; ledger {row.ledgerQuantity} → {row.verifiedPhysicalQuantity}; unit cost {row.documentedUnitCost ?? "unknown"}. Evidence: {row.physicalCountNote}; cost source/status: {row.costBasisNote}.</span></span></label>)}
       {preview.unresolvedCosts.length > 0 && <p className="text-sm font-medium text-amber-600">Quantity history can be repaired, but valuation remains unknown for inventory item(s) {preview.unresolvedCosts.map(row => `#${row.inventoryItemId}`).join(", ")}.</p>}
+      <div className="text-sm"><strong>Item-specific recorded cost evidence</strong><ul>{preview.recordedCostEvidence.map(row => <li key={row.inventoryItemId}>Inventory #{row.inventoryItemId}: {row.message}</li>)}</ul></div>
       <label>Repair reason<Input aria-label="Inventory history repair reason" value={reason} onChange={event => setReason(event.target.value)} /></label>
-      <Button disabled={busy || preview.blockers.length > 0 || reason.trim().length < 10 || preview.corrections.some(row => !confirmed[key(row)])} onClick={() => void apply()}>Apply confirmed append-only repair</Button>
+      <div className={`rounded border p-2 text-sm ${applyDisabledReasons.length ? "border-amber-500/60" : "border-emerald-500/50"}`} role="status" aria-label="Apply readiness">
+        {applyDisabledReasons.length ? <><strong>Apply is disabled because:</strong><ul>{applyDisabledReasons.map(reasonText => <li key={reasonText}>{reasonText}</li>)}</ul></> : <><strong>All Apply prerequisites are complete.</strong><p>Apply will still recheck the preview under a database lock and refuse stale data.</p></>}
+      </div>
+      <Button disabled={busy || applyDisabledReasons.length > 0} onClick={() => void apply()}>Apply confirmed append-only repair</Button>
     </div>}
   </section>;
 }
