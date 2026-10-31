@@ -252,14 +252,14 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
   const itemByCatalog = new Map<number, Row>();
   for (const v of variants) itemByCatalog.set(Number(v.inventoryCatalogItemId), v);
   const historyByKey = new Map(history.map((h: Row) => [`${h.catalogItemId}:${h.locationId}`, h]));
-  const balanceRows: Row[] = balances.map((b: Row) => ({ ...b,
+  const balanceRows: Row[] = balances.map((b: Row) => ({ ...b, balancePresent: true,
     ledgerQuantity: historyByKey.get(`${b.catalogItemId}:${b.locationId}`)?.ledger_quantity ?? "0",
     movementCount: historyByKey.get(`${b.catalogItemId}:${b.locationId}`)?.movementCount ?? 0,
   }));
   for (const h of history) {
     if (!balanceRows.some(b => Number(b.catalogItemId) === Number(h.catalogItemId) && Number(b.locationId) === Number(h.locationId))) {
       balanceRows.push({ catalogItemId: Number(h.catalogItemId), locationId: Number(h.locationId), locationName: h.locationName,
-        quantity: "0", updatedAt: null, ledgerQuantity: h.ledger_quantity, movementCount: h.movementCount });
+        quantity: "0", updatedAt: null, balancePresent: false, ledgerQuantity: h.ledger_quantity, movementCount: h.movementCount });
     }
   }
   const issues: string[] = [];
@@ -303,17 +303,34 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
   const fingerprint = reconciliationFingerprint(fingerprintData);
   const locationIds = [...new Set(balanceRows.map((b: Row) => Number(b.locationId)))].sort((a,b)=>a-b);
   const byLocation = locationIds.map(locationId => {
-    const sources = balanceRows.filter((b: Row) => Number(b.locationId) === locationId);
+    const recordedSources = balanceRows.filter((b: Row) => Number(b.locationId) === locationId);
+    const sources = [...itemByCatalog.keys()].map(catalogItemId => recordedSources.find((b: Row) => Number(b.catalogItemId) === catalogItemId)
+      ?? { catalogItemId, locationId, locationName: recordedSources[0]?.locationName ?? `Location ${locationId}`,
+        quantity: "0", updatedAt: null, balancePresent: false, ledgerQuantity: "0", movementCount: 0 });
     let proposed = 0n; let conversionValid = true;
-    for (const b of sources) {
+    const sourceBalances = sources.map((b: Row) => {
       const source = itemByCatalog.get(Number(b.catalogItemId));
       const explicit = source ? conversionByOption.get(Number(source.optionId)) : undefined;
-      try { proposed += quantityUnits(explicit
-        ? multiplyQuantity(String(b.quantity), explicit.sourceUnitQuantityInTargetUnit)
-        : convertQuantity(String(b.quantity), String(source?.baseUnit), units)); }
-      catch { conversionValid = false; }
-    }
-    return { locationId, locationName: sources[0]?.locationName ?? `Location ${locationId}`, sourceBalances: sources,
+      try {
+        const sourceUnitQuantityInTargetUnit = explicit
+          ? explicit.sourceUnitQuantityInTargetUnit
+          : convertQuantity("1", String(source?.baseUnit), units);
+        const proposedSharedQuantity = explicit
+          ? multiplyQuantity(String(b.quantity), explicit.sourceUnitQuantityInTargetUnit)
+          : convertQuantity(String(b.quantity), String(source?.baseUnit), units);
+        proposed += quantityUnits(proposedSharedQuantity);
+        return { ...b, optionId: source?.optionId ?? null, label: source?.label ?? null,
+          inventoryItemId: source?.inventoryItemId ?? null, baseUnit: source?.baseUnit ?? null,
+          sourceUnitQuantityInTargetUnit, proposedSharedQuantity };
+      } catch {
+        conversionValid = false;
+        return { ...b, optionId: source?.optionId ?? null, label: source?.label ?? null,
+          inventoryItemId: source?.inventoryItemId ?? null, baseUnit: source?.baseUnit ?? null,
+          sourceUnitQuantityInTargetUnit: "Unavailable: unit conversion required",
+          proposedSharedQuantity: "Unavailable: unit conversion required" };
+      }
+    });
+    return { locationId, locationName: recordedSources[0]?.locationName ?? `Location ${locationId}`, sourceBalances,
       proposedSharedBalance: conversionValid ? quantityText(proposed) : "Unavailable: unit conversion required" };
   });
   return { product, variants, balances, reservations, valuation, history, legacyHistory, lineHistory, committed, itemCosts,

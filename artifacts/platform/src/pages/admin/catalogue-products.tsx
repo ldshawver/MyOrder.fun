@@ -14,7 +14,8 @@ type InventoryPreview = { product: { id: number; name: string; inventoryModel: s
   reservations: Array<{ reservationId: number; catalogItemId: number; locationId: number; locationName: string; status: string; quantity: string; expiresAt: string; orderId: number; orderStatus: string }>;
   costs: Array<{ inventoryItemId: number; catalogItemId: number; baseUnit: string; onHand: string; costStatus: string; averageUnitCost: string | null; inventoryValue: string | null; reliable: boolean; convertedUnitCost: string | null }>;
   legacyHistory: Array<{ catalogItemId: number; locationId: number | null; transactionCount: number; netQuantityChange: string }>;
-  locations: Array<{ locationId: number; locationName: string; sourceBalances: Array<{ catalogItemId: number; locationId: number; quantity: string; ledgerQuantity: string; movementCount: number }>; proposedSharedBalance: string }>;
+  locations: Array<{ locationId: number; locationName: string; sourceBalances: Array<{ catalogItemId: number; locationId: number; quantity: string; ledgerQuantity: string; movementCount: number; balancePresent: boolean;
+    optionId: number | null; label: string | null; inventoryItemId: number | null; baseUnit: string | null; sourceUnitQuantityInTargetUnit: string; proposedSharedQuantity: string }>; proposedSharedBalance: string }>;
   orderHistory: Array<{ optionId: number; orderLineCount: number }>; committed: Array<{ optionId: number; label: string; orderId: number; status: string; committedConsumption: string; orderLineCount: number }>;
   issues: string[]; costRequired: boolean; fingerprint: string };
 type HistoryDiscrepancy = { inventoryItemId: number; catalogItemId: number; itemName: string; baseUnit: string; locationId: number; locationName: string;
@@ -401,7 +402,7 @@ export default function AdminCatalogueProducts() {
               </tbody></table></div>
               {preview.locations.map(location => <div key={location.locationId} className="rounded border p-2">
                 <strong>{location.locationName} · proposed shared balance {location.proposedSharedBalance} {preview.targetUnit}</strong>
-                <ul>{location.sourceBalances.map(b => { const v = preview.variants.find(row => row.inventoryCatalogItemId === b.catalogItemId); return <li key={b.catalogItemId}>Inventory item #{v?.inventoryItemId} / catalog item #{b.catalogItemId}: on hand {b.quantity}; ledger {b.ledgerQuantity}; movements {b.movementCount}</li>; })}</ul>
+                <ul>{location.sourceBalances.map(b => <li key={b.catalogItemId}>{b.label ?? `Catalog item #${b.catalogItemId}`} · option #{b.optionId ?? "unknown"}, inventory item #{b.inventoryItemId ?? "unknown"}: source count {b.quantity} {b.baseUnit ?? "unit"} × {b.sourceUnitQuantityInTargetUnit} {preview.targetUnit} per {b.baseUnit ?? "unit"} = {b.proposedSharedQuantity} {preview.targetUnit}; ledger {b.ledgerQuantity}; movements {b.movementCount}; balance row {b.balancePresent ? "present" : "missing (shown as zero)"}</li>)}</ul>
               </div>)}
               <div><strong>Valuation</strong><ul>{preview.costs.map(cost => <li key={cost.inventoryItemId}>Inventory item #{cost.inventoryItemId}: {cost.onHand} {cost.baseUnit}; {cost.reliable ? `recorded ${cost.averageUnitCost} per ${cost.baseUnit} (${cost.convertedUnitCost} per ${preview.targetUnit}), inventory value ${cost.inventoryValue}` : `cost ${cost.costStatus}; documented cost required`}</li>)}</ul>
                 {preview.costRequired && <p>A positive documented unit cost in the shared base unit is required. Retail prices are not inventory cost.</p>}</div>
