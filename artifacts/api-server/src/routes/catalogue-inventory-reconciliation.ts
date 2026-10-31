@@ -38,10 +38,10 @@ const applySchema = z.object({
 const historyEvidenceSchema = z.object({
   inventoryItemId: positiveId,
   locationId: positiveId,
-  verifiedPhysicalQuantity: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,6})?$/),
-  documentedUnitCost: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,12})?$/).nullable(),
-  physicalCountNote: z.string().trim().min(8).max(500),
-  costBasisNote: z.string().trim().min(8).max(500),
+  verifiedPhysicalQuantity: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,6})?$/, "Use a nonnegative quantity with no more than 6 decimal places"),
+  documentedUnitCost: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,12})?$/, "Use a plain nonnegative number without a currency symbol").nullable(),
+  physicalCountNote: z.string().trim().min(8, "Describe the item-specific count source in at least 8 characters").max(500),
+  costBasisNote: z.string().trim().min(8, "Identify the item-specific cost source or explain why cost is unknown in at least 8 characters").max(500),
 }).strict();
 const historyConfirmationSchema = z.object({
   inventoryItemId: positiveId,
@@ -110,7 +110,14 @@ router.get("/admin/catalogue/products/:productId/inventory-history-repair", requ
 
 router.post("/admin/catalogue/products/:productId/inventory-history-repair/preview", requirePermission("inventory.manage"), async (req, res): Promise<void> => {
   const productId = Number(req.params.productId); const parsed = historyPreviewSchema.safeParse(req.body);
-  if (!Number.isInteger(productId) || productId <= 0 || !parsed.success) { fail(res, 400, "INVALID_HISTORY_REPAIR_PREVIEW", "Provide valid physical-count and cost evidence."); return; }
+  if (!Number.isInteger(productId) || productId <= 0) { fail(res, 400, "INVALID_HISTORY_REPAIR_PREVIEW", "Provide a valid product identifier."); return; }
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const rowIndex = typeof issue?.path[1] === "number" ? Number(issue.path[1]) + 1 : null;
+    const field = typeof issue?.path.at(-1) === "string" ? String(issue.path.at(-1)) : "evidence";
+    fail(res, 400, "INVALID_HISTORY_REPAIR_PREVIEW", `${rowIndex ? `Evidence row ${rowIndex}, ` : ""}${field}: ${issue?.message ?? "invalid value"}. No preview was created.`);
+    return;
+  }
   try { res.json(await previewInventoryHistoryBaselineRepair(req.authorizedTenantId!, productId, parsed.data.evidence)); }
   catch (error) { historyFailure(res, error); }
 });

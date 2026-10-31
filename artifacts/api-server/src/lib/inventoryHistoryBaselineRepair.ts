@@ -59,6 +59,15 @@ export type InventoryHistoryRepairPreview = {
     bridgeQuantityDelta: string;
   }>;
   unresolvedCosts: Array<{ inventoryItemId: number; catalogItemId: number; reason: string }>;
+  recordedCostEvidence: Array<{
+    inventoryItemId: number;
+    catalogItemId: number;
+    status: "reliable_receipts" | "missing" | "conflicting_receipts";
+    receiptCount: number;
+    referencedReceiptCount: number;
+    recordedUnitCost: string | null;
+    message: string;
+  }>;
   verifiedAt: string;
   serverChecks: {
     reservations: { status: "clear" | "blocked"; count: number; message: string };
@@ -85,6 +94,10 @@ function validateEvidence(input: InventoryHistoryCountEvidence): void {
   if (input.physicalCountNote.trim().length < 8 || input.costBasisNote.trim().length < 8) {
     throw new InventoryHistoryRepairError(422, "Physical-count evidence and either cost evidence or an unknown-cost explanation are required");
   }
+}
+
+function normalizedCost(value: string): string {
+  return value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
 }
 
 type RepairStateRow = {
@@ -190,9 +203,7 @@ export async function previewInventoryHistoryBaselineRepair(
   }
   const costs = new Map<number, string>();
   for (const correction of corrections) {
-    const normalized = correction.documentedUnitCost == null ? "unknown" : correction.documentedUnitCost.includes(".")
-      ? correction.documentedUnitCost.replace(/0+$/, "").replace(/\.$/, "")
-      : correction.documentedUnitCost;
+    const normalized = correction.documentedUnitCost == null ? "unknown" : normalizedCost(correction.documentedUnitCost);
     const prior = costs.get(correction.inventoryItemId);
     if (prior != null && prior !== normalized) blockers.push(`Documented unit cost is inconsistent across locations for inventory item ${correction.inventoryItemId}.`);
     costs.set(correction.inventoryItemId, normalized);
@@ -225,6 +236,44 @@ export async function previewInventoryHistoryBaselineRepair(
   if (!corrections.length && !blockers.length) blockers.push("No ledger/history mismatch requires repair.");
   const unresolvedCosts = [...new Map(corrections.filter(row => row.documentedUnitCost == null).map(row => [row.inventoryItemId,
     { inventoryItemId: row.inventoryItemId, catalogItemId: row.catalogItemId, reason: row.costBasisNote }])).values()];
+  const receiptEvidence = catalogIds.length ? rows<{
+    catalogItemId: unknown; receiptCount: unknown; costedReceiptCount: unknown; referencedReceiptCount: unknown;
+    minimumUnitCost: unknown; maximumUnitCost: unknown;
+  }>(await executor.execute(sql`
+    SELECT product_id AS "catalogItemId",COUNT(*)::int AS "receiptCount",
+      COUNT(actual_unit_cost)::int AS "costedReceiptCount",
+      COUNT(*) FILTER (WHERE actual_unit_cost IS NOT NULL AND NULLIF(trim(supplier_reference),'') IS NOT NULL)::int AS "referencedReceiptCount",
+      MIN(actual_unit_cost)::text AS "minimumUnitCost",MAX(actual_unit_cost)::text AS "maximumUnitCost"
+    FROM inventory_receipts
+    WHERE tenant_id=${tenantId} AND product_id=ANY(${sql`ARRAY[${sql.join(catalogIds.map(id => sql`${id}`), sql`, `)}]::int[]`})
+    GROUP BY product_id
+  `)) : [];
+  const recordedCostEvidence = [...new Map(corrections.map(correction => [correction.inventoryItemId, correction])).values()].map(correction => {
+    const recorded = receiptEvidence.find(row => Number(row.catalogItemId) === correction.catalogItemId);
+    const receiptCount = Number(recorded?.receiptCount ?? 0);
+    const referencedReceiptCount = Number(recorded?.referencedReceiptCount ?? 0);
+    const costedReceiptCount = Number(recorded?.costedReceiptCount ?? 0);
+    const minimum = recorded?.minimumUnitCost == null ? null : normalizedCost(String(recorded.minimumUnitCost));
+    const maximum = recorded?.maximumUnitCost == null ? null : normalizedCost(String(recorded.maximumUnitCost));
+    const reliable = receiptCount > 0 && costedReceiptCount === receiptCount && referencedReceiptCount === receiptCount && minimum != null && minimum === maximum;
+    const status = reliable ? "reliable_receipts" : receiptCount === 0 ? "missing" : "conflicting_receipts";
+    const message = reliable
+      ? `${receiptCount} item-specific referenced receipt(s) consistently record unit cost ${minimum}.`
+      : receiptCount === 0
+        ? "No item-specific receipt cost is recorded; leave documented cost blank unless the source is first recorded through the authorized receipt workflow."
+        : "Receipt costs or supplier references are incomplete or inconsistent; documented cost cannot be verified automatically.";
+    return { inventoryItemId: correction.inventoryItemId, catalogItemId: correction.catalogItemId, status, receiptCount,
+      referencedReceiptCount, recordedUnitCost: reliable ? minimum : null, message } as InventoryHistoryRepairPreview["recordedCostEvidence"][number];
+  });
+  for (const correction of corrections) {
+    if (correction.documentedUnitCost == null) continue;
+    const recorded = recordedCostEvidence.find(row => row.inventoryItemId === correction.inventoryItemId);
+    if (!recorded || recorded.status !== "reliable_receipts") {
+      blockers.push(`Documented unit cost for inventory item ${correction.inventoryItemId} cannot be verified from item-specific referenced receipts.`);
+    } else if (normalizedCost(correction.documentedUnitCost) !== recorded.recordedUnitCost) {
+      blockers.push(`Documented unit cost for inventory item ${correction.inventoryItemId} does not match its item-specific referenced receipt evidence.`);
+    }
+  }
   const fingerprint = reconciliationFingerprint({ tenantId, productId, state, evidence: [...evidence].sort((a,b) => a.inventoryItemId-b.inventoryItemId || a.locationId-b.locationId), blockers });
   const checkedAt = new Date().toISOString();
   const documentedCount = corrections.filter(row => row.documentedUnitCost != null).length;
@@ -239,6 +288,7 @@ export async function previewInventoryHistoryBaselineRepair(
     blockingOrders,
     corrections,
     unresolvedCosts,
+    recordedCostEvidence,
     verifiedAt: checkedAt,
     serverChecks: {
       reservations: {

@@ -92,6 +92,28 @@ async function snapshot() {
     expect(await snapshot()).toBe(before);
   });
 
+  it("does not report aggregate underlying stock as sellable units when per-location consumption is larger", async () => {
+    const half = await requestAs("admin").post("/api/admin/catalogue/products").send({ name: `Half-unit ${suffix}`, category: "Test",
+      price: "100.00", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", baseUnit: "each", consumptionQuantity: "14.000000" });
+    expect(half.status, half.text).toBe(201);
+    const extraLocations: number[] = [];
+    for (const index of [2, 3, 4]) {
+      const location = await client.query("INSERT INTO inventory_locations(tenant_id,type,name,is_active) VALUES($1,'backstock',$2,true) RETURNING id",
+        [tenantId, `Half fixture ${index} ${suffix}`]);
+      extraLocations.push(Number(location.rows[0].id));
+    }
+    for (const [targetLocation, quantity] of [[locationId, 5], [extraLocations[0], 2], [extraLocations[1], 2], [extraLocations[2], 2]] as const) {
+      await client.query("INSERT INTO inventory_balances(tenant_id,product_id,location_id,quantity_on_hand,par_level) VALUES($1,$2,$3,$4,0)",
+        [tenantId, half.body.catalogItemId, targetLocation, quantity]);
+    }
+    const catalogue = await requestAs("admin").get("/api/catalogue/products");
+    expect(catalogue.status, catalogue.text).toBe(200);
+    const option = catalogue.body.products.flatMap((candidate: any) => candidate.options)
+      .find((candidate: any) => candidate.id === half.body.optionId);
+    expect(option).toMatchObject({ inventoryItemId: half.body.inventoryItemId, baseUnit: "each", consumptionQuantity: "14.000000",
+      stockOnHand: "11.000000", reservedQuantity: "0", availableQuantity: "11.000000", orderable: false });
+  });
+
   it("creates G (BDO) with omitted display fields as Shared variants and preserves each variant's data", async () => {
     const response = await requestAs("admin").post("/api/admin/catalogue/products").send({
       name: "G (BDO)", inventoryModel: "SHARED", locationEvaluation: "PER_LOCATION", baseUnit: "each",
@@ -263,6 +285,10 @@ async function snapshot() {
       physicalCountNote: "Count sheet witnessed by two staff", costBasisNote: "Supplier invoice reviewed" }];
     const before = await client.query("SELECT quantity_on_hand::text AS quantity FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2 AND location_id=$3", [tenantId,local.body.catalogItemId,locationId]);
     const adminId = Number((await client.query("SELECT id FROM users WHERE clerk_id=$1", [users.admin])).rows[0].id);
+    await client.query(`INSERT INTO inventory_receipts
+      (tenant_id,product_id,location_id,quantity_received,quantity_before,quantity_after,reason,received_by_user_id,idempotency_key,actual_unit_cost,supplier_reference)
+      VALUES($1,$2,$3,1,0,1,'test evidence',$4,$5,3.25,$6)`,
+    [tenantId,local.body.catalogItemId,locationId,adminId,`baseline-cost-${suffix}`,`supplier-baseline-${suffix}`]);
     const openOrder = await client.query(`INSERT INTO orders(tenant_id,customer_id,subtotal,total,status,payment_status,payment_method)
       VALUES($1,$2,1,1,'pending','unpaid','cash') RETURNING id`, [tenantId,adminId]);
     await client.query(`INSERT INTO order_items(order_id,catalog_item_id,catalog_item_name,quantity,unit_price,total_price,option_id,inventory_item_id)
@@ -281,8 +307,13 @@ async function snapshot() {
     await client.query("DELETE FROM inventory_reservations WHERE order_id=$1", [openOrder.rows[0].id]);
     await client.query("DELETE FROM order_items WHERE order_id=$1", [openOrder.rows[0].id]);
     await client.query("DELETE FROM orders WHERE id=$1", [openOrder.rows[0].id]);
+    const mismatchedCost = await previewInventoryHistoryBaselineRepair(tenantId, local.body.productId,
+      [{ ...evidence[0], documentedUnitCost: "3.17", costBasisNote: "Unrelated item cost must be refused" }]);
+    expect(mismatchedCost.blockers.join(" ")).toMatch(/does not match its item-specific referenced receipt evidence/);
     const preview = await previewInventoryHistoryBaselineRepair(tenantId, local.body.productId, evidence);
     expect(preview.blockers).toEqual([]); expect(preview.corrections[0]).toMatchObject({ bridgeQuantityDelta: "2.000000", ledgerQuantity: "0" });
+    expect(preview.recordedCostEvidence).toEqual([expect.objectContaining({ inventoryItemId: local.body.inventoryItemId,
+      status: "reliable_receipts", receiptCount: 1, referencedReceiptCount: 1, recordedUnitCost: "3.25" })]);
     expect((await client.query("SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantId,local.body.catalogItemId])).rows[0].count).toBe(0);
     const foreignAdminId = Number((await client.query("SELECT id FROM users WHERE clerk_id=$1", [users.foreign])).rows[0].id);
     await expect(applyInventoryHistoryBaselineRepair({ tenantId, productId: local.body.productId, evidence, previewFingerprint: preview.fingerprint,
@@ -329,6 +360,11 @@ async function snapshot() {
     expect(discovered.body.discrepancies).toEqual([expect.objectContaining({ inventoryItemId: created.body.inventoryItemId,
       locationId, storedPhysicalQuantity: "0.000000", ledgerQuantity: "-1.000000", bridgeQuantityDelta: "1.000000" })]);
     expect((await requestAs("admin").post(`${route}/preview`).send({ evidence: [] })).status).toBe(400);
+    const invalidCurrency = await requestAs("admin").post(`${route}/preview`).send({ evidence: [{ inventoryItemId: created.body.inventoryItemId,
+      locationId, verifiedPhysicalQuantity: "0", documentedUnitCost: "$3.17", physicalCountNote: "Witnessed physical zero",
+      costBasisNote: "Generic inventory documentation" }] });
+    expect(invalidCurrency.status).toBe(400);
+    expect(invalidCurrency.body.error).toMatch(/documentedUnitCost: Use a plain nonnegative number without a currency symbol/);
     const foreignLocation = await client.query("SELECT id FROM inventory_locations WHERE tenant_id=$1 ORDER BY id LIMIT 1", [foreignTenantId]);
     const crossed = await requestAs("admin").post(`${route}/preview`).send({ evidence: [{ inventoryItemId: created.body.inventoryItemId,
       locationId: Number(foreignLocation.rows[0].id), verifiedPhysicalQuantity: "0", documentedUnitCost: null,
@@ -346,7 +382,7 @@ async function snapshot() {
         openOrders: { status: "clear", count: 0 },
         costEvidence: { status: "unknown_explained", documentedCount: 0, unresolvedCount: 1 },
         freshness: { status: "current_at_generation" },
-      } });
+      }, recordedCostEvidence: [{ inventoryItemId: created.body.inventoryItemId, status: "missing", receiptCount: 0 }] });
     expect(new Date(preview.body.verifiedAt).toISOString()).toBe(preview.body.verifiedAt);
     const confirmation = preview.body.corrections.map((row: any) => ({ inventoryItemId: row.inventoryItemId, locationId: row.locationId,
       verifiedPhysicalQuantity: row.verifiedPhysicalQuantity, bridgeQuantityDelta: row.bridgeQuantityDelta, documentedUnitCost: row.documentedUnitCost }));
@@ -368,6 +404,10 @@ async function snapshot() {
 
     const staleProduct = await requestAs("admin").post("/api/admin/catalogue/products").send({ name: `Stale ${suffix}`, category: "Test", price: "10.00", inventoryModel: "SEPARATE_VARIANTS", baseUnit: "each", consumptionQuantity: "1.000000" });
     await client.query("INSERT INTO inventory_balances(tenant_id,product_id,location_id,quantity_on_hand,par_level) VALUES($1,$2,$3,2,0)", [tenantId, staleProduct.body.catalogItemId, locationId]);
+    await client.query(`INSERT INTO inventory_receipts
+      (tenant_id,product_id,location_id,quantity_received,quantity_before,quantity_after,reason,received_by_user_id,idempotency_key,actual_unit_cost,supplier_reference)
+      VALUES($1,$2,$3,1,0,1,'test evidence',$4,$5,3.25,$6)`,
+    [tenantId,staleProduct.body.catalogItemId,locationId,adminId,`stale-cost-${suffix}`,`supplier-stale-${suffix}`]);
     const staleRoute = `/api/admin/catalogue/products/${staleProduct.body.productId}/inventory-history-repair`;
     const staleEvidence = [{ inventoryItemId: staleProduct.body.inventoryItemId, locationId, verifiedPhysicalQuantity: "2", documentedUnitCost: "3.25",
       physicalCountNote: "Witnessed physical count", costBasisNote: "Supplier invoice reviewed" }];
