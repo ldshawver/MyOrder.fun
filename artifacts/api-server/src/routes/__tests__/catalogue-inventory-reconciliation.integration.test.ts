@@ -7,6 +7,7 @@ import supertest from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@workspace/db";
 import { postInventoryMovement } from "../../lib/inventoryMovementLedger";
+import { reserveCheckoutInventoryByOrderType } from "../../lib/inventoryReservations";
 import { applyInventoryHistoryBaselineRepair, previewInventoryHistoryBaselineRepair, repairConfirmation } from "../../lib/inventoryHistoryBaselineRepair";
 
 const enabled = process.env.RUN_CATALOGUE_INVENTORY_RECONCILIATION_INTEGRATION === "1";
@@ -136,6 +137,66 @@ async function snapshot() {
     expect(created.rows.map((row: any) => [row.label,row.option_values,row.consumption_quantity,row.price,row.sku,row.barcode,row.is_available]))
       .toEqual([["Small",{ Size: "Small" },"1.000000","12.00",`g-bdo-s-${suffix}`,`bdo-s-${suffix}`,true],
         ["Large",{ Size: "Large" },"2.500000","18.00",`g-bdo-l-${suffix}`,`bdo-l-${suffix}`,false]]);
+  });
+
+  it("converts counted Half packages to grams and enforces shared grams per location", async () => {
+    const halfPackages = await requestAs("admin").post("/api/admin/catalogue/products").send({ name: `Half packages ${suffix}`,
+      inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", baseUnit: "each", price: "100.00",
+      firstOptionLabel: "Half", consumptionQuantity: "1" });
+    expect(halfPackages.status, halfPackages.text).toBe(201);
+    const adminId = Number((await client.query("SELECT id FROM users WHERE clerk_id=$1", [users.admin])).rows[0].id);
+    await db.transaction(tx => postInventoryMovement(tx, { tenantId, actor: { id: adminId, role: "admin" }, entityType: "catalog",
+      itemId: halfPackages.body.catalogItemId, locationId, movementType: "adjustment_increase", quantity: "11", unitCost: "44.40",
+      sourceType: "reconciliation_test_setup", sourceId: suffix, reasonCode: "test_fixture", reasonText: "Synthetic Half package fixture",
+      idempotencyKey: `half-package-fixture:${suffix}` }));
+    const packageTarget = { create: { name: `Shared grams ${suffix}`, baseUnit: "g" } };
+    const packageConversions = [{ optionId: halfPackages.body.optionId, sourceUnitQuantityInTargetUnit: "14", targetConsumptionQuantity: "14" }];
+    const packagePreview = await requestAs("admin").post(`/api/admin/catalogue/products/${halfPackages.body.productId}/inventory-reconciliation/preview`).send({
+      target: packageTarget, variantConversions: packageConversions });
+    expect(packagePreview.status, packagePreview.text).toBe(200);
+    expect(packagePreview.body.variants[0]).toMatchObject({ sourceUnitQuantityInTargetUnit: "14", proposedConsumption: "14" });
+    expect(packagePreview.body.locations).toEqual(expect.arrayContaining([expect.objectContaining({ locationId, proposedSharedBalance: "154.000000" })]));
+    expect(packagePreview.body.issues).toEqual([]);
+    const packageApply = await requestAs("admin").post(`/api/admin/catalogue/products/${halfPackages.body.productId}/inventory-reconciliation/apply`).send({
+      target: packageTarget, variantConversions: packageConversions, previewFingerprint: packagePreview.body.fingerprint, confirmPreview: true,
+      idempotencyKey: randomUUID(), reason: "Convert synthetic Half package counts to shared grams" });
+    expect(packageApply.status, packageApply.text).toBe(201);
+    const converted = await client.query(`SELECT p.inventory_model,co.consumption_quantity::text AS consumption,ii.base_unit,
+      b.quantity_on_hand::text AS quantity FROM catalogue_products p JOIN catalogue_options co ON co.tenant_id=p.tenant_id AND co.product_id=p.id
+      JOIN inventory_items ii ON ii.tenant_id=co.tenant_id AND ii.id=co.inventory_item_id
+      JOIN inventory_balances b ON b.tenant_id=ii.tenant_id AND b.product_id=ii.catalog_item_id AND b.location_id=$3
+      WHERE p.tenant_id=$1 AND p.id=$2`, [tenantId,halfPackages.body.productId,locationId]);
+    expect(converted.rows).toEqual([expect.objectContaining({ inventory_model: "SHARED", consumption: "14.000000", base_unit: "g", quantity: "154.000000" })]);
+
+    const shared = await requestAs("admin").post("/api/admin/catalogue/products").send({ name: `Tina grams ${suffix}`,
+      inventoryModel: "SHARED", locationEvaluation: "PER_LOCATION", baseUnit: "g", variants: [
+        { label: "Gram", price: "10", consumptionQuantity: "1" },
+        { label: "Ball", price: "30", consumptionQuantity: "3.5" },
+        { label: "Quarter", price: "60", consumptionQuantity: "7" },
+        { label: "Half", price: "100", consumptionQuantity: "14" },
+        { label: "Ounce", price: "180", consumptionQuantity: "28" },
+      ] });
+    expect(shared.status, shared.text).toBe(201);
+    const secondLocation = await client.query("INSERT INTO inventory_locations(tenant_id,type,name,is_active) VALUES($1,'backstock',$2,true) RETURNING id",
+      [tenantId, `Other grams ${suffix}`]);
+    const sharedIdentity = await client.query("SELECT catalog_item_id FROM inventory_items WHERE tenant_id=$1 AND id=$2", [tenantId, shared.body.sharedInventoryItemId]);
+    const sharedCatalogItemId = Number(sharedIdentity.rows[0].catalog_item_id);
+    await client.query(`INSERT INTO inventory_balances(tenant_id,product_id,location_id,quantity_on_hand,par_level)
+      VALUES($1,$2,$3,27,0),($1,$2,$4,1,0)`, [tenantId, sharedCatalogItemId, locationId, secondLocation.rows[0].id]);
+    const catalogue = await requestAs("admin").get("/api/catalogue/products");
+    const tina = catalogue.body.products.find((candidate: any) => candidate.id === shared.body.productId);
+    const half = tina.options.find((option: any) => option.label === "Half");
+    const ounce = tina.options.find((option: any) => option.label === "Ounce");
+    expect(half).toMatchObject({ baseUnit: "g", consumptionQuantity: "14.000000", stockOnHand: "28.000000", orderable: true });
+    expect(ounce).toMatchObject({ consumptionQuantity: "28.000000", stockOnHand: "28.000000", orderable: false });
+
+    const order = await client.query(`INSERT INTO orders(tenant_id,customer_id,subtotal,total,status,payment_status,payment_method)
+      VALUES($1,$2,200,200,'pending','unpaid','cash') RETURNING id`, [tenantId,adminId]);
+    expect(await reserveCheckoutInventoryByOrderType(db, tenantId, Number(order.rows[0].id), sharedCatalogItemId, "28", "ONLINE", undefined, "PER_LOCATION")).toBeNull();
+    await client.query("UPDATE inventory_balances SET quantity_on_hand=28 WHERE tenant_id=$1 AND product_id=$2 AND location_id=$3",
+      [tenantId,sharedCatalogItemId,locationId]);
+    const reserved = await reserveCheckoutInventoryByOrderType(db, tenantId, Number(order.rows[0].id), sharedCatalogItemId, "28", "ONLINE", undefined, "PER_LOCATION");
+    expect(reserved).toEqual([expect.objectContaining({ locationId, quantity: 28 })]);
   });
 
   it("returns a sanitized error when the catalog_items insert is rejected", async () => {

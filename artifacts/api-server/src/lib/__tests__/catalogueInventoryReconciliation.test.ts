@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { convertQuantity, convertUnitCost, conversionRatio, reconciliationFingerprint } from "../catalogueInventoryReconciliation";
+import {
+  convertQuantity,
+  convertUnitCost,
+  conversionRatio,
+  multiplyQuantity,
+  reconciliationFingerprint,
+  unitCostForSourceQuantity,
+  unitCostPerTargetQuantity,
+} from "../catalogueInventoryReconciliation";
 
 describe("catalogue inventory reconciliation arithmetic", () => {
   it("converts exact mass, volume, count and fractional base-unit quantities", () => {
@@ -21,6 +29,13 @@ describe("catalogue inventory reconciliation arithmetic", () => {
     expect(convertUnitCost("0.250000000000", "g", "kg")).toBe("250");
     expect(convertUnitCost("250", "kg", "g")).toBe("0.25");
     expect(() => convertUnitCost("0", "g", "kg")).toThrow(/positive/);
+  });
+
+  it("uses explicit package weights without treating package counts as grams", () => {
+    expect(multiplyQuantity("11", "14")).toBe("154.000000");
+    expect(multiplyQuantity("2", "3.5")).toBe("7.000000");
+    expect(unitCostPerTargetQuantity("11.10", "3.5")).toBe("3.171428571429");
+    expect(unitCostForSourceQuantity("3.171428571429", "3.5")).toBe("11.100000000002");
   });
 
   it("fingerprints the exact preview snapshot deterministically", () => {

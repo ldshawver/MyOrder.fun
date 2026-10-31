@@ -7,7 +7,14 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } 
 import { requirePermission } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
-import { convertQuantity, convertUnitCost, reconciliationFingerprint } from "../lib/catalogueInventoryReconciliation";
+import {
+  convertQuantity,
+  convertUnitCost,
+  multiplyQuantity,
+  reconciliationFingerprint,
+  unitCostForSourceQuantity,
+  unitCostPerTargetQuantity,
+} from "../lib/catalogueInventoryReconciliation";
 import { ledgerQuantityUnits, quantityText, quantityUnits } from "../lib/exactQuantity";
 import { logger } from "../lib/logger";
 import {
@@ -25,9 +32,17 @@ const targetSchema = z.union([
   z.object({ inventoryItemId: positiveId }).strict(),
   z.object({ create: z.object({ name: z.string().trim().min(1).max(160), baseUnit: z.string().trim().min(1).max(40) }).strict() }).strict(),
 ]);
-const previewSchema = z.object({ target: targetSchema }).strict();
+const variantConversionSchema = z.object({
+  optionId: positiveId,
+  sourceUnitQuantityInTargetUnit: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,6})?$/)
+    .refine(value => !/^0(?:\.0+)?$/.test(value), "Source-unit conversion must be positive"),
+  targetConsumptionQuantity: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,6})?$/)
+    .refine(value => !/^0(?:\.0+)?$/.test(value), "Target consumption must be positive"),
+}).strict();
+const previewSchema = z.object({ target: targetSchema, variantConversions: z.array(variantConversionSchema).max(100).default([]) }).strict();
 const applySchema = z.object({
   target: targetSchema,
+  variantConversions: z.array(variantConversionSchema).max(100).default([]),
   previewFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   confirmPreview: z.literal(true),
   idempotencyKey: z.string().uuid(),
@@ -132,7 +147,8 @@ router.post("/admin/catalogue/products/:productId/inventory-history-repair/apply
   } catch (error) { historyFailure(res, error); }
 });
 
-async function snapshot(executor: ReconciliationExecutor, tenantId: number, productId: number, target: z.infer<typeof targetSchema>) {
+async function snapshot(executor: ReconciliationExecutor, tenantId: number, productId: number, target: z.infer<typeof targetSchema>,
+  variantConversions: z.infer<typeof variantConversionSchema>[] = []) {
   const product = rows(await executor.execute(sql`
     SELECT id, tenant_id AS "tenantId", name, inventory_model AS "inventoryModel",
       location_evaluation AS "locationEvaluation", active
@@ -232,6 +248,7 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
   `));
   const units = resolvedTarget ? String(resolvedTarget.baseUnit)
     : "create" in target ? target.create.baseUnit : String(variants[0].baseUnit);
+  const conversionByOption = new Map(variantConversions.map(conversion => [conversion.optionId, conversion]));
   const itemByCatalog = new Map<number, Row>();
   for (const v of variants) itemByCatalog.set(Number(v.inventoryCatalogItemId), v);
   const historyByKey = new Map(history.map((h: Row) => [`${h.catalogItemId}:${h.locationId}`, h]));
@@ -246,6 +263,14 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
     }
   }
   const issues: string[] = [];
+  const activeOptionIds = new Set(variants.map((variant: Row) => Number(variant.optionId)));
+  if (conversionByOption.size !== variantConversions.length) issues.push("Each variant conversion must appear exactly once.");
+  for (const conversion of variantConversions) {
+    if (!activeOptionIds.has(conversion.optionId)) issues.push(`Variant conversion option ${conversion.optionId} is not an active option of this product.`);
+  }
+  if (variantConversions.length && variants.some((variant: Row) => !conversionByOption.has(Number(variant.optionId)))) {
+    issues.push("Provide an explicit source-unit conversion and target consumption for every active variant.");
+  }
   if (product.inventoryModel === "SEPARATE_VARIANTS" && new Set(variants.map((v: Row) => Number(v.inventoryItemId))).size !== variants.length) issues.push("Separate variants already share an inventory item; resolve the conflicting mapping first.");
   if (reservations.length) issues.push("Resolve active reservations before reconciliation.");
   if (committed.length) issues.push("Resolve open orders with committed variant stock before reconciliation.");
@@ -256,7 +281,9 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
     catch { issues.push(`Inventory history precision is unsupported for item ${itemByCatalog.get(Number(b.catalogItemId))?.inventoryItemId ?? "?"} at location ${b.locationId}.`); }
   }
   for (const v of variants) {
-    try { convertQuantity(String(v.consumptionQuantity), String(v.baseUnit), units); }
+    try {
+      if (!conversionByOption.has(Number(v.optionId))) convertQuantity(String(v.consumptionQuantity), String(v.baseUnit), units);
+    }
     catch (e) { issues.push(`Variant ${v.optionId}: ${(e as Error).message}`); }
   }
   const itemCosts = catalogIds.map(catalogItemId => {
@@ -271,6 +298,7 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
   const fingerprintData = {
     product, variants, balances, reservations, valuation, history, legacyHistory, foreignUse, duplicateName, lineHistory, committed,
     target: "inventoryItemId" in target ? { inventoryItemId: target.inventoryItemId } : { create: target.create },
+    variantConversions: [...variantConversions].sort((a,b) => a.optionId-b.optionId),
   };
   const fingerprint = reconciliationFingerprint(fingerprintData);
   const locationIds = [...new Set(balanceRows.map((b: Row) => Number(b.locationId)))].sort((a,b)=>a-b);
@@ -279,24 +307,32 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
     let proposed = 0n; let conversionValid = true;
     for (const b of sources) {
       const source = itemByCatalog.get(Number(b.catalogItemId));
-      try { proposed += quantityUnits(convertQuantity(String(b.quantity), String(source?.baseUnit), units)); }
+      const explicit = source ? conversionByOption.get(Number(source.optionId)) : undefined;
+      try { proposed += quantityUnits(explicit
+        ? multiplyQuantity(String(b.quantity), explicit.sourceUnitQuantityInTargetUnit)
+        : convertQuantity(String(b.quantity), String(source?.baseUnit), units)); }
       catch { conversionValid = false; }
     }
     return { locationId, locationName: sources[0]?.locationName ?? `Location ${locationId}`, sourceBalances: sources,
       proposedSharedBalance: conversionValid ? quantityText(proposed) : "Unavailable: unit conversion required" };
   });
-  return { product, variants, balances, reservations, valuation, history, legacyHistory, lineHistory, committed, itemCosts, issues: [...new Set(issues)], targetUnit: units, locationBalances: byLocation, fingerprint, fingerprintData };
+  return { product, variants, balances, reservations, valuation, history, legacyHistory, lineHistory, committed, itemCosts,
+    issues: [...new Set(issues)], targetUnit: units, locationBalances: byLocation, fingerprint, fingerprintData, conversionByOption };
 }
 
 router.post("/admin/catalogue/products/:productId/inventory-reconciliation/preview", admin, async (req, res): Promise<void> => {
   const productId = Number(req.params.productId); const parsed = previewSchema.safeParse(req.body);
   if (!Number.isInteger(productId) || productId <= 0 || !parsed.success) { fail(res, 400, "INVALID_PREVIEW", "Provide a valid product and reconciliation target."); return; }
   try {
-    const result = await snapshot(db, req.authorizedTenantId!, productId, parsed.data.target);
+    const result = await snapshot(db, req.authorizedTenantId!, productId, parsed.data.target, parsed.data.variantConversions);
     const recordedCosts = result.itemCosts.map((c: Row) => {
       let convertedUnitCost: string | null = null;
       if (c.reliable) {
-        try { convertedUnitCost = convertUnitCost(c.averageUnitCost, c.baseUnit, result.targetUnit); }
+        const variant = result.variants.find((candidate: Row) => Number(candidate.inventoryCatalogItemId) === Number(c.catalogItemId));
+        const explicit = variant ? result.conversionByOption.get(Number(variant.optionId)) : undefined;
+        try { convertedUnitCost = explicit
+          ? unitCostPerTargetQuantity(String(c.averageUnitCost), explicit.sourceUnitQuantityInTargetUnit)
+          : convertUnitCost(c.averageUnitCost, c.baseUnit, result.targetUnit); }
         catch { /* The preview already reports the unsupported unit conversion as a blocker. */ }
       }
       return { ...c, convertedUnitCost };
@@ -306,7 +342,10 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/previ
       variants: result.variants.map((v: Row) => ({ optionId: v.optionId, label: v.label, optionValues: v.optionValues,
         inventoryItemId: v.inventoryItemId, catalogItemId: v.catalogItemId, inventoryCatalogItemId: v.inventoryCatalogItemId,
         baseUnit: v.baseUnit, consumptionQuantity: v.consumptionQuantity,
-        proposedConsumption: previewConversion(String(v.consumptionQuantity), String(v.baseUnit), result.targetUnit),
+        sourceUnitQuantityInTargetUnit: result.conversionByOption.get(Number(v.optionId))?.sourceUnitQuantityInTargetUnit
+          ?? previewConversion("1", String(v.baseUnit), result.targetUnit),
+        proposedConsumption: result.conversionByOption.get(Number(v.optionId))?.targetConsumptionQuantity
+          ?? previewConversion(String(v.consumptionQuantity), String(v.baseUnit), result.targetUnit),
         price: v.price, sku: v.sku, barcode: v.barcode })),
       reservations: result.reservations, costs: recordedCosts, legacyHistory: result.legacyHistory, locations: result.locationBalances,
       orderHistory: result.lineHistory, committed: result.committed, issues: result.issues,
@@ -347,7 +386,7 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/apply
       // Reversing this order can deadlock with an in-flight inventory movement.
       for (const catalogItemId of lockedCatalogIds) await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${catalogItemId})`);
       await tx.execute(sql`SELECT id FROM inventory_valuation_states WHERE tenant_id=${tenantId} AND catalog_item_id=ANY(${intArray(lockedCatalogIds)}) ORDER BY catalog_item_id FOR UPDATE`);
-      const pre = await snapshot(tx, tenantId, productId, body.target);
+      const pre = await snapshot(tx, tenantId, productId, body.target, body.variantConversions);
       if (pre.fingerprint !== body.previewFingerprint) throw Object.assign(new Error("Inventory changed after preview. Refresh and review the new preview."), { status: 409, code: "STALE_PREVIEW" });
       if (pre.issues.length) throw Object.assign(new Error(pre.issues.join(" ")), { status: 409, code: "RECONCILIATION_BLOCKED" });
       const unknown = pre.itemCosts.filter((c: Row) => quantityUnits(String(c.onHand)) > 0n && !c.reliable);
@@ -389,7 +428,11 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/apply
       await tx.execute(sql`SELECT set_config('myorder.catalogue_inventory_reconciliation_id',${eventId},true)`);
       let movementIndex = 0;
       for (const item of (manualCostRequired ? pre.itemCosts.filter((c: Row) => quantityUnits(String(c.onHand)) > 0n && !c.reliable) : [])) {
-        const itemCost = convertUnitCost(body.manualUnitCost!, targetUnit, item.baseUnit);
+        const variant = pre.variants.find((candidate: Row) => Number(candidate.inventoryCatalogItemId) === Number(item.catalogItemId));
+        const explicit = variant ? pre.conversionByOption.get(Number(variant.optionId)) : undefined;
+        const itemCost = explicit
+          ? unitCostForSourceQuantity(body.manualUnitCost!, explicit.sourceUnitQuantityInTargetUnit)
+          : convertUnitCost(body.manualUnitCost!, targetUnit, item.baseUnit);
         await tx.execute(sql`INSERT INTO inventory_valuation_states(tenant_id,inventory_entity_type,catalog_item_id,cost_status,known_quantity,average_unit_cost,inventory_value,updated_at)
           VALUES (${tenantId},'catalog',${item.catalogItemId},'known',${item.onHand}::numeric,${itemCost}::numeric,(${item.onHand}::numeric*${itemCost}::numeric),now())
           ON CONFLICT (tenant_id,catalog_item_id) WHERE catalog_item_id IS NOT NULL DO UPDATE SET cost_status='known',known_quantity=EXCLUDED.known_quantity,average_unit_cost=EXCLUDED.average_unit_cost,inventory_value=EXCLUDED.inventory_value,updated_at=now()`);
@@ -397,14 +440,21 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/apply
       for (const item of pre.itemCosts) {
         if (Number(item.catalogItemId) === targetCatalogItemId) continue;
         const sourceQty = quantityUnits(String(item.onHand));
-        const sourceCost = item.reliable ? String(item.averageUnitCost) : convertUnitCost(body.manualUnitCost!, targetUnit, item.baseUnit);
-        if (sourceQty > 0n && (!sourceCost || Number(sourceCost) <= 0)) throw Object.assign(new Error("A verified positive unit cost is required for every nonzero source balance"), { status: 422, code: "VERIFIED_COST_REQUIRED" });
         const sourceVariant = pre.variants.find((v: Row) => Number(v.inventoryCatalogItemId) === Number(item.catalogItemId));
+        const explicit = sourceVariant ? pre.conversionByOption.get(Number(sourceVariant.optionId)) : undefined;
+        const sourceCost = item.reliable ? String(item.averageUnitCost) : explicit
+          ? unitCostForSourceQuantity(body.manualUnitCost!, explicit.sourceUnitQuantityInTargetUnit)
+          : convertUnitCost(body.manualUnitCost!, targetUnit, item.baseUnit);
+        if (sourceQty > 0n && (!sourceCost || Number(sourceCost) <= 0)) throw Object.assign(new Error("A verified positive unit cost is required for every nonzero source balance"), { status: 422, code: "VERIFIED_COST_REQUIRED" });
         const sourceLocations = pre.balances.filter((b: Row) => Number(b.catalogItemId) === Number(item.catalogItemId));
         for (const balance of sourceLocations) {
           if (quantityUnits(String(balance.quantity)) <= 0n) continue;
-          const targetQty = convertQuantity(String(balance.quantity), item.baseUnit, targetUnit);
-          const targetCost = convertUnitCost(sourceCost, item.baseUnit, targetUnit);
+          const targetQty = explicit
+            ? multiplyQuantity(String(balance.quantity), explicit.sourceUnitQuantityInTargetUnit)
+            : convertQuantity(String(balance.quantity), item.baseUnit, targetUnit);
+          const targetCost = explicit
+            ? unitCostPerTargetQuantity(sourceCost, explicit.sourceUnitQuantityInTargetUnit)
+            : convertUnitCost(sourceCost, item.baseUnit, targetUnit);
           const common = { tenantId, actor: { id: req.dbUser!.id, email: req.dbUser!.email, role: req.dbUser!.role }, entityType: "catalog" as const,
             locationId: Number(balance.locationId), unitOfMeasure: String(item.baseUnit), sourceType: "catalogue_inventory_reconciliation", sourceId: eventId,
             reasonCode: "variant_inventory_reconciliation", reasonText: body.reason, correlationId: eventId };
@@ -420,7 +470,9 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/apply
             movementIds: [out.id, incoming.id] });
         }
       }
-      const itemOptions = pre.variants.map((v: Row) => ({ id: v.optionId, consumption: convertQuantity(String(v.consumptionQuantity), String(v.baseUnit), targetUnit) }));
+      const itemOptions = pre.variants.map((v: Row) => ({ id: v.optionId,
+        consumption: pre.conversionByOption.get(Number(v.optionId))?.targetConsumptionQuantity
+          ?? convertQuantity(String(v.consumptionQuantity), String(v.baseUnit), targetUnit) }));
       for (const option of itemOptions) await tx.execute(sql`UPDATE catalogue_options SET inventory_item_id=${targetInventoryItemId},consumption_quantity=${option.consumption}::numeric,updated_at=now()
         WHERE tenant_id=${tenantId} AND id=${option.id} AND active=true`);
       for (const catalogId of [...new Set([...allItems, targetCatalogItemId])]) await tx.execute(sql`UPDATE catalog_items SET

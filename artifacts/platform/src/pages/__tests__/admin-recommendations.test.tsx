@@ -155,6 +155,62 @@ it("saves an eligible Shared model and shows it after the settings reload", asyn
   expect(inputValues).toContain("17.50");
 });
 
+it("submits explicit package-to-gram conversions for a shared inventory preview", async () => {
+  type PreviewBody = { target?: { create?: { name: string; baseUnit: string } }; variantConversions?: Array<{
+    optionId: number; sourceUnitQuantityInTargetUnit: string; targetConsumptionQuantity: string }> };
+  const requests: Array<{ path: string; body?: PreviewBody }> = [];
+  const options = [
+    [9, "Gram", "1"], [10, "Ball", "3.5"], [11, "Quarter", "7"], [12, "Half", "14"], [13, "Ounce", "28"],
+  ].map(([id,label,consumption], index) => ({ id, catalogItemId: 70 + index, label, optionValues: { Size: label }, sku: null,
+    price: "10.00", active: true, isAvailable: true, inventoryItemId: 90 + index, baseUnit: "each", consumptionQuantity: consumption,
+    complianceHold: false, complianceReason: null, inventoryStatus: "ready", balanceRowCount: 1, stockOnHand: "11", reservedQuantity: "0", availableQuantity: "11", orderable: true }));
+  vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+    const path = String(input); const body = init?.body ? JSON.parse(String(init.body)) as PreviewBody : undefined; requests.push({ path, body });
+    if (path === "/api/admin/catalogue/products") return new Response(JSON.stringify({ products: [{ id: 7, name: "Tina", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", options }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path === "/api/admin/catalogue/recommendations") return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.startsWith("/api/admin/catalogue/inventory/") && path.endsWith("/locations")) return new Response(JSON.stringify({ locations: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.endsWith("/inventory-history-repair")) return new Response(JSON.stringify({ discrepancies: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.endsWith("/inventory-reconciliation/preview")) return new Response(JSON.stringify({ product: { id: 7, name: "Tina", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION" },
+      target: body!.target, targetUnit: "g", variants: options.map((option, index) => ({ ...option, optionId: option.id, inventoryCatalogItemId: option.catalogItemId,
+        sourceUnitQuantityInTargetUnit: ["1","3.5","7","14","28"][index], proposedConsumption: ["1","3.5","7","14","28"][index] })),
+      reservations: [], committed: [], costs: [], legacyHistory: [], locations: [{ locationId: 1, locationName: "Store", sourceBalances: [], proposedSharedBalance: "154.000000" }],
+      orderHistory: [], issues: [], costRequired: false, fingerprint: "a".repeat(64) }), { status: 200, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400, headers: { "Content-Type": "application/json" } });
+  }));
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(createElement(AdminCatalogueProducts)));
+  await vi.waitFor(() => expect(host?.textContent).toContain("Tina"));
+  await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent?.includes("Tina"))!.click());
+  const modelSelect = host!.querySelectorAll("select")[2] as HTMLSelectElement;
+  await act(async () => { modelSelect.value = "SHARED"; modelSelect.dispatchEvent(new Event("change", { bubbles: true })); });
+  await vi.waitFor(() => expect(host?.textContent).toContain("Reconcile inventory"));
+  const targetSelect = [...host!.querySelectorAll("select")].find(select => [...select.options].some(option => option.value === "create"))!;
+  await act(async () => { targetSelect.value = "create"; targetSelect.dispatchEvent(new Event("change", { bubbles: true })); });
+  const labelInput = (text: string) => [...host!.querySelectorAll("label")].find(label => label.textContent?.includes(text))!.querySelector("input")!;
+  const setInput = (input: HTMLInputElement, value: string) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  await act(async () => {
+    setInput(labelInput("New shared item name"), "Tina shared grams"); setInput(labelInput("Shared base unit"), "g");
+  });
+  if (!host!.querySelector("input[aria-label^='Source conversion option']")) {
+    const explicit = [...host!.querySelectorAll("label")].find(label => label.textContent?.includes("Explicitly convert"))!.querySelector("input")!;
+    await act(async () => explicit.click());
+  }
+  for (const [index, option] of options.entries()) {
+    for (const [prefix, value] of [["Source conversion option", ["1","3.5","7","14","28"][index]], ["Target consumption option", ["1","3.5","7","14","28"][index]]] as const) {
+      const input = host!.querySelector(`input[aria-label="${prefix} ${option.id}"]`) as HTMLInputElement;
+      await act(async () => setInput(input, value));
+    }
+  }
+  await act(async () => [...host!.querySelectorAll("button")].find(button => button.textContent?.includes("Reconcile inventory · preview"))!.click());
+  await vi.waitFor(() => expect(host?.textContent).toContain("proposed shared balance 154.000000 g"));
+  const preview = requests.find(request => request.path.endsWith("/inventory-reconciliation/preview"))!;
+  expect(preview.body!.variantConversions).toEqual(options.map((option, index) => ({ optionId: option.id,
+    sourceUnitQuantityInTargetUnit: ["1","3.5","7","14","28"][index], targetConsumptionQuantity: ["1","3.5","7","14","28"][index] })));
+});
+
 it("guides an explicit per-row append-only history repair and preserves unknown cost", async () => {
   let repaired = false;
   type GuidedBody = { evidence?: Array<{ costBasisNote?: string; documentedUnitCost?: string | null; physicalCountNote?: string }>;

@@ -10,7 +10,7 @@ type Product = { id: number; name: string; inventoryModel: "SHARED" | "SEPARATE_
 type Location = { locationId: number; name: string; quantityOnHand: string; par: string; reorderPoint: string; preferredReorderQuantity: string; moq: string };
 type Recommendation = { inventoryItemId: number; productName: string; baseUnit: string; recommendations: Array<{ locationId: number; locationName: string; internalTransfers: Array<{ fromLocationId: number; quantity: string }>; externalPurchaseQuantity: string }> };
 type InventoryPreview = { product: { id: number; name: string; inventoryModel: string; locationEvaluation: string }; target: { inventoryItemId?: number; create?: { name: string; baseUnit: string } }; targetUnit: string;
-  variants: Array<{ optionId: number; label: string; optionValues: Record<string,string>; inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number; baseUnit: string; consumptionQuantity: string; proposedConsumption: string; price: string; sku: string | null; barcode: string | null }>;
+  variants: Array<{ optionId: number; label: string; optionValues: Record<string,string>; inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number; baseUnit: string; consumptionQuantity: string; sourceUnitQuantityInTargetUnit: string; proposedConsumption: string; price: string; sku: string | null; barcode: string | null }>;
   reservations: Array<{ reservationId: number; catalogItemId: number; locationId: number; locationName: string; status: string; quantity: string; expiresAt: string; orderId: number; orderStatus: string }>;
   costs: Array<{ inventoryItemId: number; catalogItemId: number; baseUnit: string; onHand: string; costStatus: string; averageUnitCost: string | null; inventoryValue: string | null; reliable: boolean; convertedUnitCost: string | null }>;
   legacyHistory: Array<{ catalogItemId: number; locationId: number | null; transactionCount: number; netQuantityChange: string }>;
@@ -198,6 +198,8 @@ export default function AdminCatalogueProducts() {
   const [createSharedItem, setCreateSharedItem] = useState(false);
   const [sharedItemName, setSharedItemName] = useState("");
   const [sharedBaseUnit, setSharedBaseUnit] = useState("each");
+  const [useExplicitVariantConversions, setUseExplicitVariantConversions] = useState(false);
+  const [variantConversions, setVariantConversions] = useState<Record<number, { sourceUnitQuantityInTargetUnit: string; targetConsumptionQuantity: string }>>({});
   const [reconcileReason, setReconcileReason] = useState("");
   const [manualUnitCost, setManualUnitCost] = useState("");
   const [costBasisNote, setCostBasisNote] = useState("");
@@ -212,6 +214,7 @@ export default function AdminCatalogueProducts() {
   useEffect(() => { setEditName(selectedName); setInventoryModelDraft(selectedInventoryModel ?? "SEPARATE_VARIANTS");
     setPreview(null); setConfirmReconciliation(false); setReconcileTarget(String(firstActiveOption?.inventoryItemId ?? ""));
     setSharedBaseUnit(firstActiveOption?.baseUnit ?? "each"); setSharedItemName(selectedName ? `${selectedName} shared inventory` : "");
+    setUseExplicitVariantConversions(false); setVariantConversions({});
   }, [selectedIdValue, selectedName, selectedInventoryModel, firstActiveOption?.inventoryItemId, firstActiveOption?.baseUnit]);
   useEffect(() => { setEditBaseUnit(selectedItemBaseUnit); }, [selectedItemBaseUnit]);
 
@@ -256,12 +259,17 @@ export default function AdminCatalogueProducts() {
   const reconciliationTarget = () => createSharedItem
     ? { create: { name: sharedItemName.trim(), baseUnit: sharedBaseUnit.trim() } }
     : { inventoryItemId: Number(reconcileTarget) };
+  const reconciliationVariantConversions = () => useExplicitVariantConversions && selected
+    ? selected.options.filter(option => option.active).map(option => ({ optionId: option.id,
+      sourceUnitQuantityInTargetUnit: variantConversions[option.id]?.sourceUnitQuantityInTargetUnit ?? "",
+      targetConsumptionQuantity: variantConversions[option.id]?.targetConsumptionQuantity ?? "" }))
+    : [];
   async function loadReconciliationPreview() {
     if (!selected) return;
     setBusy(true); setMessage(""); setPreview(null); setConfirmReconciliation(false);
     try {
       const data = await request(`/api/admin/catalogue/products/${selected.id}/inventory-reconciliation/preview`, {
-        method: "POST", body: JSON.stringify({ target: reconciliationTarget() }),
+        method: "POST", body: JSON.stringify({ target: reconciliationTarget(), variantConversions: reconciliationVariantConversions() }),
       }) as InventoryPreview;
       setPreview(data);
       setMessage(data.issues.length ? "Preview loaded with blocking issues. Resolve them before reconciliation." : "Preview ready. Review every balance and valuation before confirming.");
@@ -273,7 +281,7 @@ export default function AdminCatalogueProducts() {
     setBusy(true); setMessage("");
     try {
       const result = await request(`/api/admin/catalogue/products/${selected.id}/inventory-reconciliation/apply`, {
-        method: "POST", body: JSON.stringify({ target: reconciliationTarget(), previewFingerprint: preview.fingerprint,
+        method: "POST", body: JSON.stringify({ target: reconciliationTarget(), variantConversions: reconciliationVariantConversions(), previewFingerprint: preview.fingerprint,
           confirmPreview: true, idempotencyKey: crypto.randomUUID(), reason: reconcileReason.trim(),
           ...(manualUnitCost ? { manualUnitCost, costBasisNote } : {}) }),
       }) as { reconciliationId: string; targetInventoryItemId: number };
@@ -368,14 +376,28 @@ export default function AdminCatalogueProducts() {
                 <option value="create">Create a new shared item</option>
               </select></label>
               {createSharedItem && <><label>New shared item name<Input value={sharedItemName} onChange={event => { setSharedItemName(event.target.value); setPreview(null); }} /></label>
-                <label>Shared base unit<Input value={sharedBaseUnit} onChange={event => { setSharedBaseUnit(event.target.value); setPreview(null); }} /></label></>}
+                <label>Shared base unit<Input value={sharedBaseUnit} onChange={event => { setSharedBaseUnit(event.target.value); setPreview(null);
+                  if (event.target.value.trim().toLowerCase() !== firstActiveOption?.baseUnit?.trim().toLowerCase()) setUseExplicitVariantConversions(true);
+                }} /></label></>}
             </div>
-            <Button disabled={busy || (!createSharedItem && !reconcileTarget) || (createSharedItem && (!sharedItemName.trim() || !sharedBaseUnit.trim()))} onClick={() => void loadReconciliationPreview()}>Reconcile inventory · preview</Button>
+            <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={useExplicitVariantConversions} onChange={event => { setUseExplicitVariantConversions(event.target.checked); setPreview(null); }} />
+              Explicitly convert each source inventory unit into the new shared unit. Use this when existing balances count packages but the shared item is measured by weight.</label>
+            {useExplicitVariantConversions && <div className="space-y-2 rounded border p-2" aria-label="Explicit variant inventory conversions">
+              <p className="text-xs text-muted-foreground">These are separate facts: the first converts each currently counted source package into shared stock; the second controls what one customer sale consumes. Values are never inferred from labels or package counts.</p>
+              {selected.options.filter(option => option.active).map(option => { const conversion = variantConversions[option.id] ?? { sourceUnitQuantityInTargetUnit: "", targetConsumptionQuantity: "" }; return <div key={option.id} className="grid gap-2 md:grid-cols-3">
+                <strong className="text-sm self-end">{option.label} · option #{option.id}</strong>
+                <label>One source {option.baseUnit ?? "unit"} equals ({sharedBaseUnit || "shared unit"})<Input inputMode="decimal" aria-label={`Source conversion option ${option.id}`} value={conversion.sourceUnitQuantityInTargetUnit} onChange={event => { setPreview(null); setVariantConversions(current => ({ ...current, [option.id]: { ...conversion, sourceUnitQuantityInTargetUnit: event.target.value } })); }} /></label>
+                <label>One sale consumes ({sharedBaseUnit || "shared unit"})<Input inputMode="decimal" aria-label={`Target consumption option ${option.id}`} value={conversion.targetConsumptionQuantity} onChange={event => { setPreview(null); setVariantConversions(current => ({ ...current, [option.id]: { ...conversion, targetConsumptionQuantity: event.target.value } })); }} /></label>
+              </div>; })}
+            </div>}
+            <Button disabled={busy || (!createSharedItem && !reconcileTarget) || (createSharedItem && (!sharedItemName.trim() || !sharedBaseUnit.trim()))
+              || (useExplicitVariantConversions && selected.options.filter(option => option.active).some(option => !variantConversions[option.id]?.sourceUnitQuantityInTargetUnit || !variantConversions[option.id]?.targetConsumptionQuantity))}
+              onClick={() => void loadReconciliationPreview()}>Reconcile inventory · preview</Button>
             {preview && <div className="space-y-3 rounded bg-muted/30 p-3 text-sm">
               <h4 className="font-medium">Preview · proposed base unit: {preview.targetUnit}</h4>
               <p>Product #{preview.product.id} · location evaluation remains <strong>{preview.product.locationEvaluation}</strong>.</p>
-              <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr><th>Variant / option ID</th><th>Inventory item ID</th><th>Catalog item ID</th><th>Base unit → shared</th><th>Consumption</th><th>Retail price</th></tr></thead><tbody>
-                {preview.variants.map(v => <tr key={v.optionId} className="border-t"><td>{v.label} · #{v.optionId}</td><td>#{v.inventoryItemId}</td><td>#{v.catalogItemId}</td><td>{v.baseUnit} → {preview.targetUnit}</td><td>{v.consumptionQuantity} → {v.proposedConsumption} {preview.targetUnit}</td><td>{v.price}</td></tr>)}
+              <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr><th>Variant / option ID</th><th>Inventory item ID</th><th>Catalog item ID</th><th>Source-unit conversion</th><th>Sale consumption</th><th>Retail price</th></tr></thead><tbody>
+                {preview.variants.map(v => <tr key={v.optionId} className="border-t"><td>{v.label} · #{v.optionId}</td><td>#{v.inventoryItemId}</td><td>#{v.catalogItemId}</td><td>1 {v.baseUnit} → {v.sourceUnitQuantityInTargetUnit} {preview.targetUnit}</td><td>{v.consumptionQuantity} {v.baseUnit} → {v.proposedConsumption} {preview.targetUnit}</td><td>{v.price}</td></tr>)}
               </tbody></table></div>
               {preview.locations.map(location => <div key={location.locationId} className="rounded border p-2">
                 <strong>{location.locationName} · proposed shared balance {location.proposedSharedBalance} {preview.targetUnit}</strong>
