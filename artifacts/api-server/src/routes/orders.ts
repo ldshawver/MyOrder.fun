@@ -101,7 +101,7 @@ import {
   type UberManifestItem,
 } from "../lib/uberDirect";
 import { getUberDirectQuoteSettings, getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
-import { calculatePickupAvailability, loadPickupSchedule, pickupOperatingWindow, pickupScheduleSnapshot, resolvePickupLocation, validatePickupSelection } from "../lib/pickupScheduling";
+import { calculatePickupAvailability, loadPickupSchedule, pickupOperatingWindow, pickupScheduleSnapshot, pickupSelectionErrorMessage, resolvePickupLocation, validatePickupSelection } from "../lib/pickupScheduling";
 import {
   IllegalOrderTransitionError,
   normalizeOrderLifecycleState,
@@ -738,7 +738,8 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, pickup, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
   } catch (error) {
     const pickupCode = error instanceof Error && error.message.startsWith("PICKUP_") ? error.message : null;
-    res.status(error instanceof CustomerCreditError ? error.status : pickupCode === "PICKUP_LOCATION_UNAVAILABLE" ? 404 : 422).json({ error: error instanceof CustomerCreditError ? error.code : pickupCode ?? "CHECKOUT_QUOTE_UNAVAILABLE" });
+    const pickupMessage = pickupCode ? pickupSelectionErrorMessage(pickupCode) : null;
+    res.status(error instanceof CustomerCreditError ? error.status : pickupCode === "PICKUP_LOCATION_UNAVAILABLE" ? 404 : 422).json({ error: error instanceof CustomerCreditError ? error.code : pickupCode ?? "CHECKOUT_QUOTE_UNAVAILABLE", ...(pickupMessage ? { message: pickupMessage } : {}) });
   }
 });
 
@@ -890,6 +891,12 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
       manifestItems,
     });
   } catch (err) {
+    const pickupCode = err instanceof Error && err.message.startsWith("PICKUP_") ? err.message : null;
+    if (pickupCode) {
+      const message = pickupSelectionErrorMessage(pickupCode);
+      res.status(pickupCode === "PICKUP_LOCATION_UNAVAILABLE" ? 404 : 422).json({ error: pickupCode, ...(message ? { message } : {}) });
+      return;
+    }
     if (err instanceof UberDirectConfigError) {
       res.status(503).json({ error: err.message });
       return;
@@ -1060,7 +1067,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       checkoutLocationId = pickupLocation.id;
     } catch (error) {
       const code = error instanceof Error ? error.message : "PICKUP_UNAVAILABLE";
-      res.status(code === "PICKUP_LOCATION_UNAVAILABLE" ? 404 : 422).json({ error: code });
+      const message = pickupSelectionErrorMessage(code);
+      res.status(code === "PICKUP_LOCATION_UNAVAILABLE" ? 404 : 422).json({ error: code, ...(message ? { message } : {}) });
       return;
     }
   } else if (body.data.pickupLocationId != null || body.data.pickupAt != null) {

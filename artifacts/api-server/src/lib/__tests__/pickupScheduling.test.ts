@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculatePickupAvailability, localTimeCandidates, pickupScheduleInputSchema, pickupScheduleSnapshot, validatePickupSelection } from "../pickupScheduling";
+import { calculatePickupAvailability, localTimeCandidates, pickupScheduleInputSchema, pickupScheduleSnapshot, pickupSelectionErrorMessage, validatePickupSelection } from "../pickupScheduling";
 
 const schedule = pickupScheduleInputSchema.parse({
   timeZone: "America/Los_Angeles",
@@ -36,6 +36,34 @@ describe("pickup scheduling", () => {
   it("supports overnight periods", () => {
     const availability = calculatePickupAvailability(schedule, new Date("2026-11-01T07:30:00.000Z"));
     expect(availability.immediateAvailable).toBe(true);
+  });
+
+  it("requires a future pickup for a 2:00 PM–2:00 AM store at 11:00 AM", () => {
+    const overnight = pickupScheduleInputSchema.parse({
+      timeZone: "America/Los_Angeles",
+      weeklyHours: [0, 1, 2, 3, 4, 5, 6].map(dayOfWeek => ({ dayOfWeek, intervals: [{ open: "14:00:00", close: "02:00" }] })),
+      exceptions: [], slotMinutes: 30, maxAdvanceDays: 14, version: 1,
+    });
+    expect(overnight.weeklyHours[0].intervals[0].open).toBe("14:00");
+    const closedAtEleven = new Date("2026-11-01T19:33:00.000Z");
+    const closed = calculatePickupAvailability(overnight, closedAtEleven);
+    expect(closed.immediateAvailable).toBe(false);
+    expect(closed.openNow).toBe(false);
+    expect(closed.message).toContain("has to wait for pickup during business hours");
+    expect(closed.regularHours.every(row => row.hours === "14:00–02:00 next day")).toBe(true);
+    expect(closed.slots.some(slot => slot.at === "2026-11-01T22:00:00.000Z")).toBe(true);
+    expect(closed.slots.some(slot => slot.at === closedAtEleven.toISOString())).toBe(false);
+    expect(() => validatePickupSelection(overnight, null, closedAtEleven)).toThrow("PICKUP_TIME_REQUIRED");
+    expect(() => validatePickupSelection(overnight, "", closedAtEleven)).toThrow("PICKUP_TIME_REQUIRED");
+    expect(() => validatePickupSelection(overnight, "2026-11-01T19:00:00.000Z", closedAtEleven)).toThrow("PICKUP_TIME_UNAVAILABLE");
+    const selected = validatePickupSelection(overnight, "2026-11-01T22:00:00.000Z", closedAtEleven);
+    expect(selected.mode).toBe("scheduled");
+    expect(selected.pickupAt.toISOString()).toBe("2026-11-01T22:00:00.000Z");
+    const stillOpenAfterMidnight = calculatePickupAvailability(overnight, new Date("2026-11-05T09:30:00.000Z"));
+    expect(stillOpenAfterMidnight.immediateAvailable).toBe(true);
+    const afterClose = calculatePickupAvailability(overnight, new Date("2026-11-05T11:00:00.000Z"));
+    expect(afterClose.immediateAvailable).toBe(false);
+    expect(pickupSelectionErrorMessage("PICKUP_TIME_REQUIRED")).toContain("cannot be placed");
   });
 
   it("skips nonexistent DST wall times and represents repeated times as distinct instants", () => {

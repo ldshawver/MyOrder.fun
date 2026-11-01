@@ -13,6 +13,7 @@ import { Search, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame, Tr
 import { useBrand } from "@/contexts/BrandContext";
 import { useCart } from "@/contexts/CartContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
+import { CatalogClosedStoreNotice } from "@/components/ClosedStoreNotice";
 import { Link } from "wouter";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 import { useAuth } from "@clerk/react";
@@ -1023,6 +1024,7 @@ export default function Catalog() {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
+      <CatalogClosedStoreNotice />
       {canEdit && (
         <div className="flex justify-end">
           <button type="button" aria-pressed={customerPreview} onClick={() => setCustomerPreview(value => !value)} className={`rounded-lg border px-3 py-2 text-xs font-semibold ${customerPreview ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background text-foreground"}`} data-testid="toggle-customer-catalog-preview">

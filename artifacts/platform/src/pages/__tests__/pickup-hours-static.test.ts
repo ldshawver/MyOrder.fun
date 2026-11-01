@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 const checkout = readFileSync(new URL("../new-order.tsx", import.meta.url), "utf8");
 const settings = readFileSync(new URL("../admin/settings-page.tsx", import.meta.url), "utf8");
 const orderDetail = readFileSync(new URL("../order-detail.tsx", import.meta.url), "utf8");
+const catalog = readFileSync(new URL("../catalog.tsx", import.meta.url), "utf8");
+const notice = readFileSync(new URL("../../components/ClosedStoreNotice.tsx", import.meta.url), "utf8");
 
 describe("location pickup-hours UI wiring", () => {
   it("renders only server-provided immediate and scheduled choices", () => {
@@ -12,6 +14,12 @@ describe("location pickup-hours UI wiring", () => {
     expect(checkout).toContain("selectedPickupLocation.slots.map");
     expect(checkout).toContain("Times shown in");
     expect(checkout).toContain("No upcoming pickup times are available.");
+    expect(checkout).toContain("<ClosedStoreNotice");
+    expect(checkout).toContain("pickup-time-required");
+    expect(checkout).toContain("You cannot pay until you choose a pickup time during business hours.");
+    expect(catalog).toContain("<CatalogClosedStoreNotice");
+    expect(notice).toContain('data-testid="closed-store-notice"');
+    expect(notice).toContain("you cannot place the order");
   });
 
   it("submits the selected location and server-issued slot with quote and order requests", () => {
@@ -21,6 +29,9 @@ describe("location pickup-hours UI wiring", () => {
 
   it("provides tenant-admin controls and shows the immutable order label", () => {
     expect(settings).toContain("Regular weekly hours");
+    expect(settings).toContain("Hours that will be saved");
+    expect(settings).toContain("next day");
+    expect(settings).toContain("Choose an opening and closing time");
     expect(settings).toContain("Temporary closures and holiday hours");
     expect(settings).toContain("Pickup slot length");
     expect(settings).toContain("Schedule up to");

@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { db, inventoryLocationsTable, locationPickupSchedulesTable } from "@workspace/db";
 import { z } from "zod";
 
-const clockTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
+const clockTime = z.string().trim().regex(/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/, "Use HH:MM").transform(value => value.slice(0, 5));
 export const pickupIntervalSchema = z.object({ open: clockTime, close: clockTime }).strict().refine(interval => interval.open !== interval.close, {
   message: "Opening and closing times must differ",
 });
@@ -143,12 +143,31 @@ export function calculatePickupAvailability(schedule: PickupScheduleInput, now =
     immediateAvailable: openNow,
     slots: resultSlots,
     nextOpenAt: nextOpen?.toISOString() ?? null,
-    message: openNow ? "Open now for immediate pickup." : resultSlots.length ? "The store is closed. Choose a pickup time during the next open period." : "The store is closed and no pickup times are available in the scheduling window.",
+    message: openNow ? "Open now for immediate pickup." : resultSlots.length ? "The store is closed. This order has to wait for pickup during business hours. Choose an open pickup time to place the order." : "The store is closed and no pickup times are available in the scheduling window.",
     regularHours: [0, 1, 2, 3, 4, 5, 6].map(dayOfWeek => {
       const intervals = schedule.weeklyHours.find(row => row.dayOfWeek === dayOfWeek)?.intervals ?? [];
       return { dayOfWeek, day: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dayOfWeek], hours: intervals.length ? intervals.map(interval => `${interval.open}–${interval.close}${interval.close <= interval.open ? " next day" : ""}`).join(", ") : "Closed" };
     }),
   };
+}
+
+export function pickupSelectionErrorMessage(code: string): string | null {
+  switch (code) {
+    case "PICKUP_TIME_REQUIRED":
+      return "The store is closed. Choose a pickup time during business hours to place this order. Without that time, the order cannot be placed.";
+    case "PICKUP_TIME_UNAVAILABLE":
+      return "That pickup time is outside store hours. Choose a time while the store is open.";
+    case "PICKUP_TIME_INVALID":
+      return "Choose a pickup time from the open hours list.";
+    case "PICKUP_SCHEDULE_UNAVAILABLE":
+      return "Pickup hours are not configured, so this pickup order cannot be placed.";
+    case "PICKUP_LOCATION_REQUIRED":
+      return "Choose a pickup location before placing this order.";
+    case "PICKUP_LOCATION_UNAVAILABLE":
+      return "That pickup location is not available.";
+    default:
+      return null;
+  }
 }
 
 export function validatePickupSelection(schedule: PickupScheduleInput, requestedAt: unknown, now = new Date()) {
