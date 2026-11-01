@@ -10,7 +10,10 @@ import {
 import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+// Scope the approval gate to this router's own paths: it is mounted at /api
+// ahead of other feature routers (settings, payments, ...) and a path-less
+// guard would reject their requests before their own policies run.
+router.use("/notifications", requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 const KNOWN_NOTIFICATION_TYPES = new Set([
   "order_status",

@@ -283,21 +283,39 @@ router.get(
 
 const CUSTOMER_CHECKOUT_POST_PATHS = new Set([
   "/orders",
+  "/cart/availability",
   "/cart/convert",
   "/checkout/quote",
   "/orders/preview-conversion",
   "/orders/delivery-quote",
 ]);
 
+// Read-only, tenant-scoped data the storefront checkout loads before payment.
+const CUSTOMER_CHECKOUT_GET_PATHS = new Set([
+  "/orders/pickup-availability",
+]);
+
 function requireOrderRouteApproval(req: Request, res: Response, next: NextFunction): void {
-  if (req.method === "POST" && CUSTOMER_CHECKOUT_POST_PATHS.has(req.path)) {
+  if ((req.method === "POST" && CUSTOMER_CHECKOUT_POST_PATHS.has(req.path))
+    || (req.method === "GET" && CUSTOMER_CHECKOUT_GET_PATHS.has(req.path))) {
     requireCustomerCheckoutAccess(req, res, next);
     return;
   }
   requireApproved(req, res, next);
 }
 
-router.use(requireAuth, loadDbUser, requireDbUser, requireOrderRouteApproval, requireTenantContext);
+// Scope the gate to the paths this router owns. It is mounted at /api ahead
+// of settings, payments and other feature routers; a path-less guard here
+// would apply the orders policy to their requests before they can run theirs.
+// (Prefix matching is done here rather than with router.use(path, ...) so the
+// policy below still sees the full req.path it keys on.)
+const ORDER_ROUTER_PREFIXES = ["/orders", "/cart", "/checkout", "/admin/orders"];
+const ownsPath = (path: string) => ORDER_ROUTER_PREFIXES.some(prefix => path === prefix || path.startsWith(`${prefix}/`));
+const orderRouteGuard = [requireAuth, loadDbUser, requireDbUser, requireOrderRouteApproval, requireTenantContext] as const;
+router.use((req, res, next) => {
+  if (!ownsPath(req.path)) { next("router"); return; }
+  next();
+}, ...orderRouteGuard);
 
 function queryRows<T>(value: unknown): T[] {
   if (Array.isArray(value)) return value as T[];
