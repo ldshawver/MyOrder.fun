@@ -12,6 +12,7 @@ import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Ba
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
+import { ClosedStoreNotice } from "@/components/ClosedStoreNotice";
 import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
 import { toast } from "@/hooks/use-toast";
 import { checkoutOptionLines } from "@/lib/sellableOptions";
@@ -238,7 +239,10 @@ export default function NewOrder() {
   const selectedPickupLocation = pickupLocations.find(location => location.locationId === pickupLocationId) ?? null;
   useEffect(() => {
     if (!selectedPickupLocation) { setPickupChoice(""); return; }
-    setPickupChoice(selectedPickupLocation.immediateAvailable ? "immediate" : "");
+    setPickupChoice(current => {
+      if (current && current !== "immediate" && selectedPickupLocation.slots.some(slot => slot.at === current)) return current;
+      return selectedPickupLocation.immediateAvailable ? "immediate" : "";
+    });
   }, [pickupLocationId, selectedPickupLocation]);
 
   // Fetch active CSR delivery status — drives whether "CSR Delivery" option is shown
@@ -357,7 +361,7 @@ export default function NewOrder() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.error ?? "Uber Courier quote failed.");
+        throw new Error(data?.message ?? data?.error ?? "Uber Courier quote failed.");
       }
       setDeliveryQuote(data as DeliveryQuote);
     } catch (e) {
@@ -369,6 +373,9 @@ export default function NewOrder() {
 
   const createCheckoutOrder = useCallback(async (paymentMethodOverride = selectedPaymentMethod): Promise<number> => {
     if (cart.length === 0 || !conversionPreview || !checkoutQuote) throw new Error("Checkout quote is not ready.");
+    if ((deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && selectedPickupLocation?.configured && !selectedPickupLocation.immediateAvailable && (!pickupChoice || pickupChoice === "immediate" || !selectedPickupLocation.slots.some(slot => slot.at === pickupChoice))) {
+      throw new Error("The store is closed. Choose a pickup time during business hours. You cannot place this order without one.");
+    }
     if (!conversionPreview.converted.paymentMethods.some(method => method.id === paymentMethodOverride && method.available !== false)) {
       throw new Error("This payment method is unavailable. Review the checkout options again.");
     }
@@ -421,7 +428,7 @@ export default function NewOrder() {
       toast({ title: "Order failed", description: message, variant: "destructive" });
       throw error;
     }
-  }, [cart, checkoutQuote, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, pickupChoice, pickupLocationId, selectedPaymentMethod, shippingAddress, tipAmount, tipMode]);
+  }, [cart, checkoutQuote, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, pickupChoice, pickupLocationId, selectedPaymentMethod, selectedPickupLocation, shippingAddress, tipAmount, tipMode]);
 
   const finishCheckout = useCallback(async (orderId: number) => {
     notifyOrderPlaced(orderId, user?.firstName || undefined);
@@ -450,10 +457,12 @@ export default function NewOrder() {
   const displayedTotal = checkoutQuote?.finalAmountDue ?? (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
   const requiresDeliveryAddress = deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct";
   const lastItemPromptRequired = promotedItems.length > 0 && cart.length > 0 && !reviewedLastItemPrompt;
-  const deliveryReady = (deliveryMethod === "pickup" && !!selectedPickupLocation?.configured && (pickupChoice === "immediate" ? selectedPickupLocation.immediateAvailable : selectedPickupLocation.slots.some(slot => slot.at === pickupChoice)))
+  const scheduledPickupSelected = !!selectedPickupLocation && pickupChoice !== "immediate" && selectedPickupLocation.slots.some(slot => slot.at === pickupChoice);
+  const pickupWaitingForBusinessHours = (deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && !!selectedPickupLocation?.configured && !selectedPickupLocation.immediateAvailable;
+  const deliveryReady = (deliveryMethod === "pickup" && !!selectedPickupLocation?.configured && (pickupChoice === "immediate" ? selectedPickupLocation.immediateAvailable : scheduledPickupSelected))
     || (deliveryMethod === "csr_delivery" && csrDeliveryAllowed)
     || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
-    || (deliveryMethod === "uber_direct" && !!deliveryQuote);
+    || (deliveryMethod === "uber_direct" && !!deliveryQuote && (!pickupWaitingForBusinessHours || scheduledPickupSelected));
   const paymentBusy = createOrderMutation.isPending;
   const canSubmit = cart.length > 0 && !!conversionPreview && !!checkoutQuote && !checkoutQuoteError && !isQuotingCheckout && deliveryReady && !paymentBusy;
   const selectedMethodAvailable = conversionPreview?.converted.paymentMethods.some(method => method.id === selectedPaymentMethod && method.available !== false) ?? false;
@@ -463,6 +472,10 @@ export default function NewOrder() {
     setCheckoutQuote(null);
     setCheckoutQuoteError(null);
     if (!conversionPreview || cart.length === 0 || (deliveryMethod === "uber_direct" && !deliveryQuote)) return;
+    if (pickupWaitingForBusinessHours && !scheduledPickupSelected) {
+      setCheckoutQuoteError("The store is closed. Choose a pickup time during business hours. You cannot place this order without one.");
+      return;
+    }
     let cancelled = false;
     const timeout = window.setTimeout(() => {
       setIsQuotingCheckout(true);
@@ -481,14 +494,14 @@ export default function NewOrder() {
         }),
       })).then(async response => {
         const data = await response.json();
-        if (!response.ok) throw new Error(data?.error ?? "Checkout quote unavailable.");
+        if (!response.ok) throw new Error(data?.message ?? data?.error ?? "Checkout quote unavailable.");
         if (!cancelled) setCheckoutQuote(data as CheckoutQuote);
       }).catch(error => {
         if (!cancelled) setCheckoutQuoteError(error instanceof Error ? error.message : "Checkout quote unavailable.");
       }).finally(() => { if (!cancelled) setIsQuotingCheckout(false); });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryMethod, deliveryQuote, pickupChoice, pickupLocationId, getToken]);
+  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryMethod, deliveryQuote, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">
@@ -501,6 +514,9 @@ export default function NewOrder() {
           <p className="text-muted-foreground">Review your order, choose fulfillment, and pay securely.</p>
         </div>
       </div>
+      {(deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && (
+        <ClosedStoreNotice location={selectedPickupLocation} />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         {/* Cart */}
@@ -669,16 +685,16 @@ export default function NewOrder() {
                       )}
                       {selectedPickupLocation && (
                         <>
-                          <p className={`text-xs ${selectedPickupLocation.immediateAvailable ? "text-emerald-700" : "text-muted-foreground"}`}>{selectedPickupLocation.message}</p>
+                          <p className={`text-xs ${selectedPickupLocation.immediateAvailable ? "text-emerald-700" : "font-medium text-amber-800"}`}>{selectedPickupLocation.message}</p>
                           {selectedPickupLocation.timeZone && <p className="text-[11px] text-muted-foreground">Times shown in the store’s local time ({selectedPickupLocation.timeZone}).</p>}
-                          {selectedPickupLocation.regularHours && <details className="text-xs"><summary className="cursor-pointer font-medium">Regular store hours</summary><div className="mt-2 grid grid-cols-[6rem_1fr] gap-x-2 gap-y-1">{selectedPickupLocation.regularHours.map(row => <div key={row.dayOfWeek} className="contents"><span>{row.day}</span><span className="text-muted-foreground">{row.hours}</span></div>)}</div></details>}
+                          {selectedPickupLocation.regularHours && <div className="text-xs"><div className="font-medium">Store hours</div><div className="mt-2 grid grid-cols-[6rem_1fr] gap-x-2 gap-y-1">{selectedPickupLocation.regularHours.map(row => <div key={row.dayOfWeek} className="contents"><span>{row.day}</span><span className="text-muted-foreground">{row.hours}</span></div>)}</div></div>}
                           {(selectedPickupLocation.immediateAvailable || selectedPickupLocation.slots.length > 0) ? (
                             <select className="w-full rounded-sm border border-border bg-background p-2 text-sm" value={pickupChoice} onChange={event => setPickupChoice(event.target.value)} data-testid="select-pickup-time">
-                              <option value="">Select a pickup time</option>
+                              <option value="">{pickupWaitingForBusinessHours ? "Choose an open pickup time" : "Select a pickup time"}</option>
                               {selectedPickupLocation.immediateAvailable && <option value="immediate">Immediate pickup</option>}
                               {selectedPickupLocation.slots.map(slot => <option key={slot.at} value={slot.at}>{slot.label}</option>)}
                             </select>
-                          ) : <p className="text-xs font-medium text-destructive">No upcoming pickup times are available.</p>}
+                          ) : <p className="text-xs font-medium text-destructive">No upcoming pickup times are available. A pickup order cannot be placed.</p>}
                         </>
                       )}
                     </div>
@@ -811,6 +827,9 @@ export default function NewOrder() {
                   <Wand2 size={15} className="mr-2" />
                 {isConverting ? "Preparing checkout..." : "Continue to payment"}
                 </Button>
+                {pickupWaitingForBusinessHours && !scheduledPickupSelected && (
+                  <p className="text-xs font-medium text-amber-800" data-testid="pickup-time-required">Choose an open pickup time to place this order. Payment stays unavailable until you do.</p>
+                )}
                 {conversionError && (
                   <div className="text-xs text-destructive" data-testid="text-conversion-error">{conversionError}</div>
                 )}
@@ -925,6 +944,9 @@ export default function NewOrder() {
                 </div>
               )}
 
+              {pickupWaitingForBusinessHours && !scheduledPickupSelected && (
+                <p className="text-xs font-medium text-amber-800">You cannot pay until you choose a pickup time during business hours.</p>
+              )}
               {orderSubmitError && (
                 <div className="rounded-sm border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive" data-testid="text-order-submit-error">{orderSubmitError}</div>
               )}

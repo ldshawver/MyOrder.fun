@@ -75,6 +75,39 @@ type PickupException = { date: string; closed: boolean; intervals?: Array<{ open
 type PickupSchedule = { timeZone: string; weeklyHours: PickupHours[]; exceptions: PickupException[]; slotMinutes: 10 | 15 | 20 | 30 | 45 | 60; maxAdvanceDays: number; version: number };
 type PickupAdminLocation = { id: number; name: string; type: string; isActive: boolean; schedule: (PickupSchedule & { updatedAt: string }) | null };
 const emptyPickupSchedule = (timeZone = "America/Los_Angeles"): PickupSchedule => ({ timeZone, weeklyHours: [], exceptions: [], slotMinutes: 30, maxAdvanceDays: 14, version: 1 });
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function normalizeClock(value: string): string {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)/.exec(value.trim());
+  return match ? `${match[1]}:${match[2]}` : "";
+}
+
+function formatClockLabel(value: string): string {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  if (!match) return "not set";
+  const hour = Number(match[1]);
+  return `${hour % 12 || 12}:${match[2]} ${hour >= 12 ? "PM" : "AM"}`;
+}
+
+function describePickupInterval(open: string, close: string): string {
+  if (!open || !close) return "Choose an opening and closing time";
+  if (open === close) return "Opening and closing times must differ";
+  return `${formatClockLabel(open)}–${formatClockLabel(close)}${close <= open ? " next day" : ""}`;
+}
+
+function normalizePickupSchedule(draft: PickupSchedule): PickupSchedule {
+  return {
+    ...draft,
+    weeklyHours: draft.weeklyHours.map(day => ({
+      ...day,
+      intervals: day.intervals.map(interval => ({ open: normalizeClock(interval.open), close: normalizeClock(interval.close) })),
+    })),
+    exceptions: draft.exceptions.map(exception => ({
+      ...exception,
+      intervals: exception.intervals?.map(interval => ({ open: normalizeClock(interval.open), close: normalizeClock(interval.close) })),
+    })),
+  };
+}
 
 type AdminSettings = {
   menuImportEnabled: boolean;
@@ -534,8 +567,9 @@ export default function AdminSettingsPage() {
       const existing = current.weeklyHours.find(day => day.dayOfWeek === dayOfWeek);
       let weeklyHours = current.weeklyHours.filter(day => day.dayOfWeek !== dayOfWeek);
       if (enabled) {
-        const interval = existing?.intervals[0] ?? { open: "09:00", close: "17:00" };
-        weeklyHours = [...weeklyHours, { dayOfWeek, intervals: [{ ...interval, ...(field && value ? { [field]: value } : {}) }] }].sort((a, b) => a.dayOfWeek - b.dayOfWeek);
+        const interval = existing?.intervals[0] ?? { open: "", close: "" };
+        const clock = value ? normalizeClock(value) : "";
+        weeklyHours = [...weeklyHours, { dayOfWeek, intervals: [{ ...interval, ...(field && clock ? { [field]: clock } : {}) }] }].sort((a, b) => a.dayOfWeek - b.dayOfWeek);
       }
       return { ...current, weeklyHours };
     });
@@ -543,10 +577,19 @@ export default function AdminSettingsPage() {
 
   async function savePickupHours() {
     if (!pickupLocationId) return;
+    const draft = normalizePickupSchedule(pickupDraft);
+    const invalidDay = draft.weeklyHours.find(day => {
+      const interval = day.intervals[0];
+      return !interval || !interval.open || !interval.close || interval.open === interval.close;
+    });
+    if (invalidDay) {
+      setPickupMessage("Set a different opening and closing time for every open day before saving.");
+      return;
+    }
     setPickupSaving(true); setPickupMessage(null);
     try {
       const token = await getToken();
-      const response = await fetch(`/api/admin/settings/pickup-hours/${pickupLocationId}`, { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(pickupDraft) });
+      const response = await fetch(`/api/admin/settings/pickup-hours/${pickupLocationId}`, { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(draft) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error ?? "Pickup hours could not be saved");
       const saved = data as PickupSchedule & { updatedAt: string };
@@ -984,7 +1027,7 @@ export default function AdminSettingsPage() {
 
         <TabsContent value="pickup-hours">
           <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-5">
-            <div><h2 className="font-semibold">Location pickup hours</h2><p className="text-xs text-muted-foreground mt-1">Customers see these hours in the selected store’s local time. A closing time earlier than opening time creates an overnight period.</p></div>
+            <div><h2 className="font-semibold">Location pickup hours</h2><p className="text-xs text-muted-foreground mt-1">Customers can place a pickup order immediately only while the store is open. Outside these hours they must choose a later pickup time, or they cannot place the order. A closing time at or before the opening time continues into the next day, such as 2:00 PM–2:00 AM.</p></div>
             {pickupLocations.length ? <>
               <label className="space-y-1 text-xs block"><span className="font-semibold text-muted-foreground uppercase tracking-widest">Storefront location</span><select className="w-full rounded-xl border border-border bg-background p-2" value={pickupLocationId ?? ""} onChange={event => selectPickupLocation(Number(event.target.value))}>{pickupLocations.map(location => <option key={location.id} value={location.id} disabled={!location.isActive}>{location.name}{location.isActive ? "" : " (inactive)"}</option>)}</select></label>
               <div className="grid sm:grid-cols-3 gap-3">
@@ -992,7 +1035,15 @@ export default function AdminSettingsPage() {
                 <label className="space-y-1 text-xs"><span>Pickup slot length</span><select className="w-full h-9 rounded-xl border border-border bg-background px-2" value={pickupDraft.slotMinutes} onChange={event => setPickupDraft(current => ({ ...current, slotMinutes: Number(event.target.value) as PickupSchedule["slotMinutes"] }))}>{[10, 15, 20, 30, 45, 60].map(value => <option key={value} value={value}>{value} minutes</option>)}</select></label>
                 <label className="space-y-1 text-xs"><span>Schedule up to</span><Input type="number" min={1} max={90} value={pickupDraft.maxAdvanceDays} onChange={event => setPickupDraft(current => ({ ...current, maxAdvanceDays: Number(event.target.value) }))} /></label>
               </div>
-              <div className="space-y-2"><div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Regular weekly hours</div>{["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map((day, dayOfWeek) => { const row = pickupDraft.weeklyHours.find(value => value.dayOfWeek === dayOfWeek); return <div key={day} className="grid grid-cols-[7rem_1fr_1fr] gap-2 items-center border-b border-border/30 pb-2"><label className="flex items-center gap-2 text-sm"><Switch checked={!!row} onCheckedChange={enabled => setPickupDay(dayOfWeek, enabled)} />{day}</label><Input type="time" disabled={!row} value={row?.intervals[0]?.open ?? "09:00"} onChange={event => setPickupDay(dayOfWeek, true, "open", event.target.value)} /><Input type="time" disabled={!row} value={row?.intervals[0]?.close ?? "17:00"} onChange={event => setPickupDay(dayOfWeek, true, "close", event.target.value)} /></div>; })}</div>
+              <div className="space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Regular weekly hours</div>
+                <div className="hidden sm:grid grid-cols-[7rem_1fr_1fr_1.4fr] gap-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground"><span>Day</span><span>Opens</span><span>Closes</span><span>Customers will see</span></div>
+                {WEEKDAY_NAMES.map((day, dayOfWeek) => { const row = pickupDraft.weeklyHours.find(value => value.dayOfWeek === dayOfWeek); const open = row?.intervals[0]?.open ?? ""; const close = row?.intervals[0]?.close ?? ""; return <div key={day} className="grid grid-cols-1 sm:grid-cols-[7rem_1fr_1fr_1.4fr] gap-2 items-center border-b border-border/30 pb-2"><label className="flex items-center gap-2 text-sm"><Switch checked={!!row} onCheckedChange={enabled => setPickupDay(dayOfWeek, enabled)} />{day}</label><Input type="time" step={60} disabled={!row} value={open} onChange={event => setPickupDay(dayOfWeek, true, "open", event.target.value)} aria-label={`${day} opens`} /><Input type="time" step={60} disabled={!row} value={close} onChange={event => setPickupDay(dayOfWeek, true, "close", event.target.value)} aria-label={`${day} closes`} /><span className="text-xs">{row ? describePickupInterval(open, close) : "Closed"}</span></div>; })}
+              </div>
+              <div className="rounded-xl border border-border/40 bg-muted/20 p-3 text-xs space-y-1" data-testid="pickup-hours-preview">
+                <div className="font-semibold">Hours that will be saved</div>
+                {WEEKDAY_NAMES.map((day, dayOfWeek) => { const row = pickupDraft.weeklyHours.find(value => value.dayOfWeek === dayOfWeek); const interval = row?.intervals[0]; return <div key={day}>{day}: {interval ? describePickupInterval(interval.open, interval.close) : "Closed"}</div>; })}
+              </div>
               <div className="space-y-3"><div className="flex justify-between items-center"><div><div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Temporary closures and holiday hours</div><p className="text-[11px] text-muted-foreground">Date-specific entries replace regular hours for that date.</p></div><Button type="button" variant="outline" size="sm" onClick={() => setPickupDraft(current => ({ ...current, exceptions: [...current.exceptions, { date: new Date().toISOString().slice(0, 10), closed: true, label: "" }] }))}>Add date</Button></div>{pickupDraft.exceptions.map((exception, index) => <div key={`${exception.date}-${index}`} className="grid sm:grid-cols-[1fr_auto_1fr_1fr_1fr_auto] gap-2 items-center"><Input type="date" value={exception.date} onChange={event => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, date: event.target.value } : row) }))} /><label className="flex items-center gap-1 text-xs"><Switch checked={exception.closed} onCheckedChange={closed => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, closed, intervals: closed ? undefined : row.intervals?.length ? row.intervals : [{ open: "09:00", close: "17:00" }] } : row) }))} />Closed</label><Input type="time" disabled={exception.closed} value={exception.intervals?.[0]?.open ?? "09:00"} onChange={event => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, intervals: [{ open: event.target.value, close: row.intervals?.[0]?.close ?? "17:00" }] } : row) }))} /><Input type="time" disabled={exception.closed} value={exception.intervals?.[0]?.close ?? "17:00"} onChange={event => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, intervals: [{ open: row.intervals?.[0]?.open ?? "09:00", close: event.target.value }] } : row) }))} /><Input placeholder="Holiday label" value={exception.label ?? ""} onChange={event => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.map((row, rowIndex) => rowIndex === index ? { ...row, label: event.target.value } : row) }))} /><Button type="button" variant="ghost" size="sm" onClick={() => setPickupDraft(current => ({ ...current, exceptions: current.exceptions.filter((_, rowIndex) => rowIndex !== index) }))}>Remove</Button></div>)}</div>
               {pickupMessage && <p className="text-xs text-muted-foreground">{pickupMessage}</p>}
               <Button onClick={savePickupHours} disabled={pickupSaving || !pickupLocationId} className="gap-2">{pickupSaving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}{pickupSaving ? "Saving…" : "Save pickup hours"}</Button>
