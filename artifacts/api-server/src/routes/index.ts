@@ -59,6 +59,11 @@ router.use(catalogRouter);
 router.use(catalogueProductsRouter);
 router.use(catalogueInventoryReconciliationRouter);
 router.use(ordersRouter);
+// Customer credit payment is part of checkout. Its guard is scoped to
+// /payments, so mount it before routers that install path-less approval
+// gates (returns, notifications, settings, ...) which would otherwise reject
+// customer payment requests first.
+router.use(paymentsRouter);
 router.use(returnsRouter);
 router.use(notificationsRouter);
 router.use(settingsRouter);
@@ -67,7 +72,6 @@ router.use(tenantSettingsRouter);
 router.use(shiftsRouter);
 router.use(shiftQueueRouter);
 router.use(aiRouter);
-router.use(paymentsRouter);
 router.use(printRouter);
 router.use(printingRouter);
 router.use(adminPrintersRouter);

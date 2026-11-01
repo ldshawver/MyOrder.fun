@@ -93,6 +93,17 @@ jobs:
           MYORDER_ACCOUNTING_DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
           DB_SSL: "false"
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/__tests__/shift-earnings-postgres.integration.test.ts
+      - name: Build disposable full schema for the customer checkout route regression
+        env:
+          DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_checkout_ci
+        run: |
+          psql postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci -v ON_ERROR_STOP=1 -c "CREATE DATABASE myorder_p0_owner_approval_checkout_ci"
+          bash scripts/release/ci-checkout-route-schema.sh
+      - name: Run PostgreSQL-backed customer checkout route regression
+        env:
+          MYORDER_CHECKOUT_DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_checkout_ci
+          DB_SSL: "false"
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/__tests__/customer-checkout-route-postgres.integration.test.ts
       - run: pnpm lint
       - run: pnpm lint:ratchet
       - run: pnpm --filter @workspace/scripts inventory:lockdown

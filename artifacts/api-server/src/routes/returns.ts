@@ -14,7 +14,10 @@ import { PaymentService, PaymentServiceError } from "../payments/service";
 import { calculatePostCloseoutCommissionRecovery, refundedCommissionBasisAfterCloseout } from "../lib/shiftEarnings";
 
 const router = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+// Scope the approval gate to this router's own paths: it is mounted at /api
+// ahead of other feature routers (settings, payments, ...) and a path-less
+// guard would reject their requests before their own policies run.
+router.use("/orders/:id/returns", requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 const lineSchema = z.object({
   orderItemId: z.number().int().positive(),

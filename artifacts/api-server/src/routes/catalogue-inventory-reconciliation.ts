@@ -25,7 +25,11 @@ import {
 } from "../lib/inventoryHistoryBaselineRepair";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+// Scope this router's approval gate to its own admin paths. It is mounted at
+// /api alongside every feature router, so a path-less guard here would run
+// first for unrelated requests (customer checkout included) and reject them
+// before their own routers could apply their narrower policies.
+router.use("/admin/catalogue", requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 const admin = requireRole("global_admin", "admin", "supervisor");
 const positiveId = z.number().int().positive();
 const targetSchema = z.union([

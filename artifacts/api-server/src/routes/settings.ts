@@ -1,7 +1,7 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { and, eq, sql } from "drizzle-orm";
 import { db, adminSettingsTable, customerDisclaimerAcceptancesTable, inventoryLocationsTable, locationPickupSchedulesTable, uberDirectSettingsTable } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, requireCustomerCheckoutAccess, writeAuditLog } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { encrypt, hasConfiguredSettingsEncryptionKey, safeDecrypt } from "../lib/crypto";
 import { getTenantPayPalStatus, loadTenantPaymentConfig, paypalSettingsBody, saveTenantPayPalSettings } from "../payments/tenantConfig";
@@ -14,7 +14,18 @@ import { assertWooHttpsOrigin } from "../lib/wooSafeHttp";
 import { loadPickupSchedule, pickupOperatingWindow, pickupScheduleInputSchema, validatePickupSelection } from "../lib/pickupScheduling";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+// The customer disclaimer must be accepted before an order can be created, so
+// it follows the customer checkout policy; every other settings route keeps
+// the full approval-provenance gate.
+const CUSTOMER_DISCLAIMER_PATHS = new Set(["/customer/disclaimer", "/customer/disclaimer/accept"]);
+function requireSettingsRouteApproval(req: Request, res: Response, next: NextFunction): void {
+  if (CUSTOMER_DISCLAIMER_PATHS.has(req.path)) {
+    requireCustomerCheckoutAccess(req, res, next);
+    return;
+  }
+  requireApproved(req, res, next);
+}
+router.use(requireAuth, loadDbUser, requireDbUser, requireSettingsRouteApproval, requireTenantContext);
 
 const uberTestAttempts = new Map<string, number[]>();
 function allowUberAdminTest(tenantId: number, userId: number): boolean {
