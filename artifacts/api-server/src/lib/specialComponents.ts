@@ -83,10 +83,6 @@ function rowsOf<T>(result: unknown): T[] {
   return ((result as { rows?: T[] } | undefined)?.rows ?? []);
 }
 
-function intArray(values: number[]) {
-  return sql`ARRAY[${sql.join(values.map(value => sql`${value}`), sql`, `)}]::int[]`;
-}
-
 function asNumber(value: unknown): number | null {
   const number = Number(value);
   return Number.isSafeInteger(number) ? number : null;
@@ -160,7 +156,7 @@ export async function loadSpecialComponentRows(executor: SqlExecutor, tenantId: 
   await ensureSpecialComponentsTable();
   if (specialCatalogItemIds && specialCatalogItemIds.length === 0) return [];
   const filter = specialCatalogItemIds
-    ? sql`AND sc.special_catalog_item_id = ANY(${intArray(specialCatalogItemIds)})`
+    ? sql`AND sc.special_catalog_item_id = ANY(${specialCatalogItemIds}::int[])`
     : sql``;
   return rowsOf<Record<string, unknown>>(await executor.execute(sql`
     WITH reserved_by_location AS (
