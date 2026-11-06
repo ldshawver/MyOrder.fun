@@ -482,7 +482,7 @@ export async function replaceSpecialComponents(tenantId: number, optionId: numbe
       JOIN catalogue_products cp ON cp.tenant_id = co.tenant_id AND cp.id = co.product_id
       JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
       LEFT JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
-      WHERE co.tenant_id = ${tenantId} AND co.catalog_item_id = ANY(${intArray(normalized.map(component => component.catalogItemId))})
+      WHERE co.tenant_id = ${tenantId} AND co.catalog_item_id = ANY(${normalized.map(component => component.catalogItemId)}::int[])
     `));
     if (found.length !== normalized.length) throw new SpecialComponentInputError(400, "Choose components from this catalogue.");
     if (found.some(row => !asBoolean(row.active) || !asBoolean(row.productActive) || !asBoolean(row.isAvailable))) {
@@ -494,7 +494,7 @@ export async function replaceSpecialComponents(tenantId: number, optionId: numbe
     const componentIds = normalized.map(component => component.catalogItemId);
     const nested = rowsOf<{ id: number }>(await tx.execute(sql`
       SELECT id FROM catalogue_special_components
-      WHERE tenant_id = ${tenantId} AND special_catalog_item_id = ANY(${intArray(componentIds)})
+      WHERE tenant_id = ${tenantId} AND special_catalog_item_id = ANY(${componentIds}::int[])
       LIMIT 1
     `));
     if (nested.length) throw new SpecialComponentInputError(400, "A special cannot include another special.");
