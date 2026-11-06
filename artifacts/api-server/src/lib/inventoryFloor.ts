@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { auditLogsTable, db } from "@workspace/db";
 import { ensureStandardLocations } from "./inventoryBalances";
-import { InventoryMovementError, postCatalogOpeningCount, postInventoryMovement, postInventoryReceipt, type InventoryMovementActor } from "./inventoryMovementLedger";
+import { postCatalogOpeningCount, postInventoryMovement, postInventoryReceipt, type InventoryMovementActor } from "./inventoryMovementLedger";
 import {
   FLOOR_LOCAL_CATALOG_SQL,
   buildCountStops,

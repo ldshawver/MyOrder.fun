@@ -36,7 +36,10 @@ export function isBrightekPos80(printer: { bridgePrinterName?: string | null; na
 /** Queue name the job was routed to, safe to print on a thermal roll. */
 export function sourcePrinterLabel(printer: { bridgePrinterName?: string | null; name?: string | null }): string {
   const raw = (printer.bridgePrinterName ?? "").trim() || (printer.name ?? "").trim();
-  const cleaned = raw.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  const cleaned = Array.from(raw, character => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f ? "" : character;
+  }).join("").trim();
   return cleaned.slice(0, 48) || "unknown";
 }
 

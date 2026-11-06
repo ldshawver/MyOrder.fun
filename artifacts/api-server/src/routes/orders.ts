@@ -1102,7 +1102,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: "PICKUP_ADDRESS_NOT_ALLOWED" });
     return;
   }
-  if (requestedDeliveryMethod === "manual_delivery" && !body.data.shippingAddress?.trim()) {
+  if (requestedDeliveryMethod !== "pickup" && !body.data.shippingAddress?.trim()) {
     res.status(422).json({ error: "DELIVERY_ADDRESS_REQUIRED" });
     return;
   }

@@ -31,7 +31,7 @@ export async function ensurePaidOrderInventoryReserved(tx: PaymentTransaction, o
         AND status = 'confirmed' LIMIT 1
     `));
     if (consumed.length) continue;
-    let specialComponents: ReturnType<typeof readSpecialComponentSnapshot> = null;
+    let specialComponents: ReturnType<typeof readSpecialComponentSnapshot>;
     try { specialComponents = readSpecialComponentSnapshot(item.variantSnapshot); } catch (error) {
       if (error instanceof SpecialComponentSnapshotError) throw new PaymentInventoryError(item.catalogItemId);
       throw error;
@@ -81,7 +81,7 @@ export async function deductPaidOrderInventory(order: typeof ordersTable.$inferS
       if (details.length === 0) throw new PaymentInventoryError(item.catalogItemId);
       await tx.update(orderItemsTable).set({ inventoryDeductions: details.map(({ productId: _id, orderItemId: _orderItemId, ...row }) => row) }).where(eq(orderItemsTable.id, item.id));
       for (const used of details) auditEntries.push({ productId: item.catalogItemId, locationUsed: used.locationName, locationId: used.locationId, quantity: used.quantity, remainingStock: used.remainingStock, orderType });
-      let specialComponents: ReturnType<typeof readSpecialComponentSnapshot> = null;
+      let specialComponents: ReturnType<typeof readSpecialComponentSnapshot>;
       try { specialComponents = readSpecialComponentSnapshot(item.variantSnapshot); } catch (error) {
         if (error instanceof SpecialComponentSnapshotError) throw new PaymentInventoryError(item.catalogItemId);
         throw error;
