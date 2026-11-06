@@ -60,6 +60,12 @@ describe("PayPal Wallet checkout", () => {
     await renderButton();
     expect(host.querySelector("paypal-button")).toBeNull();
     expect(host.textContent).toContain("PayPal Wallet is unavailable");
+    expect(host.textContent).toContain("Venmo: not available in this browser");
+    expect(host.textContent).toContain("Debit card: not enabled for this PayPal account");
+    expect(host.textContent).toContain("Credit card: not enabled for this PayPal account");
+    expect(host.textContent).toContain("Apple Pay: not enabled for this store's PayPal account");
+    expect(host.textContent).toContain("Google Pay: not available for this browser or PayPal account");
+    expect(host.textContent).toContain("Cash App: not available through this PayPal account");
   });
 
   it("passes the server-created PayPal order to v6 and captures only after onApprove", async () => {

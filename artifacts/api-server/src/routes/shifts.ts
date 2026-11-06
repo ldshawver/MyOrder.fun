@@ -1,3 +1,4 @@
+import { customerVisibleNote } from "../lib/orderStage";
 import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { eq, and, desc, asc, sql, inArray, notInArray } from "drizzle-orm";
@@ -39,6 +40,8 @@ import { calculateShiftEarnings, type ShiftEarningOrder } from "../lib/shiftEarn
 import { applyAccountabilityOffsets, calculateShiftInventoryAccountability, CONTRACTOR_SHORTAGE_REMAINDER_POLICY, type ShiftInventoryAccountabilityInput } from "../lib/shiftInventoryAccountability";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
 import { locallyManagedSellableCatalogWhere } from "../lib/localInventoryEligibility";
+import { shiftDeliveryMode, type ShiftDeliveryMode } from "../lib/shiftDeliveryMode";
+import { shiftOpeningQuantity } from "../lib/shiftOpeningQuantity";
 import { z } from "zod";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
@@ -1076,6 +1079,11 @@ router.get(
     const dbBoxes = await getActiveCsrBoxes(tenantId);
 
     await ensureInventoryLocations(tenantId);
+    const boxLocations = await db
+      .select({ id: inventoryLocationsTable.id, csrBoxId: inventoryLocationsTable.csrBoxId })
+      .from(inventoryLocationsTable)
+      .where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true)));
+    const locationByBoxId = new Map(boxLocations.filter(row => row.csrBoxId != null).map(row => [row.csrBoxId as number, row.id]));
 
     const boxes = dbBoxes.length > 0
       ? dbBoxes.map((b) => ({
@@ -1083,14 +1091,20 @@ router.get(
           label: b.label,
           description: b.description,
           location: b.location,
+          locationId: locationByBoxId.get(b.id) ?? null,
         }))
       : DEFAULT_CSR_BOXES.map((b) => ({
           id: b.slug,
           label: b.label,
+          locationId: null,
         }));
 
-    // Load location-specific balances if requested
-    const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
+    // The assigned box's live balances are the opening counts. An explicit
+    // location id still wins for older callers.
+    const requestedBox = typeof req.query.box === "string" ? req.query.box : "";
+    const matchedBox = dbBoxes.find(box => box.slug === requestedBox) ?? null;
+    const boxLocationId = matchedBox ? locationByBoxId.get(matchedBox.id) ?? null : null;
+    const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : boxLocationId;
     let balanceMap: Map<number, number> = new Map();
     if (locationId && !isNaN(locationId)) {
       const balances = await db
@@ -1114,9 +1128,10 @@ router.get(
       ...csrSettings,
       template: rows.map(r => {
         const balanceQty = r.catalogItemId != null ? balanceMap.get(r.catalogItemId) : undefined;
-        const startingQty = balanceQty !== undefined
-          ? balanceQty
-          : parseFloat(String(r.startingQuantityDefault ?? 0));
+        const startingQty = shiftOpeningQuantity({
+          liveOnHand: balanceQty,
+          templateDefault: parseFloat(String(r.startingQuantityDefault ?? 0)),
+        });
         return {
           id: r.id,
           sectionName: r.sectionName,
@@ -1157,6 +1172,7 @@ async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$i
     accountableCash,
     csrDeliveryEarnings,
     csrDeliveryOptIn: activeShift.csrDeliveryOptIn ?? false,
+    deliveryMode: shiftDeliveryMode(activeShift),
     runningCashBank: cashBankStart + accountableCash,
     inventory,
     stats,
@@ -1182,20 +1198,52 @@ router.get(
       .limit(1);
 
     if (!activeShift) {
-      res.json({ hasActiveShift: false, csrDeliveryAvailable: false });
+      res.json({ hasActiveShift: false, csrDeliveryAvailable: false, deliveryMode: null });
       return;
     }
 
     const setup = (activeShift.setupJson ?? {}) as Record<string, unknown>;
+    const deliveryMode = shiftDeliveryMode(activeShift);
     res.json({
       hasActiveShift: true,
-      csrDeliveryAvailable: activeShift.csrDeliveryOptIn === true,
+      csrDeliveryAvailable: deliveryMode === "personal",
+      deliveryMode,
       shiftId: activeShift.id,
       shiftLocationId: setup.shiftLocationId ?? null,
-      pickupNote: setup.pickupNote ?? null,
+      pickupNote: customerVisibleNote(setup.pickupNote),
       deliveryOptionId: setup.deliveryOptionId ?? null,
     });
   }
+);
+
+// The specialist chooses personal delivery or Uber for the whole shift.
+// Customers only choose pickup or delivery.
+router.post(
+  "/shifts/active-delivery-mode",
+  requireShiftOperatorRoleWithDebug,
+  async (req, res): Promise<void> => {
+    const tech = req.dbUser!;
+    const tenantId = tech.tenantId;
+    const deliveryMode = req.body?.deliveryMode;
+    if (tenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
+    if (deliveryMode !== "personal" && deliveryMode !== "uber") {
+      res.status(422).json({ error: "Choose personal delivery or Uber delivery for this shift" });
+      return;
+    }
+    const [active] = await db.select().from(labTechShiftsTable).where(and(
+      eq(labTechShiftsTable.techId, tech.id),
+      eq(labTechShiftsTable.tenantId, tenantId),
+      eq(labTechShiftsTable.status, "active"),
+    )).limit(1);
+    if (!active) { res.status(409).json({ error: "Clock in before choosing a delivery style" }); return; }
+    const setup = active.setupJson && typeof active.setupJson === "object" ? active.setupJson as Record<string, unknown> : {};
+    const [updated] = await db.update(labTechShiftsTable).set({
+      csrDeliveryOptIn: deliveryMode === "personal",
+      setupJson: { ...setup, deliveryMode, csrDeliveryOptIn: deliveryMode === "personal" },
+    }).where(and(eq(labTechShiftsTable.id, active.id), eq(labTechShiftsTable.tenantId, tenantId))).returning();
+    if (!updated) { res.status(409).json({ error: "Clock in before choosing a delivery style" }); return; }
+    res.json({ deliveryMode, shift: await buildActiveShiftPayload(updated, req) });
+  },
 );
 
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
@@ -1276,6 +1324,7 @@ router.post(
         shiftLocationId?: string;
         deliveryOptionId?: string;
         csrDeliveryOptIn?: boolean;
+        deliveryMode?: ShiftDeliveryMode;
         wifiSsid?: string;
         pickupNote?: string;
         inventoryConfirmed?: boolean;
@@ -1306,7 +1355,8 @@ router.post(
       return;
     }
 
-    const csrDeliveryOptIn = setup?.csrDeliveryOptIn === true;
+    const deliveryMode = setup?.deliveryMode === "personal" || setup?.deliveryMode === "uber" ? setup.deliveryMode : null;
+    const csrDeliveryOptIn = deliveryMode ? deliveryMode === "personal" : setup?.csrDeliveryOptIn === true;
     const hasConfirmedInventory = setup?.inventoryConfirmed === true ||
       setup?.startingInventoryConfirmed === true ||
       (inventorySnapshot != null && inventorySnapshot.length > 0) ||
@@ -1347,6 +1397,7 @@ router.post(
           parLevelsConfirmed: hasConfirmedParLevels,
           pickupNote: (setup?.pickupNote ?? "").trim() || null,
           csrDeliveryOptIn,
+          ...(deliveryMode ? { deliveryMode } : {}),
         },
       }).returning();
       return { created } as const;
@@ -1412,13 +1463,13 @@ router.post(
         itemName: row.itemName ?? row.sectionName ?? "",
         unitPrice: "0",
         locationId: shiftBoxLocationId,
-        quantityStart: String(
-          qtyByTemplateId.has(row.id)
-            ? qtyByTemplateId.get(row.id)!
-            : (row.catalogItemId != null && balanceByProductId.has(row.catalogItemId)
-                ? balanceByProductId.get(row.catalogItemId)!
-                : parseFloat(String(row.startingQuantityDefault ?? 0)))
-        ),
+        quantityStart: String(shiftOpeningQuantity({
+          liveOnHand: row.catalogItemId != null && balanceByProductId.has(row.catalogItemId)
+            ? balanceByProductId.get(row.catalogItemId)!
+            : null,
+          confirmedCount: qtyByTemplateId.has(row.id) ? qtyByTemplateId.get(row.id)! : null,
+          templateDefault: parseFloat(String(row.startingQuantityDefault ?? 0)),
+        })),
         quantitySold: "0",
       }));
 

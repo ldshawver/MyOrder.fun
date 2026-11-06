@@ -14,6 +14,7 @@
  * text on a print job and the existing registered-printer dispatch sends it.
  */
 import { and, desc, eq, inArray } from "drizzle-orm";
+import { displaySpecialComponents, specialIncludesNote } from "../specialComponents";
 import {
   db,
   ordersTable,
@@ -163,7 +164,10 @@ export async function loadReceiptData(tenantId: number, orderId: number): Promis
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       totalPrice: item.totalPrice,
-      note: null,
+      note: (() => {
+        const components = displaySpecialComponents(item.variantSnapshot);
+        return components.length ? specialIncludesNote(components) : null;
+      })(),
     })),
     lineNameMode: mode === "alavont_only" || mode === "both" ? mode : "lucifer_only",
     customer: await person(order.customerId),

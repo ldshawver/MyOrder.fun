@@ -21,7 +21,7 @@ vi.mock("../logger", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
 
-import { isConfiguredAccountOwner, normalizeRole, requireApproved, requireCatalogReadAccess, requireCustomerCheckoutAccess, requireDbUser, requireRole } from "../auth";
+import { isConfiguredAccountOwner, normalizeRole, requireApproved, requireCatalogReadAccess, requireCustomerCheckoutAccess, requireCustomerSelfServiceAccess, requireDbUser, requireRole } from "../auth";
 
 function makeRes() {
   const res = {
@@ -106,15 +106,25 @@ describe("requireCatalogReadAccess middleware", () => {
   });
 
   it.each([
+    ["approved CSR with a failed identity sync", { role: "csr", identityStatus: "identity_mismatch", provisioningStatus: "provisioning_failed" }],
+    ["approved admin", { role: "admin", identityStatus: "verification_pending", provisioningStatus: "pending" }],
+    ["approved customer still provisioning", { role: "user", identityStatus: "verification_pending", provisioningStatus: "pending" }],
+  ])("lets a Clerk account read the catalogue without approver metadata: %s", (_label, override) => {
+    const req = { dbUser: makeUser({ clerkId: "affected_subject", approvedByClerkId: null, approvedAt: null, ...override }), query: {}, body: {} } as unknown as Request;
+    const catalogNext = vi.fn();
+    const catalogRes = makeRes();
+    requireCatalogReadAccess(req, catalogRes, catalogNext as NextFunction);
+    expect(catalogNext).toHaveBeenCalledOnce();
+    expect(catalogRes.statusCode).toBe(200);
+  });
+
+  it.each([
     { status: "pending" },
     { status: "rejected" },
     { isActive: false },
     { tenantId: null },
-    { identityStatus: "verification_pending" },
-    { provisioningStatus: "pending" },
-    { role: "admin" },
-    { role: "global_admin" },
-  ])("denies an ineligible legacy catalogue account: %o", override => {
+    { clerkId: "pending:legacy" },
+  ])("denies an ineligible catalogue account: %o", override => {
     const req = { dbUser: makeUser({ approvedByClerkId: null, approvedAt: null, ...override }) } as unknown as Request;
     const res = makeRes();
     requireCatalogReadAccess(req, res, next as NextFunction);
@@ -162,12 +172,24 @@ describe("requireCustomerCheckoutAccess middleware", () => {
   });
 
   it.each([
+    ["approved CSR", { role: "csr", identityStatus: "identity_mismatch", provisioningStatus: "provisioning_failed" }],
+    ["approved admin", { role: "admin" }],
+    ["customer still provisioning", { identityStatus: "verification_pending", provisioningStatus: "pending" }],
+  ])("lets %s submit an order without approver metadata", (_label, override) => {
+    const req = { dbUser: makeUser({ clerkId: "landon_subject", approvedByClerkId: null, approvedAt: null, tenantId: 7, ...override }), query: {}, body: {} } as unknown as Request;
+    const checkoutNext = vi.fn();
+    const checkoutRes = makeRes();
+    requireCustomerCheckoutAccess(req, checkoutRes, checkoutNext as NextFunction);
+    expect(checkoutNext).toHaveBeenCalledOnce();
+    expect(checkoutRes.statusCode).toBe(200);
+  });
+
+  it.each([
     ["pending", { status: "pending" }, "ACCOUNT_PENDING_APPROVAL"],
     ["deactivated", { isActive: false }, "ACCOUNT_DEACTIVATED"],
-    ["unprovisioned", { provisioningStatus: "pending" }, "ACCOUNT_IDENTITY_REQUIRED"],
-    ["unverified", { identityStatus: "verification_pending" }, "ACCOUNT_IDENTITY_REQUIRED"],
+    ["rejected", { status: "rejected" }, "ACCOUNT_REJECTED"],
     ["unassigned", { tenantId: null }, "TENANT_ASSIGNMENT_REQUIRED"],
-    ["privileged without provenance", { role: "admin" }, "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED"],
+    ["placeholder clerk id", { clerkId: "pending:legacy" }, "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED"],
   ])("denies %s customer-checkout state", (_label, override, expectedCode) => {
     const req = { dbUser: makeUser({ approvedByClerkId: null, approvedAt: null, ...override }), query: {}, body: {} } as unknown as Request;
     const res = makeRes();
@@ -183,6 +205,74 @@ describe("requireCustomerCheckoutAccess middleware", () => {
     requireCustomerCheckoutAccess(req, res, (() => requireTenantContext(req, res, next as NextFunction)) as NextFunction);
     expect(res.statusCode).toBe(403);
     expect((res._json as Record<string, unknown>).error).toMatch(/tenant assignment does not match/i);
+    expect(next).not.toHaveBeenCalled();
+  });
+});
+
+describe("requireCustomerSelfServiceAccess middleware", () => {
+  let next: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    next = vi.fn();
+    process.env.MYORDER_OWNER_CLERK_ID = "configured_owner";
+    vi.mocked(getAuth).mockReturnValue({ userId: "jamie_subject", sessionClaims: {} } as never);
+  });
+
+  it("lets an approved CSR open their own feedback and store credit without approver metadata", () => {
+    const req = { dbUser: makeUser({
+      clerkId: "jamie_subject",
+      role: "csr",
+      tenantId: 1,
+      approvedByClerkId: null,
+      approvedAt: null,
+      identityStatus: "identity_mismatch",
+      provisioningStatus: "provisioning_failed",
+    }) } as unknown as Request;
+    const provenanceRes = makeRes();
+    requireApproved(req, provenanceRes, next as NextFunction);
+    expect(provenanceRes.statusCode).toBe(403);
+    expect((provenanceRes._json as Record<string, unknown>).code).toBe("ACCOUNT_APPROVAL_PROVENANCE_REQUIRED");
+
+    const selfNext = vi.fn();
+    const selfRes = makeRes();
+    requireCustomerSelfServiceAccess(req, selfRes, selfNext as NextFunction);
+    expect(selfNext).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["customer", { role: "user" }],
+    ["admin", { role: "admin", identityStatus: "verification_pending", provisioningStatus: "pending" }],
+  ])("lets an approved %s check their own balance without approver metadata", (_label, override) => {
+    const req = { dbUser: makeUser({
+      clerkId: "jamie_subject",
+      tenantId: 1,
+      approvedByClerkId: null,
+      approvedAt: null,
+      ...override,
+    }) } as unknown as Request;
+    const res = makeRes();
+    requireCustomerSelfServiceAccess(req, res, next as NextFunction);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["pending", { status: "pending" }, "ACCOUNT_PENDING_APPROVAL"],
+    ["deactivated", { isActive: false }, "ACCOUNT_DEACTIVATED"],
+    ["unassigned", { tenantId: null }, "TENANT_ASSIGNMENT_REQUIRED"],
+    ["placeholder clerk id", { clerkId: "pending:legacy" }, "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED"],
+  ])("denies %s self-service state", (_label, override, expectedCode) => {
+    const req = { dbUser: makeUser({
+      role: "csr",
+      approvedByClerkId: null,
+      approvedAt: null,
+      identityStatus: "identity_mismatch",
+      provisioningStatus: "provisioning_failed",
+      ...override,
+    }) } as unknown as Request;
+    const res = makeRes();
+    requireCustomerSelfServiceAccess(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).code).toBe(expectedCode);
     expect(next).not.toHaveBeenCalled();
   });
 });

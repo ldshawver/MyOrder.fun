@@ -4,6 +4,7 @@ import { writeAuditLog } from "../lib/auth";
 import { type InventoryOrderType } from "../lib/inventoryBalances";
 import { confirmInventoryReservationsForOrder, ensureInventoryReservationsTable, reserveCheckoutInventoryByOrderType } from "../lib/inventoryReservations";
 import { quantityText, quantityUnits } from "../lib/exactQuantity";
+import { groupSpecialReservationDemands, readSpecialComponentSnapshot, SpecialComponentSnapshotError, syncCatalogStockForInventoryItem } from "../lib/specialComponents";
 
 function rows<T>(value: unknown): T[] { return Array.isArray(value) ? value as T[] : ((value as { rows?: T[] } | undefined)?.rows ?? []); }
 
@@ -30,6 +31,24 @@ export async function ensurePaidOrderInventoryReserved(tx: PaymentTransaction, o
         AND status = 'confirmed' LIMIT 1
     `));
     if (consumed.length) continue;
+    let specialComponents: ReturnType<typeof readSpecialComponentSnapshot> = null;
+    try { specialComponents = readSpecialComponentSnapshot(item.variantSnapshot); } catch (error) {
+      if (error instanceof SpecialComponentSnapshotError) throw new PaymentInventoryError(item.catalogItemId);
+      throw error;
+    }
+    if (specialComponents) {
+      const demands = groupSpecialReservationDemands(specialComponents, item.quantity);
+      const collected: Array<Record<string, unknown>> = [];
+      for (const demand of demands) {
+        const reservations = await reserveCheckoutInventoryByOrderType(tx, order.tenantId, order.id,
+          demand.inventoryCatalogItemId, demand.physicalQuantity, orderTypeForPaidDeduction(order), item.id,
+          demand.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");
+        if (!reservations) throw new PaymentInventoryError(item.catalogItemId);
+        collected.push(...reservations.map(reservation => ({ ...reservation, componentName: demand.name, componentCatalogItemId: demand.catalogItemId })));
+      }
+      await tx.update(orderItemsTable).set({ inventoryDeductions: collected }).where(eq(orderItemsTable.id, item.id));
+      continue;
+    }
     const source = item.inventoryItemId == null ? undefined : rows<{ catalogItemId: number; locationEvaluation: string }>(await tx.execute(sql`
       SELECT ii.catalog_item_id AS "catalogItemId", cp.location_evaluation AS "locationEvaluation"
       FROM inventory_items ii JOIN catalogue_options co ON co.tenant_id = ii.tenant_id AND co.inventory_item_id = ii.id
@@ -62,8 +81,19 @@ export async function deductPaidOrderInventory(order: typeof ordersTable.$inferS
       if (details.length === 0) throw new PaymentInventoryError(item.catalogItemId);
       await tx.update(orderItemsTable).set({ inventoryDeductions: details.map(({ productId: _id, orderItemId: _orderItemId, ...row }) => row) }).where(eq(orderItemsTable.id, item.id));
       for (const used of details) auditEntries.push({ productId: item.catalogItemId, locationUsed: used.locationName, locationId: used.locationId, quantity: used.quantity, remainingStock: used.remainingStock, orderType });
-      const inventoryCatalogItemId = details[0].productId;
-      await tx.execute(sql`UPDATE catalog_items SET stock_quantity = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${inventoryCatalogItemId}), 0), inventory_amount = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${inventoryCatalogItemId}), 0) WHERE tenant_id = ${order.tenantId} AND id IN (SELECT catalog_item_id FROM catalogue_options WHERE tenant_id = ${order.tenantId} AND inventory_item_id = ${item.inventoryItemId ?? null} UNION SELECT ${inventoryCatalogItemId})`);
+      let specialComponents: ReturnType<typeof readSpecialComponentSnapshot> = null;
+      try { specialComponents = readSpecialComponentSnapshot(item.variantSnapshot); } catch (error) {
+        if (error instanceof SpecialComponentSnapshotError) throw new PaymentInventoryError(item.catalogItemId);
+        throw error;
+      }
+      if (specialComponents) {
+        for (const inventoryCatalogItemId of [...new Set(details.map(row => row.productId))]) {
+          await syncCatalogStockForInventoryItem(tx, order.tenantId, inventoryCatalogItemId);
+        }
+      } else {
+        const inventoryCatalogItemId = details[0].productId;
+        await tx.execute(sql`UPDATE catalog_items SET stock_quantity = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${inventoryCatalogItemId}), 0), inventory_amount = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${inventoryCatalogItemId}), 0) WHERE tenant_id = ${order.tenantId} AND id IN (SELECT catalog_item_id FROM catalogue_options WHERE tenant_id = ${order.tenantId} AND inventory_item_id = ${item.inventoryItemId ?? null} UNION SELECT ${inventoryCatalogItemId})`);
+      }
     }
   };
   if (executor) await deduct(executor);

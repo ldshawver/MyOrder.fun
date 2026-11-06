@@ -1,9 +1,11 @@
 import { sql } from "drizzle-orm";
 import { db } from "@workspace/db";
+import { formatEmployeeUnitPrice } from "./employeePricing";
+import { formatRetailQuantity, groupSpecialStock, loadSpecialComponentRows, specialsAvailable } from "./specialComponents";
 
 type Product = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
 export type InventoryStatus = "ready" | "missing_identity" | "missing_balance";
-type Option = { id: number; productId: number; catalogItemId: number; inventoryItemId: number | null; inventoryCatalogItemId: number | null; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string | null; active: boolean; isAvailable: boolean; showCatalogueStockIndicator: boolean; inventoryStatus: InventoryStatus; balanceRowCount: number; stockOnHand: string | null; reservedQuantity: string | null; availableQuantity: string | null; orderable: boolean };
+type Option = { id: number; productId: number; catalogItemId: number; inventoryItemId: number | null; inventoryCatalogItemId: number | null; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string | null; active: boolean; isAvailable: boolean; showCatalogueStockIndicator: boolean; inventoryStatus: InventoryStatus; balanceRowCount: number; stockOnHand: string | null; reservedQuantity: string | null; availableQuantity: string | null; orderable: boolean; components?: Array<{ name: string; label: string; quantity: string }> };
 export type SellableProduct = Product & { options: Option[] };
 
 function rows<T>(result: unknown): T[] {
@@ -207,7 +209,7 @@ export async function hasSellableProductSchema(): Promise<boolean> {
 }
 
 /** The customer card and options endpoint use the same tenant-scoped option set. */
-export async function loadSellableProducts(tenantId: number): Promise<SellableProduct[]> {
+export async function loadSellableProducts(tenantId: number, pricing?: { isCurrentEmployee?: boolean }): Promise<SellableProduct[]> {
   const products = rows<Product>(await db.execute(sql`
     SELECT id, tenant_id AS "tenantId", name, inventory_model AS "inventoryModel",
       location_evaluation AS "locationEvaluation", active
@@ -241,7 +243,7 @@ export async function loadSellableProducts(tenantId: number): Promise<SellablePr
     )
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice",
+      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.homie_price AS "employeePrice", ci.compare_at_price AS "compareAtPrice",
       ii.base_unit AS "baseUnit", co.active,ci.is_available AS "isAvailable",
       COALESCE((ci.metadata->>'showCatalogueStockIndicator')::boolean,true) AS "showCatalogueStockIndicator",
       CASE WHEN ii.id IS NULL THEN 'missing_identity'
@@ -269,10 +271,34 @@ export async function loadSellableProducts(tenantId: number): Promise<SellablePr
   `));
   const byProduct = new Map<number, Option[]>();
   for (const option of options) byProduct.set(option.productId, [...(byProduct.get(option.productId) ?? []), option]);
+  const specials = groupSpecialStock(await loadSpecialComponentRows(db, tenantId));
+  const employee = pricing?.isCurrentEmployee === true;
   return products.map(product => ({ ...product, options: (byProduct.get(product.id) ?? []).map(option => {
-    if (option.showCatalogueStockIndicator) return option;
+    const stock = specials.get(option.catalogItemId) ?? [];
+    const sellable = stock.length ? (() => {
+      const verdict = specialsAvailable(stock, 1);
+      return {
+        ...option,
+        inventoryStatus: verdict.inventoryStatus,
+        orderable: option.isAvailable && verdict.orderable,
+        availableQuantity: verdict.availableQuantity,
+        balanceRowCount: verdict.inventoryStatus === "ready" ? Math.max(option.balanceRowCount, 1) : option.balanceRowCount,
+        components: stock.map(row => ({
+          name: row.productName?.trim() || "Item",
+          label: row.label?.trim() || "Item",
+          quantity: (() => { try { return formatRetailQuantity(String(row.quantity)); } catch { return String(row.quantity); } })(),
+        })),
+      };
+    })() : option;
+    const priced = sellable as Option & { employeePrice?: string | null };
+    const visible = {
+      ...priced,
+      price: employee ? formatEmployeeUnitPrice(priced.price, priced.employeePrice, true) : priced.price,
+    };
+    delete visible.employeePrice;
+    if (visible.showCatalogueStockIndicator) return visible;
     const hiddenFields = new Set(["balanceRowCount", "stockOnHand", "reservedQuantity", "availableQuantity"]);
-    const withoutQuantities = Object.fromEntries(Object.entries(option).filter(([field]) => !hiddenFields.has(field)));
+    const withoutQuantities = Object.fromEntries(Object.entries(visible).filter(([field]) => !hiddenFields.has(field)));
     return withoutQuantities as Option;
   }) }))
     .filter(product => product.options.length > 0);

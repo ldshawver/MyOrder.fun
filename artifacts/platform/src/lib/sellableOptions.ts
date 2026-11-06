@@ -14,7 +14,17 @@ export type SellableOption = {
   reservedQuantity?: string | null;
   availableQuantity?: string | null;
   orderable: boolean;
+  components?: Array<{ name: string; label: string; quantity: string }>;
 };
+
+export function specialComponentSummary(components: SellableOption["components"]): string | null {
+  if (!components?.length) return null;
+  return `Includes ${components.map(component => {
+    const name = component.label && component.label !== "Standard" && !component.name.includes(component.label)
+      ? `${component.name} (${component.label})` : component.name;
+    return `${component.quantity} ${name}`;
+  }).join(", ")}`;
+}
 
 export type SellableProduct = {
   id: number;

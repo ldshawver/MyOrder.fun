@@ -4,6 +4,7 @@ import { isCatalogItemForSale, isCatalogItemLifecycleEligible } from "./catalogE
 import { and, eq, gte, isNull, lte, or } from "drizzle-orm";
 import { logger } from "./logger";
 import { dollarsToCents } from "./tenderTax";
+import { resolveEmployeeUnitPrice } from "./employeePricing";
 
 // ─── Strict input contract ─────────────────────────────────────────────────────
 // Lines coming in over the wire MUST contain only catalogItemId + quantity.
@@ -170,6 +171,7 @@ export async function normalizeCheckoutCart(
   _strictMode = true,
   tenantId?: number,
   requireCompleteSafeFields = false,
+  employeePricing?: { isCurrentEmployee?: boolean },
 ): Promise<NormalizedCartLine[]> {
   if (tenantId == null || !Number.isSafeInteger(tenantId) || tenantId <= 0) throw new Error("Explicit tenant context is required");
   const parsed = CartInputSchema.safeParse(rawLines);
@@ -303,7 +305,7 @@ export async function normalizeCheckoutCart(
         );
       }
     }
-    const unit_price = parseFloat(ci.price as string);
+    const unit_price = resolveEmployeeUnitPrice(ci.price as string, ci.homiePrice as string | null, employeePricing?.isCurrentEmployee === true);
     const line_subtotal = parseFloat((unit_price * line.quantity).toFixed(2));
 
     const normalizedLine: NormalizedCartLine = {

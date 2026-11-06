@@ -232,25 +232,60 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
       const container = walletContainer.current;
       container?.replaceChildren();
       let eligibleCount = 0;
+      const unavailable = (testId: string, label: string, reason: string) => {
+        if (!container) return;
+        const row = document.createElement("p");
+        row.dataset.testid = testId;
+        row.className = "rounded-sm border border-border/60 px-3 py-2 text-xs text-muted-foreground";
+        row.textContent = `${label}: ${reason}`;
+        container.appendChild(row);
+      };
       for (const method of supported) {
-        if (!container || !methods.isEligible(method.method)) continue;
+        if (method.method === "card") continue;
+        if (!container || !methods.isEligible(method.method)) {
+          if (method.method === "venmo") unavailable("digital-option-venmo", "Venmo", "not available in this browser");
+          continue;
+        }
         const session = await method.create();
-        if (!session) continue;
+        if (!session) {
+          if (method.method === "venmo") unavailable("digital-option-venmo", "Venmo", "not available in this browser");
+          continue;
+        }
         sessions.current[method.method] = session;
         const button = document.createElement(method.tag);
         button.setAttribute("type", "pay"); button.setAttribute("aria-label", method.label);
         if (method.method === "paypal") button.dataset.testid = "paypal-button";
+        if (method.method === "venmo") button.dataset.testid = "digital-option-venmo";
         if (method.method === "paylater") {
           const details = methods.getDetails?.("paylater");
           if (!details?.productCode || !details.countryCode) continue;
           Object.assign(button, { productCode: details.productCode, countryCode: details.countryCode });
         }
         button.addEventListener("click", () => { void startWallet(method.method); });
-        if (method.method === "card") {
-          const wrapper = document.createElement("paypal-basic-card-container");
-          wrapper.appendChild(button); container.appendChild(wrapper);
-        } else container.appendChild(button);
+        container.appendChild(button);
         eligibleCount++;
+      }
+      const cardMethod = supported.find(method => method.method === "card");
+      const cardSession = methods.isEligible("card") ? await cardMethod?.create() : undefined;
+      if (cardSession && container) {
+        sessions.current.card = cardSession;
+        for (const card of [
+          { id: "digital-option-debit", label: "Debit card", aria: "Pay with debit card" },
+          { id: "digital-option-credit", label: "Credit card", aria: "Pay with credit card" },
+        ]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.testid = card.id;
+          button.className = "w-full rounded-sm border border-border/60 bg-background px-3 py-2 text-left text-sm font-semibold";
+          button.setAttribute("aria-label", card.aria);
+          button.textContent = card.label;
+          button.addEventListener("click", () => { void startWallet("card"); });
+          container.appendChild(button);
+          eligibleCount++;
+        }
+      } else {
+        unavailable("digital-option-debit", "Debit card", "not enabled for this PayPal account");
+        unavailable("digital-option-credit", "Credit card", "not enabled for this PayPal account");
       }
       if (container && methods.isEligible("applepay") && sdk.createApplePayOneTimePaymentSession) {
         let appleScript = document.querySelector<HTMLScriptElement>('script[data-myorder-apple-pay="v1"]');
@@ -264,6 +299,8 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
         button.setAttribute("type", "pay"); button.setAttribute("buttonstyle", "black"); button.setAttribute("locale", "en"); button.setAttribute("aria-label", "Pay with Apple Pay");
         button.addEventListener("click", () => { void startApplePay(); });
         container.appendChild(button); eligibleCount++;
+      } else if (!(methods.isEligible("applepay") && window.ApplePaySession?.canMakePayments())) {
+        unavailable("digital-option-apple-pay", "Apple Pay", methods.isEligible("applepay") ? "not available on this device or browser" : "not enabled for this store's PayPal account");
       }
       if (container && methods.isEligible("googlepay") && sdk.createGooglePayOneTimePaymentSession) {
         const details = methods.getDetails?.("googlepay");
@@ -294,10 +331,11 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
               googlePay.current = { session, client: paymentsClient, config: paymentConfig };
               const button = paymentsClient.createButton({ onClick: () => { void startGooglePay(); } });
               button.setAttribute("aria-label", "Pay with Google Pay"); container.appendChild(button); eligibleCount++;
-            }
-          }
-        }
-      }
+            } else unavailable("digital-option-google-pay", "Google Pay", "not available for this browser or PayPal account");
+          } else unavailable("digital-option-google-pay", "Google Pay", "not available for this browser or PayPal account");
+        } else unavailable("digital-option-google-pay", "Google Pay", "not available for this browser or PayPal account");
+      } else unavailable("digital-option-google-pay", "Google Pay", "not available for this browser or PayPal account");
+      unavailable("digital-option-cash-app", "Cash App", "not available through this PayPal account");
       setWalletEligible(eligibleCount > 0);
       const returned = Object.values(sessions.current).find(session => session?.hasReturned?.());
       if (returned?.resume) {

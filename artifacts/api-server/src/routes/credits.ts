@@ -2,14 +2,15 @@ import crypto from "node:crypto";
 import { Router, type IRouter } from "express";
 import { and, desc, eq } from "drizzle-orm";
 import { customerCreditAccountsTable, customerCreditLedgerTable, db, usersTable } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireCustomerSelfServiceAccess, writeAuditLog } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
 import { adjustCustomerCredit, CustomerCreditError, getCustomerCreditBalance } from "../payments/customerCredit";
 
 const router: IRouter = Router();
-const auth = [requireAuth, loadDbUser, requireDbUser, requireApproved] as const;
+const ownCreditAuth = [requireAuth, loadDbUser, requireDbUser, requireCustomerSelfServiceAccess] as const;
+const adminCreditAuth = [requireAuth, loadDbUser, requireDbUser, requireApproved] as const;
 
-router.get("/credits/me", ...auth, async (req, res): Promise<void> => {
+router.get("/credits/me", ...ownCreditAuth, async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const result = await db.transaction(async tx => {
     const balance = await getCustomerCreditBalance(tx, actor.tenantId!, actor.id);
@@ -20,13 +21,13 @@ router.get("/credits/me", ...auth, async (req, res): Promise<void> => {
   res.json({ balance: result.balance.balance / 100, reservedBalance: result.balance.reserved / 100, availableBalance: result.balance.available / 100, entries: result.entries.map(row => ({ ...row, amount: Number(row.amount) })) });
 });
 
-router.get("/admin/credits", ...auth, requirePermission("billing.manage"), async (req, res): Promise<void> => {
+router.get("/admin/credits", ...adminCreditAuth, requirePermission("billing.manage"), async (req, res): Promise<void> => {
   const tenantId = req.dbUser!.tenantId!;
   const users = await db.select({ id: usersTable.id, firstName: usersTable.firstName, lastName: usersTable.lastName, status: usersTable.status, balance: customerCreditAccountsTable.balance, reservedBalance: customerCreditAccountsTable.reservedBalance }).from(usersTable).leftJoin(customerCreditAccountsTable, and(eq(customerCreditAccountsTable.tenantId, usersTable.tenantId), eq(customerCreditAccountsTable.customerId, usersTable.id))).where(eq(usersTable.tenantId, tenantId));
   res.json({ users: users.map(user => ({ ...user, balance: Number(user.balance ?? 0), reservedBalance: Number(user.reservedBalance ?? 0), availableBalance: Number(user.balance ?? 0) - Number(user.reservedBalance ?? 0) })) });
 });
 
-router.post("/admin/credits", ...auth, requirePermission("billing.manage"), async (req, res): Promise<void> => {
+router.post("/admin/credits", ...adminCreditAuth, requirePermission("billing.manage"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const customerId = Number(req.body?.userId);
   const amount = Number(req.body?.amount);

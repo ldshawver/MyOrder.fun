@@ -17,7 +17,7 @@ import { CatalogClosedStoreNotice } from "@/components/ClosedStoreNotice";
 import { Link } from "wouter";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 import { useAuth } from "@clerk/react";
-import { optionAxes, optionForValues, optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
+import { optionAxes, optionForValues, optionCartEntry, selectedSellableOption, showOptionSelector, specialComponentSummary, type SellableProduct } from "@/lib/sellableOptions";
 
 type MenuMode = "alavont" | "lucifer";
 type CatalogPage = { items: ExtendedCatalogItem[]; total: number; page: number; limit: number };
@@ -168,6 +168,7 @@ function CatalogItemCard({
   const { addItem, cart } = useCart();
   const axes = optionAxes(product);
   const selectedOption = axes.length ? optionForValues(product, selectedValues) : selectedSellableOption(product, selectedOptionId);
+  const includes = specialComponentSummary(selectedOption?.components);
   const isInCart = !!selectedOption && cart.some(c => c.optionId === selectedOption.id);
   const displayName = product?.name ?? (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
   const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
@@ -305,6 +306,7 @@ function CatalogItemCard({
           )}
         </div>
 
+        {includes && <div className="text-[11px] text-muted-foreground">{includes}</div>}
         {selectedOption?.sku && <div className="text-[10px] text-muted-foreground">SKU: {selectedOption.sku}</div>}
         {selectedOption && <div className={`text-[10px] ${selectedOption.orderable ? "text-muted-foreground" : "text-red-500"}`}>
           {!selectedOption.isAvailable
@@ -341,7 +343,7 @@ function CatalogItemCard({
             data-testid={`link-buy-now-${item.id}`}
           >
             <ShoppingCart size={11} />
-            {addedFeedback ? "Added ✓" : isInCart ? "In My Order ✓" : "Add to My Order"}
+            {addedFeedback ? "Added ✓" : isInCart ? "In Cart ✓" : "Add to Cart"}
           </button>
           <Link
             href={`/catalog/${item.id}`}
@@ -410,6 +412,7 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
               placeholder={placeholder}
               className="rounded-xl h-10 text-sm bg-background/50"
             />
+            {key === "homiePrice" && <p className="mt-1 text-[11px] text-muted-foreground">Current employees pay this amount for this item instead of 20% off. Leave blank for the 20% employee discount.</p>}
           </div>
         ))}
         <div>
@@ -1056,7 +1059,7 @@ export default function Catalog() {
         <div className="relative z-10 flex h-full flex-col justify-start gap-3 p-3 sm:p-4 md:p-5">
           <div className="flex flex-wrap justify-end gap-2">
             {!isCustomerPreview && <Link href="/cart" className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-background/85 px-3 py-2 text-xs font-semibold shadow-lg backdrop-blur" data-testid="catalog-cart-link">
-              <ShoppingCart size={14} /> My Order{itemCount > 0 ? ` (${itemCount})` : ""}
+              <ShoppingCart size={14} /> My Cart{itemCount > 0 ? ` (${itemCount})` : ""}
             </Link>}
             {!isCustomerPreview && itemCount > 0 && <Link href="/checkout" className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-lg" data-testid="catalog-checkout-link">Checkout</Link>}
             <div className="relative z-20 inline-flex w-full p-1 rounded-xl border border-border/40 bg-background/70 backdrop-blur-md shadow-xl sm:w-fit">
@@ -1124,7 +1127,7 @@ export default function Catalog() {
         </div>
       </div>
 
-      {/* Grid */}
+      <div id="catalogue" className="scroll-mt-24 space-y-4">
       {catalogQuery.isError && (
         <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm">
           The catalogue and product options could not be loaded.
@@ -1201,7 +1204,7 @@ export default function Catalog() {
           ))}
         </div>
       )}
-
+      </div>
 
       <CatalogNotice className="mt-4" />
 

@@ -33,6 +33,7 @@ import {
   loadDbUser,
   requireDbUser,
   requireApproved,
+  requireCustomerSelfServiceAccess,
   writeAuditLog,
   normalizeRole,
 } from "../lib/auth";
@@ -40,7 +41,20 @@ import { requireTenantContext } from "../lib/tenantContext";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+const FEEDBACK_ADMIN_PREFIX = "/admin/feedback";
+const feedbackPathOwned = (path: string) =>
+  path === "/feedback" || path.startsWith("/feedback/") || path === FEEDBACK_ADMIN_PREFIX || path.startsWith(`${FEEDBACK_ADMIN_PREFIX}/`);
+
+// Mounted ahead of the path-less approval routers. Skip every other URL so
+// this policy cannot reject catalogue, checkout, or settings first.
+router.use((req, res, next) => {
+  if (!feedbackPathOwned(req.path)) { next("router"); return; }
+  next();
+}, requireAuth, loadDbUser, requireDbUser, (req, res, next) => {
+  const adminRoute = req.path === FEEDBACK_ADMIN_PREFIX || req.path.startsWith(`${FEEDBACK_ADMIN_PREFIX}/`) || req.method === "PATCH";
+  if (adminRoute) { requireApproved(req, res, next); return; }
+  requireCustomerSelfServiceAccess(req, res, next);
+}, requireTenantContext);
 let feedbackSchemaEnsured = false;
 async function ensureFeedbackSchema(): Promise<void> {
   if (feedbackSchemaEnsured) return;

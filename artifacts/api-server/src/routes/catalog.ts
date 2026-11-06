@@ -17,6 +17,7 @@ import {
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireCatalogReadAccess, evaluateAccountApproval, normalizeRole, writeAuditLog } from "../lib/auth";
 import { requireTenantContext } from "../lib/tenantContext";
 import { hasSellableProductSchema, loadSellableProducts } from "../lib/catalogueSellable";
+import { resolveEmployeeUnitPrice } from "../lib/employeePricing";
 import { publicCatalogEligibility } from "../lib/catalogEligibility";
 
 const router: IRouter = Router();
@@ -451,13 +452,14 @@ router.get("/catalog", async (req, res): Promise<void> => {
     return a.name.localeCompare(b.name);
   });
 
+  const employeeView = isCustomerView && actor.isCurrentEmployee === true;
   const sellableSchemaPresent = await hasSellableProductSchema();
   const stockByCatalogId = sellableSchemaPresent
     ? new Map<number, number | null>()
     : await getLinkedInventoryStockByCatalogId(tenantId);
   const sellableByCatalogId = new Map<number, Awaited<ReturnType<typeof loadSellableProducts>>[number]>();
   if (sellableSchemaPresent) {
-    for (const product of await loadSellableProducts(tenantId)) {
+    for (const product of await loadSellableProducts(tenantId, { isCurrentEmployee: employeeView })) {
       for (const option of product.options) {
         sellableByCatalogId.set(option.catalogItemId, product);
         stockByCatalogId.set(option.catalogItemId,
@@ -475,7 +477,15 @@ router.get("/catalog", async (req, res): Promise<void> => {
   );
 
   res.json(ListCatalogItemsResponse.parse({
-    items: paged.map(i => ({ ...mapItem(i, alavontOnly, stockByCatalogId.get(i.id)), sellableProduct: sellableByCatalogId.get(i.id) })),
+    items: paged.map(i => {
+      const item = { ...mapItem(i, alavontOnly, stockByCatalogId.get(i.id)), sellableProduct: sellableByCatalogId.get(i.id) };
+      if (!isCustomerView) return item;
+      return {
+        ...item,
+        price: employeeView ? resolveEmployeeUnitPrice(i.price, i.homiePrice, true) : item.price,
+        homiePrice: null,
+      };
+    }),
     total,
     page,
     limit,
@@ -797,7 +807,13 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
       return;
     }
   }
-  res.json(GetCatalogItemResponse.parse(mapItem(row, alavontOnly)));
+  const mapped = mapItem(row, alavontOnly);
+  const employeeView = alavontOnly && req.dbUser?.isCurrentEmployee === true;
+  res.json(GetCatalogItemResponse.parse({
+    ...mapped,
+    price: employeeView ? resolveEmployeeUnitPrice(row.price, row.homiePrice, true) : mapped.price,
+    homiePrice: alavontOnly ? null : mapped.homiePrice,
+  }));
 });
 
 // PATCH /api/catalog/:id

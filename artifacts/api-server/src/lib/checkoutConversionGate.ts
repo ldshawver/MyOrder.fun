@@ -79,7 +79,7 @@ export function verifyCheckoutTaxQuoteToken(token: unknown, expected: CheckoutTa
   } catch { return false; }
 }
 
-export async function requireVerifiedCheckoutConversion(input: { tenantId: number; userId: number; checkoutConversionToken?: unknown; requestedItems: CartLineInputType[]; legalDisclaimerAccepted?: boolean; finalConfirmationAt?: unknown; snapshot?: unknown }): Promise<{ lines: NormalizedCartLine[]; totals: ReturnType<typeof computeCheckoutTotals>; conversionExpiresAt: Date; snapshot: unknown }> {
+export async function requireVerifiedCheckoutConversion(input: { tenantId: number; userId: number; checkoutConversionToken?: unknown; requestedItems: CartLineInputType[]; legalDisclaimerAccepted?: boolean; finalConfirmationAt?: unknown; snapshot?: unknown; isCurrentEmployee?: boolean }): Promise<{ lines: NormalizedCartLine[]; totals: ReturnType<typeof computeCheckoutTotals>; conversionExpiresAt: Date; snapshot: unknown }> {
   try {
     if (input.legalDisclaimerAccepted !== true) throw new CheckoutConversionRequiredError();
     if (!input.finalConfirmationAt || Number.isNaN(new Date(String(input.finalConfirmationAt)).getTime())) throw new CheckoutConversionRequiredError();
@@ -89,7 +89,7 @@ export async function requireVerifiedCheckoutConversion(input: { tenantId: numbe
     if (expiresAt.getTime() <= Date.now()) throw new CheckoutConversionRequiredError();
     if (itemsKey(payload.items) !== itemsKey(input.requestedItems)) throw new CheckoutConversionRequiredError();
     if (!input.snapshot || hashConversionSnapshot(input.snapshot) !== payload.snapshotHash) throw new CheckoutConversionRequiredError();
-    const lines = await normalizeCheckoutCart(input.requestedItems, undefined, true, input.tenantId);
+    const lines = await normalizeCheckoutCart(input.requestedItems, undefined, true, input.tenantId, false, { isCurrentEmployee: input.isCurrentEmployee === true });
     const totals = computeBaseCheckoutTotals(lines);
     return { lines, totals, conversionExpiresAt: expiresAt, snapshot: input.snapshot };
   } catch (err) { if (err instanceof CheckoutConversionRequiredError) throw err; throw new CheckoutConversionRequiredError(); }

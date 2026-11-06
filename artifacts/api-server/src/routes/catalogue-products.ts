@@ -8,6 +8,7 @@ import { quantityText, quantityUnits } from "../lib/exactQuantity";
 import { recommendReplenishment, type LocationPolicyInput } from "../lib/cataloguePolicy";
 import { upsertInventoryBalanceThroughAuthority } from "../lib/inventoryAuthority";
 import { loadSellableProducts } from "../lib/catalogueSellable";
+import { formatRetailQuantity, groupSpecialStock, loadSpecialComponentRows, replaceSpecialComponents, SpecialComponentInputError, specialsAvailable } from "../lib/specialComponents";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -28,6 +29,7 @@ const createVariantInput = z.object({
   barcode: z.string().trim().max(120).nullable().optional(),
   price: money,
   compareAtPrice: money.nullable().optional(),
+  employeePrice: money.nullable().optional(),
   consumptionQuantity: positiveConsumption,
   isAvailable: z.boolean().default(true),
 }).strict();
@@ -51,11 +53,47 @@ const optionInput = z.object({
   barcode: z.string().trim().max(120).nullable().optional(),
   price: money,
   compareAtPrice: money.nullable().optional(),
+  employeePrice: money.nullable().optional(),
   consumptionQuantity: positiveConsumption,
   inventoryItemId: z.number().int().positive().optional(),
   active: z.boolean().optional(),
   isAvailable: z.boolean().optional(),
 }).strict();
+
+const websiteManagedInventoryMessage = "This Lucifer Cruz listing is managed on the website. It is not a separate inventory count. Edit the Alavont Therapeutics product, or change the website item in WooCommerce.";
+
+function isAffirmative(value: unknown): boolean {
+  return value === true || value === "t" || value === "true";
+}
+
+/** Local Alavont Therapeutics stock. The catalog_items alias in the surrounding query must be ci. */
+function localInventoryCatalogSql() {
+  return sql`COALESCE(ci.is_woo_managed, false) = false AND COALESCE(ci.is_local_alavont, true) = true AND COALESCE(ci.metadata->>'safeOnlyDuplicate', 'false') <> 'true' AND COALESCE((ci.metadata->>'archived')::boolean, false) = false`;
+}
+
+async function catalogIsWebsiteManaged(tenantId: number, catalogItemId: number): Promise<boolean> {
+  const row = rows<{ local: unknown }>(await db.execute(sql`
+    SELECT (${localInventoryCatalogSql()}) AS local
+    FROM catalog_items ci WHERE ci.tenant_id = ${tenantId} AND ci.id = ${catalogItemId}
+  `))[0];
+  return !isAffirmative(row?.local);
+}
+
+async function productIsWebsiteOnly(tenantId: number, productId: number): Promise<boolean> {
+  const row = rows<{ found: unknown; local: unknown }>(await db.execute(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM catalogue_products cp
+      WHERE cp.tenant_id = ${tenantId} AND cp.id = ${productId}
+    ) AS found,
+    EXISTS (
+      SELECT 1 FROM catalogue_options co
+      JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
+      WHERE co.tenant_id = ${tenantId} AND co.product_id = ${productId}
+        AND ${localInventoryCatalogSql()}
+    ) AS local
+  `))[0];
+  return isAffirmative(row?.found) && !isAffirmative(row?.local);
+}
 
 function rows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
@@ -68,7 +106,7 @@ function intArray(values: number[]) {
   return sql`ARRAY[${sql.join(values.map(value => sql`${value}`), sql`, `)}]::int[]`;
 }
 type ProductRow = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
-type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string; active: boolean; isAvailable: boolean; complianceHold: boolean; complianceReason: string | null };
+type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; employeePrice: string | null; baseUnit: string; active: boolean; isAvailable: boolean; complianceHold: boolean; complianceReason: string | null };
 type AdminOptionRow = Omit<OptionRow, "inventoryItemId" | "inventoryCatalogItemId" | "baseUnit"> & {
   inventoryItemId: number | null;
   inventoryCatalogItemId: number | null;
@@ -176,7 +214,7 @@ async function optionForTenant(executor: typeof db, tenantId: number, optionId: 
   return rows<OptionRow>(await executor.execute(sql`
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice",
+      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice", ci.homie_price AS "employeePrice",
       ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable",
       (ci.metadata->>'complianceHold' = 'true') AS "complianceHold",
       ci.metadata->>'complianceReason' AS "complianceReason"
@@ -188,7 +226,7 @@ async function optionForTenant(executor: typeof db, tenantId: number, optionId: 
 }
 
 router.get("/catalogue/products", async (req, res): Promise<void> => {
-  res.json({ products: await loadSellableProducts(req.authorizedTenantId!) });
+  res.json({ products: await loadSellableProducts(req.authorizedTenantId!, { isCurrentEmployee: req.dbUser?.isCurrentEmployee === true }) });
 });
 
 router.get("/admin/catalogue/products", admin, async (req, res): Promise<void> => {
@@ -196,7 +234,14 @@ router.get("/admin/catalogue/products", admin, async (req, res): Promise<void> =
   const products = rows<ProductRow>(await db.execute(sql`
     SELECT id, tenant_id AS "tenantId", name, inventory_model AS "inventoryModel",
       location_evaluation AS "locationEvaluation", active
-    FROM catalogue_products WHERE tenant_id = ${tenantId} ORDER BY id
+    FROM catalogue_products WHERE tenant_id = ${tenantId}
+      AND EXISTS (
+        SELECT 1 FROM catalogue_options co
+        JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
+        WHERE co.tenant_id = catalogue_products.tenant_id AND co.product_id = catalogue_products.id
+          AND ${localInventoryCatalogSql()}
+      )
+    ORDER BY id
   `));
   const options = rows<AdminOptionRow>(await db.execute(sql`
     WITH reserved_by_location AS (
@@ -225,7 +270,7 @@ router.get("/admin/catalogue/products", admin, async (req, res): Promise<void> =
     )
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice",
+      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice", ci.homie_price AS "employeePrice",
       ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable",
       (ci.metadata->>'complianceHold' = 'true') AS "complianceHold",
       ci.metadata->>'complianceReason' AS "complianceReason",
@@ -246,7 +291,24 @@ router.get("/admin/catalogue/products", admin, async (req, res): Promise<void> =
     JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
     WHERE co.tenant_id = ${tenantId} ORDER BY co.product_id, co.sort_order, co.id
   `));
-  res.json({ products: products.map(product => ({ ...product, options: options.filter(option => option.productId === product.id) })) });
+  const specials = groupSpecialStock(await loadSpecialComponentRows(db, tenantId));
+  const withSpecials = options.map(option => {
+    const stock = specials.get(option.catalogItemId) ?? [];
+    if (!stock.length) return option;
+    const verdict = specialsAvailable(stock, 1);
+    return {
+      ...option,
+      components: stock.map(row => ({
+        catalogItemId: row.catalogItemId,
+        productName: row.productName?.trim() || "Item",
+        label: row.label?.trim() || "Item",
+        quantity: (() => { try { return formatRetailQuantity(String(row.quantity)); } catch { return String(row.quantity); } })(),
+      })),
+      specialOrderable: verdict.orderable,
+      specialAvailableQuantity: verdict.availableQuantity,
+    };
+  });
+  res.json({ products: products.map(product => ({ ...product, options: withSpecials.filter(option => option.productId === product.id) })) });
 });
 
 router.post("/admin/catalogue/products", admin, async (req, res): Promise<void> => {
@@ -255,7 +317,7 @@ router.post("/admin/catalogue/products", admin, async (req, res): Promise<void> 
   const tenantId = req.authorizedTenantId!;
   const body = parsed.data;
   const variants = body.variants ?? (body.price ? [{ label: body.firstOptionLabel, optionValues: {}, sku: body.sku,
-    barcode: body.barcode, price: body.price, compareAtPrice: null, consumptionQuantity: body.consumptionQuantity, isAvailable: true }] : []);
+    barcode: body.barcode, price: body.price, compareAtPrice: null, employeePrice: null, consumptionQuantity: body.consumptionQuantity, isAvailable: true }] : []);
   if (!variants.length) { res.status(400).json({ error: "Add at least one variant with a price." }); return; }
   const normalizedVariants = variants.map(variant => ({ ...variant, optionValues: Object.fromEntries(Object.entries(variant.optionValues)
     .sort(([a], [b]) => a.localeCompare(b))) }));
@@ -285,9 +347,9 @@ router.post("/admin/catalogue/products", admin, async (req, res): Promise<void> 
         const variant = normalizedVariants[index];
         const itemName = index === 0 ? body.name : `${body.name} ${variant.label}`;
         const catalog = rows<{ id: number }>(await tx.execute(sql`
-          INSERT INTO catalog_items (tenant_id,name,category,price,compare_at_price,sku,barcode,is_available,merchant_brand,
+          INSERT INTO catalog_items (tenant_id,name,category,price,compare_at_price,homie_price,sku,barcode,is_available,merchant_brand,
             customer_safe_name,customer_safe_description,display_category,alavont_name,lucifer_cruz_name,merchant_name,stock_unit)
-          VALUES (${tenantId},${itemName},${body.category},${variant.price},${variant.compareAtPrice ?? null},
+          VALUES (${tenantId},${itemName},${body.category},${variant.price},${variant.compareAtPrice ?? null},${variant.employeePrice ?? null},
             ${variant.sku?.trim() || null},${variant.barcode?.trim() || null},${variant.isAvailable},'lucifer_cruz',
             ${itemName},${itemName},${body.category},${itemName},${itemName},${itemName},${body.baseUnit}) RETURNING id
         `))[0];
@@ -341,6 +403,7 @@ router.patch("/admin/catalogue/products/:productId", admin, async (req, res): Pr
     locationEvaluation: z.enum(["PER_LOCATION", "COMBINED_LOCATIONS"]).optional() }).strict().safeParse(req.body);
   if (!parsedId.success || !parsed.success) { res.status(400).json({ error: "Invalid product update" }); return; }
   const tenantId = req.authorizedTenantId!;
+  if (await productIsWebsiteOnly(tenantId, parsedId.data)) { res.status(409).json({ error: websiteManagedInventoryMessage }); return; }
   try {
     const updated = await db.transaction(async tx => {
       await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
@@ -388,6 +451,7 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
   const parsed = optionInput.safeParse(req.body);
   if (!parsedId.success || !parsed.success) { res.status(400).json({ error: "Invalid option" }); return; }
   const tenantId = req.authorizedTenantId!;
+  if (await productIsWebsiteOnly(tenantId, parsedId.data)) { res.status(409).json({ error: websiteManagedInventoryMessage }); return; }
   const body = parsed.data;
   try {
     const result = await db.transaction(async tx => {
@@ -451,10 +515,10 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
         if (duplicate) throw new Error("SKU already exists in this tenant");
       }
       const catalog = rows<{ id: number }>(await tx.execute(sql`
-        INSERT INTO catalog_items (tenant_id, name, category, price, compare_at_price, sku, barcode, is_available, merchant_brand,
+        INSERT INTO catalog_items (tenant_id, name, category, price, compare_at_price, homie_price, sku, barcode, is_available, merchant_brand,
           customer_safe_name, customer_safe_description, display_category,
           alavont_name, lucifer_cruz_name, merchant_name, stock_unit)
-        VALUES (${tenantId}, ${name}, ${base.category}, ${body.price}, ${body.compareAtPrice ?? null}, ${body.sku?.trim() || null}, ${body.barcode?.trim() || null}, ${body.isAvailable ?? true},
+        VALUES (${tenantId}, ${name}, ${base.category}, ${body.price}, ${body.compareAtPrice ?? null}, ${body.employeePrice ?? null}, ${body.sku?.trim() || null}, ${body.barcode?.trim() || null}, ${body.isAvailable ?? true},
           'lucifer_cruz', ${name}, ${name}, ${base.category}, ${name}, ${name}, ${name}, ${base.baseUnit})
         RETURNING id
       `))[0];
@@ -491,6 +555,7 @@ router.patch("/admin/catalogue/options/:optionId", admin, async (req, res): Prom
   const tenantId = req.authorizedTenantId!;
   const option = await optionForTenant(db, tenantId, parsedId.data);
   if (!option) { res.status(404).json({ error: "Option not found" }); return; }
+  if (await catalogIsWebsiteManaged(tenantId, option.catalogItemId)) { res.status(409).json({ error: websiteManagedInventoryMessage }); return; }
   if (parsed.data.inventoryItemId !== undefined && parsed.data.inventoryItemId !== option.inventoryItemId) {
     res.status(409).json({ error: "Changing an option inventory identity requires controlled reconciliation" }); return;
   }
@@ -522,11 +587,41 @@ router.patch("/admin/catalogue/options/:optionId", admin, async (req, res): Prom
       await tx.execute(sql`UPDATE catalog_items SET sku = ${parsed.data.sku === undefined ? option.sku : parsed.data.sku},
         barcode = ${parsed.data.barcode === undefined ? option.barcode : parsed.data.barcode},
         compare_at_price = ${parsed.data.compareAtPrice === undefined ? option.compareAtPrice : parsed.data.compareAtPrice},
+        homie_price = ${parsed.data.employeePrice === undefined ? sql`homie_price` : parsed.data.employeePrice},
         is_available = ${parsed.data.isAvailable ?? option.isAvailable}, price = ${parsed.data.price ?? option.price}, updated_at = now()
         WHERE tenant_id = ${tenantId} AND id = ${option.catalogItemId}`);
     });
     res.json({ option: await optionForTenant(db, tenantId, option.id) });
   } catch (error) { res.status(409).json({ error: (error as Error).message }); }
+});
+
+const componentListInput = z.object({
+  components: z.array(z.object({
+    catalogItemId: z.number().int().positive(),
+    quantity: z.string().trim().min(1).max(20),
+  }).strict()).max(12),
+}).strict();
+router.put("/admin/catalogue/options/:optionId/components", admin, async (req, res): Promise<void> => {
+  const parsedId = id.safeParse(req.params.optionId);
+  const parsed = componentListInput.safeParse(req.body);
+  if (!parsedId.success || !parsed.success) {
+    res.status(400).json({ error: "Enter a component list of catalogue products and quantities." });
+    return;
+  }
+  const tenantId = req.authorizedTenantId!;
+  const specialOption = await optionForTenant(db, tenantId, parsedId.data);
+  if (!specialOption) { res.status(404).json({ error: "Option not found" }); return; }
+  if (await catalogIsWebsiteManaged(tenantId, specialOption.catalogItemId)) { res.status(409).json({ error: websiteManagedInventoryMessage }); return; }
+  try {
+    const components = await replaceSpecialComponents(tenantId, parsedId.data, parsed.data.components);
+    res.json({ components });
+  } catch (error) {
+    if (error instanceof SpecialComponentInputError) {
+      res.status(error.status).json({ error: error.message });
+      return;
+    }
+    throw error;
+  }
 });
 
 const policyInput = z.object({ par: physical, reorderPoint: physical,
@@ -543,6 +638,7 @@ router.patch("/admin/catalogue/inventory/:inventoryItemId", admin, async (req, r
         FROM inventory_items WHERE tenant_id = ${tenantId} AND id = ${parsedId.data} FOR UPDATE
       `))[0];
       if (!item) return "missing";
+      if (await catalogIsWebsiteManaged(tenantId, item.catalogItemId)) return "website";
       if (item.baseUnit === parsed.data.baseUnit) return "ok";
       const activity = rows<{ active: boolean }>(await tx.execute(sql`
         SELECT (EXISTS (SELECT 1 FROM inventory_balances WHERE tenant_id = ${tenantId} AND product_id = ${item.catalogItemId})
@@ -557,6 +653,7 @@ router.patch("/admin/catalogue/inventory/:inventoryItemId", admin, async (req, r
       return "ok";
     });
     if (result === "missing") { res.status(404).json({ error: "Inventory item not found" }); return; }
+    if (result === "website") { res.status(409).json({ error: websiteManagedInventoryMessage }); return; }
     if (result === "reconciliation") { res.status(409).json({ error: "Changing a unit with balances or activity requires controlled reconciliation" }); return; }
     res.json({ ok: true });
   } catch (error) { res.status(409).json({ error: (error as Error).message }); }
@@ -594,6 +691,12 @@ router.put("/admin/catalogue/inventory/:inventoryItemId/locations/:locationId/po
     WHERE ii.tenant_id = ${tenantId} AND ii.id = ${itemId.data} AND il.id = ${locationId.data}
   `));
   if (!owned.length) { res.status(404).json({ error: "Inventory item or location not found" }); return; }
+  const inventoryCatalog = rows<{ catalogItemId: number }>(await db.execute(sql`
+    SELECT catalog_item_id AS "catalogItemId" FROM inventory_items WHERE tenant_id = ${tenantId} AND id = ${itemId.data}
+  `))[0];
+  if (!inventoryCatalog || await catalogIsWebsiteManaged(tenantId, inventoryCatalog.catalogItemId)) {
+    res.status(409).json({ error: websiteManagedInventoryMessage }); return;
+  }
   const p = parsed.data;
   await db.execute(sql`INSERT INTO inventory_reorder_policies (tenant_id, inventory_item_id, location_id, par,
     reorder_point, preferred_reorder_quantity, moq) VALUES (${tenantId}, ${itemId.data}, ${locationId.data},
@@ -617,6 +720,7 @@ router.put("/admin/catalogue/inventory/:inventoryItemId/locations/:locationId/ba
     WHERE ii.tenant_id = ${tenantId} AND ii.id = ${itemId.data} AND il.id = ${locationId.data}
   `))[0];
   if (!owned) { res.status(404).json({ error: "Inventory item or location not found" }); return; }
+  if (await catalogIsWebsiteManaged(tenantId, owned.catalogItemId)) { res.status(409).json({ error: websiteManagedInventoryMessage }); return; }
   const policy = rows<{ par: string }>(await db.execute(sql`SELECT par FROM inventory_reorder_policies
     WHERE tenant_id = ${tenantId} AND inventory_item_id = ${itemId.data} AND location_id = ${locationId.data}`))[0];
   try {
@@ -644,7 +748,9 @@ router.get("/admin/catalogue/recommendations", admin, async (req, res): Promise<
       cp.location_evaluation AS "locationEvaluation", ii.base_unit AS "baseUnit"
     FROM inventory_items ii JOIN catalogue_options co ON co.tenant_id = ii.tenant_id AND co.inventory_item_id = ii.id
     JOIN catalogue_products cp ON cp.tenant_id = co.tenant_id AND cp.id = co.product_id
-    WHERE ii.tenant_id = ${tenantId} AND cp.active = true ORDER BY "inventoryItemId", "productId"
+    JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
+    WHERE ii.tenant_id = ${tenantId} AND cp.active = true AND ${localInventoryCatalogSql()}
+    ORDER BY "inventoryItemId", "productId"
   `));
   const data = [];
   for (const item of items) {

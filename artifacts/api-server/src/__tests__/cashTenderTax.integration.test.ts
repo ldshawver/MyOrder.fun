@@ -329,16 +329,16 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       expect(storedQuote.expiresAt.getTime()).toBeGreaterThan(Date.now());
       const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "uber_direct", shippingAddress: address, deliveryQuote: { provider: "uber_direct", quoteId: quote.body.quoteId, feeCents: 1, fee: 0.01 } });
       expect(created.status, created.text).toBe(201);
-      expect(created.body).toMatchObject({ subtotal: 100, tax: 8.75, total: 113.75 });
+      expect(created.body).toMatchObject({ subtotal: 100, tax: 0, total: 105 });
       const orderId = Number(created.body.id);
       const beforePaid = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, orderId));
       expect(beforePaid).toHaveLength(1);
       expect(beforePaid[0].requestState).toBe("payment_pending");
       expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(0);
-      const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "113.75", idempotencyKey: `uber-cash-${orderId}` });
+      const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "105.00", idempotencyKey: `uber-cash-${orderId}` });
       expect(closed.status, closed.text).toBe(200);
-      expect(closed.body).toMatchObject({ tax: 8.75, total: 113.75, status: "confirmed", fulfillmentStatus: "submitted" });
-      const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "113.75", idempotencyKey: `uber-cash-${orderId}` });
+      expect(closed.body).toMatchObject({ tax: 0, total: 105, status: "confirmed", fulfillmentStatus: "submitted" });
+      const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "105.00", idempotencyKey: `uber-cash-${orderId}` });
       expect(replay.status, replay.text).toBe(200);
       expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(0);
       const [fulfillment] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, orderId));
@@ -518,7 +518,7 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     expect(converted.status, converted.text).toBe(200);
     const quote = await as("customer").post("/api/checkout/quote").send({ items, paymentMethod: "cash" });
     expect(quote.status, quote.text).toBe(200);
-    expect(quote.body).toMatchObject({ customerTax: 8.25, effectiveTaxRate: 0.0825, finalAmountDue: 108.25, tenderDue: 108.25 });
+    expect(quote.body).toMatchObject({ customerTax: 0, effectiveTaxRate: 0.0825, finalAmountDue: 100, tenderDue: 100 });
     const forgedQuote = await as("customer").post("/api/checkout/quote").send({ items, paymentMethod: "cash", tax: 0, total: 0 });
     expect(forgedQuote.status).toBe(400);
     const hostile = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup", tax: 0.01, total: 0.01 });
@@ -528,21 +528,21 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     expect(created.body).toMatchObject({ subtotal: 100, tax: quote.body.customerTax, total: quote.body.finalAmountDue });
     const orderId = Number(created.body.id);
     const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
-    expect(order).toMatchObject({ subtotal: "100.00", tax: "8.25", total: "108.25", remainingTenderAmount: "108.25" });
-    expect(order.taxSnapshot).toMatchObject({ locationId: location.id, taxConfigurationId: locationTax.id, taxRate: 0.0825 });
-    const initialSnapshot = await db.execute(sql`SELECT tax_collected, tender, tax_configuration_id, location_id, snapshot_json FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
+    expect(order).toMatchObject({ subtotal: "100.00", tax: "0.00", total: "100.00", remainingTenderAmount: "100.00" });
+    expect(order.taxSnapshot).toMatchObject({ locationId: location.id, taxConfigurationId: locationTax.id, taxRate: 0.0825, exemptionReason: "non_tax_added_tender", customerTaxCollected: 0 });
+    const initialSnapshot = await db.execute(sql`SELECT tax_collected, tender, exemption_reason, tax_configuration_id, location_id, snapshot_json FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
     expect(initialSnapshot.rows).toHaveLength(1);
-    expect(initialSnapshot.rows[0]).toMatchObject({ tax_collected: "8.25", tender: "cash", tax_configuration_id: locationTax.id, location_id: location.id });
+    expect(initialSnapshot.rows[0]).toMatchObject({ tax_collected: "0.00", tender: "cash", exemption_reason: "non_tax_added_tender", tax_configuration_id: locationTax.id, location_id: location.id });
     const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "110.00", idempotencyKey: `tax-e2e-${orderId}` });
     expect(closed.status, closed.text).toBe(200);
-    expect(closed.body).toMatchObject({ subtotal: 100, tax: 8.25, total: 108.25 });
+    expect(closed.body).toMatchObject({ subtotal: 100, tax: 0, total: 100 });
     const ledger = await db.select().from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.orderId, orderId), eq(cashLedgerEntriesTable.tenantId, order.tenantId)));
     expect(ledger).toHaveLength(1);
-    expect(ledger[0]).toMatchObject({ amount: "108.25", amountTendered: "110.00", changeGiven: "1.75" });
+    expect(ledger[0]).toMatchObject({ amount: "100.00", amountTendered: "110.00", changeGiven: "10.00" });
     const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "110.00", idempotencyKey: `tax-e2e-${orderId}` });
     expect(replay.status, replay.text).toBe(200);
     expect(await db.select().from(cashLedgerEntriesTable).where(eq(cashLedgerEntriesTable.orderId, orderId))).toHaveLength(1);
-    const finalSnapshot = await db.execute(sql`SELECT tax_collected, tender, tax_configuration_id, location_id, snapshot_json FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
+    const finalSnapshot = await db.execute(sql`SELECT tax_collected, tender, exemption_reason, tax_configuration_id, location_id, snapshot_json FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
     expect(finalSnapshot.rows).toEqual(initialSnapshot.rows);
     const sales = await db.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND movement_type = 'sale'`);
     expect(sales.rows).toHaveLength(1);
@@ -588,7 +588,7 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     const items = [{ catalogItemId, quantity: 1 }];
     const quote = await as("customer").post("/api/checkout/quote").send({ items, paymentMethod: "cash" });
     expect(quote.status, quote.text).toBe(200);
-    expect(quote.body).toMatchObject({ effectiveTaxRate: 0.0875, customerTax: 8.75 });
+    expect(quote.body).toMatchObject({ effectiveTaxRate: 0.0875, customerTax: 0 });
     expect(quote.body.checkoutTaxQuoteToken).toEqual(expect.any(String));
     const attemptedLocationOverride = await as("customer").post("/api/checkout/quote").send({ items, paymentMethod: "cash", locationId: 999999 });
     expect(attemptedLocationOverride.status).toBe(400);
@@ -802,17 +802,17 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     expect(converted.status, converted.text).toBe(200);
     const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
     expect(created.status, created.text).toBe(201);
-    expect(created.body).toMatchObject({ subtotal: 100, tax: 8.75, total: 108.75, customerCreditApplied: 40, remainingTenderAmount: 68.75 });
+    expect(created.body).toMatchObject({ subtotal: 100, tax: 0, total: 100, customerCreditApplied: 40, remainingTenderAmount: 60 });
     const orderId = Number(created.body.id);
     const [orderItem] = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, orderId)).limit(1);
     expect(orderItem.quantity).toBe(2);
-    const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "68.75", idempotencyKey: `tax-e2e-proportional-cash-${orderId}` });
+    const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "60.00", idempotencyKey: `tax-e2e-proportional-cash-${orderId}` });
     expect(closed.status, closed.text).toBe(200);
     const before = await db.execute(sql`SELECT tax_collected, tax_refunded, snapshot_json FROM order_tax_snapshots WHERE tenant_id=${tenantId} AND order_id=${orderId}`);
     const refund = (key: string) => as("admin").post(`/api/orders/${orderId}/returns`).send({ lines: [{ orderItemId: orderItem.id, quantity: 1, disposition: "DO_NOT_RESTOCK" }], reason: "Proportional partial refund", idempotencyKey: key });
     const first = await refund(`return:proportional-first-${orderId}`);
     expect(first.status, first.text).toBe(200);
-    expect(first.body).toMatchObject({ refundAmount: "54.38", taxAmount: "4.38", creditRefundAmount: "20.00", cashRefundAmount: "34.38" });
+    expect(first.body).toMatchObject({ refundAmount: "50.00", taxAmount: "0.00", creditRefundAmount: "20.00", cashRefundAmount: "30.00" });
     const duplicate = await refund(`return:proportional-first-${orderId}`);
     expect(duplicate.status, duplicate.text).toBe(200);
     expect(duplicate.body.idempotent).toBe(true);
@@ -821,7 +821,7 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       refund(`return:proportional-second-b-${orderId}`),
     ]);
     expect(competing.map(result => result.status).sort()).toEqual([200, 409]);
-    expect(competing.find(result => result.status === 200)?.body).toMatchObject({ refundAmount: "54.37", taxAmount: "4.37", creditRefundAmount: "20.00", cashRefundAmount: "34.37" });
+    expect(competing.find(result => result.status === 200)?.body).toMatchObject({ refundAmount: "50.00", taxAmount: "0.00", creditRefundAmount: "20.00", cashRefundAmount: "30.00" });
     const [account] = await db.select().from(customerCreditAccountsTable).where(and(eq(customerCreditAccountsTable.tenantId, tenantId), eq(customerCreditAccountsTable.customerId, customerId)));
     expect(account.balance).toBe("40.00");
     const reconciled = await db.execute(sql`SELECT
@@ -829,7 +829,7 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       (SELECT COALESCE(sum(amount),0)::numeric::text FROM customer_credit_ledger WHERE tenant_id=${tenantId} AND order_id=${orderId} AND entry_type='refund_restoration') AS credit_refunded,
       (SELECT COALESCE(sum(tax_amount),0)::numeric::text FROM return_transactions WHERE tenant_id=${tenantId} AND order_id=${orderId} AND status='completed') AS tax_refunded,
       (SELECT COALESCE(sum(refund_amount),0)::numeric::text FROM return_transactions WHERE tenant_id=${tenantId} AND order_id=${orderId} AND status='completed') AS gross_refunded`);
-    expect(reconciled.rows[0]).toMatchObject({ cash_refunded: "68.75", credit_refunded: "40.00", tax_refunded: "8.75", gross_refunded: "108.75" });
+    expect(reconciled.rows[0]).toMatchObject({ cash_refunded: "60.00", credit_refunded: "40.00", tax_refunded: "0.00", gross_refunded: "100.00" });
     const after = await db.execute(sql`SELECT tax_collected, tax_refunded, snapshot_json FROM order_tax_snapshots WHERE tenant_id=${tenantId} AND order_id=${orderId}`);
     expect(after.rows).toEqual(before.rows);
   }, 60_000);
@@ -1197,7 +1197,7 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     }
   }, 60_000);
 
-  it("calculates configured tax after updating a taxable cash item price", async () => {
+  it("keeps a changed cash item price free of added tax", async () => {
     await db.update(catalogItemsTable).set({ price: "108.00" }).where(eq(catalogItemsTable.id, catalogItemId));
     const items = [{ catalogItemId, quantity: 1 }];
     const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
@@ -1205,15 +1205,15 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     expect(converted.status, converted.text).toBe(200);
     const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
     expect(created.status, created.text).toBe(201);
-    expect(created.body).toMatchObject({ subtotal: 108, tax: 9.45, total: 117.45 });
+    expect(created.body).toMatchObject({ subtotal: 108, tax: 0, total: 108 });
     const orderId = Number(created.body.id);
-    const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "117.45", idempotencyKey: `tax-e2e-108-${orderId}` });
+    const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "108.00", idempotencyKey: `tax-e2e-108-${orderId}` });
     expect(closed.status, closed.text).toBe(200);
-    expect(closed.body).toMatchObject({ subtotal: 108, tax: 9.45, total: 117.45, cash: { amountDue: "117.45", amountTendered: "117.45", changeGiven: "0.00" } });
+    expect(closed.body).toMatchObject({ subtotal: 108, tax: 0, total: 108, cash: { amountDue: "108.00", amountTendered: "108.00", changeGiven: "0.00" } });
     const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
     const [ledger] = await db.select().from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.orderId, orderId)));
-    expect(stored).toMatchObject({ subtotal: "108.00", tax: "9.45", total: "117.45", remainingTenderAmount: "117.45", paymentStatus: "paid" });
-    expect(ledger).toMatchObject({ amount: "117.45", amountTendered: "117.45", changeGiven: "0.00" });
+    expect(stored).toMatchObject({ subtotal: "108.00", tax: "0.00", total: "108.00", remainingTenderAmount: "108.00", paymentStatus: "paid" });
+    expect(ledger).toMatchObject({ amount: "108.00", amountTendered: "108.00", changeGiven: "0.00" });
   }, 60_000);
 
   it("fails closed when only another tenant has tax configuration and location", async () => {

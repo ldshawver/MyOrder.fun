@@ -11,6 +11,7 @@
  *   GET  /health
  *   GET  /printers
  *   POST /print
+ *   POST /wifi
  *
  * Auth:
  *   x-api-key header must match PRINT_BRIDGE_API_KEY
@@ -565,6 +566,34 @@ async function handlePrint(req, res) {
   });
 }
 
+function handleWifi(req, res) {
+  if (!authenticate(req)) return respond(res, 401, { success: false, error: "Unauthorized" });
+  parseBody(req).then(body => {
+    const ssid = String(body.ssid ?? "").trim();
+    const password = String(body.password ?? "");
+    if (!ssid || !password) return respond(res, 422, { success: false, error: "A Wi-Fi name and password are required." });
+    try {
+      const output = execFileSync("sudo", ["-n", "/opt/myorder-print-bridge/node/bin/node", "/opt/myorder-print-bridge/apply-wifi.js"], {
+        input: JSON.stringify({ ssid, password }),
+        encoding: "utf8",
+        timeout: 60000,
+      });
+      const result = JSON.parse(output.trim().split("\n").pop() || "{}");
+      if (!result.success) return respond(res, 409, { success: false, error: result.error || "The Raspberry Pi could not join that Wi-Fi." });
+      return respond(res, 200, { success: true });
+    } catch (error) {
+      const stdout = error && error.stdout ? String(error.stdout) : "";
+      let message = "The Raspberry Pi could not change Wi-Fi.";
+      try {
+        const parsed = JSON.parse(stdout.trim().split("\n").pop() || "{}");
+        if (parsed.error) message = parsed.error;
+      } catch { /* the helper did not return JSON */ }
+      log("warn", "Wi-Fi change failed", { error: message });
+      return respond(res, 409, { success: false, error: message });
+    }
+  }).catch(error => respond(res, 400, { success: false, error: error.message || "Invalid JSON" }));
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
   if (req.method === "GET" && url.pathname === "/health") {
@@ -581,6 +610,10 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && url.pathname === "/print") {
     return handlePrint(req, res);
+  }
+
+  if (req.method === "POST" && url.pathname === "/wifi") {
+    return handleWifi(req, res);
   }
 
   return respond(res, 404, { success: false, error: "Not found" });

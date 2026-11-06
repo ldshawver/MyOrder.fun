@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { catalogueItemsAtLocation, loadInventoryWorkspace } from "@/lib/inventoryWorkspace";
+import { InventoryFloorLaunch } from "@/pages/admin/inventoryFloor";
 
 // ─── Stock Levels Types ───────────────────────────────────────────────────────
 
@@ -1908,9 +1909,9 @@ export default function AdminInventory() {
   }, [getToken]);
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
+    <div className="max-w-5xl mx-auto p-4 sm:p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
           <ClipboardList size={18} className="text-primary" />
         </div>
@@ -1922,6 +1923,7 @@ export default function AdminInventory() {
         <Button size="sm" variant="outline" onClick={() => setShowInventoryHealth(current => !current)}>Inventory Health</Button>
       </div>
       {exportError && <p role="alert" className="text-sm text-red-400">{exportError}</p>}
+      <InventoryFloorLaunch />
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">

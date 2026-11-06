@@ -49,7 +49,8 @@ vi.mock("@workspace/db", () => {
   return { db, usersTable, tenantsTable, auditLogsTable };
 });
 
-import { provisionVerifiedClerkUser, normalizeEmail } from "../userProvisioning";
+import { readFileSync } from "node:fs";
+import { provisionVerifiedClerkUser, normalizeEmail, preservedMembershipStatus } from "../userProvisioning";
 
 const clerk = (id = "user_1", email = "New@Example.com", status = "verified") => ({
   id,
@@ -94,7 +95,30 @@ describe("Clerk provisioning reconciliation", () => {
     state.users.push({ id: 8, clerkId: "pending_invite:1", email: "new@example.com", normalizedEmail: "new@example.com", role: "csr", status: "approved" });
     const res = await provisionVerifiedClerkUser({ clerkUser: clerk("user_real"), source: "test" });
     expect(res.status).toBe("linked");
-    expect(state.users[0]).toMatchObject({ clerkId: "user_real", role: "csr" });
+    expect(state.users[0]).toMatchObject({ clerkId: "user_real", role: "csr", status: "pending", approvedByClerkId: null, approvedAt: null });
+  });
+  it("does not auto-approve a new member", async () => {
+    const res = await provisionVerifiedClerkUser({ clerkUser: clerk("user_new_member", "member@example.com"), source: "webhook:user.created" });
+    expect(res.status).toBe("created");
+    expect(res.user?.status).toBe("pending");
+    expect(preservedMembershipStatus({ status: "approved" })).toBe("pending");
+    expect(preservedMembershipStatus({ status: "approved", approvedByClerkId: "owner", approvedAt: new Date() })).toBe("approved");
+  });
+  it("keeps an owner-stamped invite approved when the real account is linked", async () => {
+    state.users.push({ id: 8, clerkId: "pending_invite:2", email: "new@example.com", normalizedEmail: "new@example.com", role: "csr", status: "approved", approvedByClerkId: "owner", approvedAt: new Date("2026-01-01T00:00:00Z") });
+    const res = await provisionVerifiedClerkUser({ clerkUser: clerk("user_real"), source: "test" });
+    expect(res.user).toMatchObject({ status: "approved", approvedByClerkId: "owner" });
+  });
+  it("does not revoke an existing account that has no approval stamp when Clerk updates it", async () => {
+    state.users.push({ id: 4, clerkId: "user_1", email: "new@example.com", normalizedEmail: "new@example.com", role: "user", status: "approved", approvedByClerkId: null, approvedAt: null });
+    const res = await provisionVerifiedClerkUser({ clerkUser: clerk(), source: "webhook:user.updated" });
+    expect(res.status).toBe("updated");
+    expect(res.user?.status).toBe("approved");
+  });
+  it("onboarding sync cannot approve an account", () => {
+    const source = readFileSync(new URL("../../routes/users.ts", import.meta.url), "utf8");
+    expect(source).toContain("An onboarding decision never approves a member account");
+    expect(source).not.toMatch(/function onboardingStatusToUserStatus[\s\S]*?return "approved"/);
   });
   it("normalized email collision is blocked", async () => {
     state.users.push({ id: 9, clerkId: "user_other", email: "new@example.com", normalizedEmail: "new@example.com", role: "user" });

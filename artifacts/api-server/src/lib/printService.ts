@@ -24,6 +24,13 @@ import {
 } from "@workspace/db";
 import { eq, and, inArray, lt, sql } from "drizzle-orm";
 import { decodeStoredReceiptText, renderCustomerReceipt } from "./receiptRenderer";
+import {
+  BRIGHTEK_POS80_QUEUE,
+  isBrightekPos80,
+  shouldRerouteToBrightek,
+  sourcePrinterLabel,
+  withRerouteBanner,
+} from "./printFallback";
 import { charWidth, getLogo } from "./print/index";
 import { generateThankYouLabel } from "./print/templates/thankYouLabel.js";
 import {
@@ -358,8 +365,114 @@ async function claimJob(job: PrintJob): Promise<boolean> {
   return false;
 }
 
+function generalBrightek(rows: PrintPrinter[]): PrintPrinter | null {
+  return rows.find((row) => row.isActive && row.routingScope === "general" && row.locationId == null && isBrightekPos80(row)) ?? null;
+}
+
+async function findBrightekPos80(tenantId: number): Promise<PrintPrinter | null> {
+  const byQueue = await db.select().from(printPrintersTable).where(and(
+    eq(printPrintersTable.tenantId, tenantId),
+    eq(printPrintersTable.isActive, true),
+    eq(printPrintersTable.bridgePrinterName, BRIGHTEK_POS80_QUEUE),
+  )).limit(5);
+  const queued = generalBrightek(byQueue);
+  if (queued) return queued;
+  for (const name of [BRIGHTEK_POS80_QUEUE, "Brightek POS80"]) {
+    const named = generalBrightek(await db.select().from(printPrintersTable).where(and(
+      eq(printPrintersTable.tenantId, tenantId),
+      eq(printPrintersTable.isActive, true),
+      eq(printPrintersTable.name, name),
+    )).limit(5));
+    if (named) return named;
+  }
+  return null;
+}
+
 /**
- * Dispatch a receipt job: ethernet_direct → pi_bridge → mark retrying.
+ * The routed printer already failed. Queue the same slip on the general
+ * Brightek_POS80 with a top-of-receipt note, and stop retrying the original
+ * so a later recovery cannot print it twice. Returns false when there is no
+ * distinct Brightek to send it to; the caller keeps the normal retry.
+ */
+async function rerouteFailedReceiptToBrightek(
+  job: PrintJob,
+  printer: PrintPrinter,
+  attemptBase: number,
+  error: string | undefined,
+): Promise<boolean> {
+  if (!shouldRerouteToBrightek(job, printer)) return false;
+  const fallback = await findBrightekPos80(job.tenantId);
+  if (!fallback || fallback.id === printer.id) return false;
+
+  const source = sourcePrinterLabel(printer);
+  const rerouteKey = `reroute:${job.idempotencyKey || job.id}`;
+  const [existing] = await db.select().from(printJobsTable)
+    .where(and(eq(printJobsTable.idempotencyKey, rerouteKey)))
+    .limit(1);
+  const reason = error ?? "Receipt print failed — bridge unreachable or rejected job";
+  const markOriginalFailed = () => db.update(printJobsTable).set({
+    status: "failed",
+    retryCount: attemptBase,
+    errorMessage: `${reason} — rerouted to ${BRIGHTEK_POS80_QUEUE}`,
+  }).where(and(eq(printJobsTable.tenantId, job.tenantId), eq(printJobsTable.id, job.id)));
+
+  if (existing) {
+    await markOriginalFailed();
+    return true;
+  }
+
+  const payload = job.payloadJson && typeof job.payloadJson === "object" && !Array.isArray(job.payloadJson)
+    ? job.payloadJson as Record<string, unknown>
+    : {};
+  const [created] = await db.insert(printJobsTable).values({
+    tenantId: job.tenantId,
+    locationId: null,
+    shiftId: job.shiftId ?? null,
+    orderId: job.orderId ?? null,
+    printerId: fallback.id,
+    operatorUserId: job.operatorUserId ?? null,
+    jobType: job.jobType,
+    status: "queued",
+    idempotencyKey: rerouteKey,
+    renderFormat: "text",
+    payloadJson: {
+      ...payload,
+      reroutedFrom: source,
+      rerouteOfJobId: job.id,
+      fallbackPrinter: BRIGHTEK_POS80_QUEUE,
+    },
+    renderedText: withRerouteBanner(job.renderedText ?? "", source),
+    templateId: job.templateId ?? null,
+    templateVersion: job.templateVersion ?? null,
+    maxRetries: job.maxRetries ?? 3,
+  }).returning();
+
+  await markOriginalFailed();
+  pLog.warn({
+    event: "receipt_rerouted_to_brightek",
+    jobId: job.id,
+    fallbackJobId: created?.id ?? null,
+    printerId: printer.id,
+    fallbackPrinterId: fallback.id,
+    reroutedFrom: source,
+  }, "routed printer failed; receipt queued on Brightek_POS80");
+  if (created) {
+    try {
+      await dispatchReceiptJob(created, fallback);
+    } catch (err) {
+      pLog.error({
+        event: "brightek_fallback_dispatch_error",
+        jobId: created.id,
+        err: err instanceof Error ? err.message : String(err),
+      }, "Brightek fallback dispatch failed");
+    }
+  }
+  return true;
+}
+
+/**
+ * Dispatch a receipt job: ethernet_direct or bridge, then the Brightek_POS80
+ * when the routed printer cannot print.
  */
 export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
   if (await failClosedScopeMismatch(job, printer)) return;
@@ -400,9 +513,19 @@ export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): 
     return;
   }
 
-  // ── Failed — queue for retry ───────────────────────────────────────────────
-  // Bridge selection and fallback ordering is handled upstream by
-  // resolveReceiptPrinters / resolveRoutingDecision before the job is created.
+  // The routed printer failed. A different Brightek_POS80 prints the slip
+  // once, with a reroute note. When that printer is not configured, retry the
+  // original job as before.
+  try {
+    if (await rerouteFailedReceiptToBrightek(job, printer, attemptBase, result.error)) return;
+  } catch (err) {
+    pLog.error({
+      event: "brightek_fallback_error",
+      jobId: job.id,
+      err: err instanceof Error ? err.message : String(err),
+    }, "Brightek fallback could not be queued");
+  }
+
   const nextStatus = attemptBase >= maxRetries ? "failed" : "retrying";
   await db.update(printJobsTable).set({
     status: nextStatus,
@@ -606,6 +729,7 @@ export async function enqueueOrderPrintJobs(order: {
     operatorUserId: operator?.userId ?? null,
     metadata: { orderId: order.id },
   };
+  const pendingDispatches: Array<() => Promise<void>> = [];
 
   if (controls.autoPrintReceipts || controls.autoPrintOrders) {
     const result = await queueDocumentPrint({
@@ -616,7 +740,7 @@ export async function enqueueOrderPrintJobs(order: {
       render: { kind: "thermal-text", text: (_printer, columns) => renderAutomaticReceipt(tenantId, order.id, printOrder, columns) },
       legacyFallback: async () => (await resolveReceiptPrinters(profile, routeContext)).primary,
     });
-    if (result.status === "queued") dispatchReceiptJob(result.job, result.printer).catch(() => {});
+    if (result.status === "queued") pendingDispatches.push(() => dispatchReceiptJob(result.job, result.printer));
     else if (result.status === "no-route") pLog.warn({ event: "receipt_no_route", orderId: order.id, reason: result.reason }, "receipt not printed: no route");
   }
 
@@ -641,8 +765,15 @@ export async function enqueueOrderPrintJobs(order: {
         legacyFallback: ticket.legacyFallback,
         recordNoRoute: false,
       });
-      if (result.status === "queued") dispatchJob(result.job, result.printer).catch(() => {});
+      if (result.status === "queued") pendingDispatches.push(() => dispatchJob(result.job, result.printer));
     }
+  }
+  if (pendingDispatches.length > 0) {
+    void (async () => {
+      for (const dispatch of pendingDispatches) {
+        try { await dispatch(); } catch { /* dispatch records its own failure */ }
+      }
+    })();
   }
 
   // ── Label ─────────────────────────────────────────────────────────────────

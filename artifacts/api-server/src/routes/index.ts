@@ -24,6 +24,7 @@ import orderNotificationSettingsRouter from "./order-notification-settings";
 import tenantSettingsRouter from "./tenant-settings";
 import woocommerceRouter from "./woocommerce";
 import inventoryRouter from "./inventory";
+import inventoryFloorRouter from "./inventoryFloor";
 import sessionRouter from "./session";
 import feedbackRouter from "./feedback";
 import integrationsRouter from "./integrations";
@@ -54,6 +55,11 @@ router.use(publicCatalogRouter);
 router.use(printBridgeDiscoveryRouter);
 router.use(onboardingRouter);
 router.use(usersRouter);
+// Own feedback and store credit must run before the path-less provenance
+// gates on catalogue, settings, and shifts. Those gates were answering 403
+// for /api/feedback and /api/credits/me before either router was reached.
+router.use(feedbackRouter);
+router.use(creditsRouter);
 router.use(tenantsRouter);
 router.use(catalogRouter);
 router.use(catalogueProductsRouter);
@@ -77,11 +83,10 @@ router.use(printingRouter);
 router.use(adminPrintersRouter);
 router.use(importRouter);
 router.use(woocommerceRouter);
+router.use(inventoryFloorRouter);
 router.use(inventoryRouter);
 router.use(sessionRouter);
-router.use(feedbackRouter);
 router.use(integrationsRouter);
-router.use(creditsRouter);
 router.use(reportsRouter);
 router.use(taxConfigurationsRouter);
 router.use(visualEditorRouter);

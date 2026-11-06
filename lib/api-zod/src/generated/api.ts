@@ -256,7 +256,12 @@ export const ListCatalogItemsResponse = zod.object({
   "stockOnHand": zod.string().nullish(),
   "reservedQuantity": zod.string().nullish(),
   "availableQuantity": zod.string().nullish(),
-  "orderable": zod.boolean()
+  "orderable": zod.boolean(),
+  "components": zod.array(zod.object({
+  "name": zod.string(),
+  "label": zod.string(),
+  "quantity": zod.string()
+  })).optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -410,7 +415,12 @@ export const GetCatalogItemResponse = zod.object({
   "stockOnHand": zod.string().nullish(),
   "reservedQuantity": zod.string().nullish(),
   "availableQuantity": zod.string().nullish(),
-  "orderable": zod.boolean()
+  "orderable": zod.boolean(),
+  "components": zod.array(zod.object({
+  "name": zod.string(),
+  "label": zod.string(),
+  "quantity": zod.string()
+  })).optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -567,7 +577,12 @@ export const UpdateCatalogItemResponse = zod.object({
   "stockOnHand": zod.string().nullish(),
   "reservedQuantity": zod.string().nullish(),
   "availableQuantity": zod.string().nullish(),
-  "orderable": zod.boolean()
+  "orderable": zod.boolean(),
+  "components": zod.array(zod.object({
+  "name": zod.string(),
+  "label": zod.string(),
+  "quantity": zod.string()
+  })).optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -722,7 +737,8 @@ export const ListOrdersResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -943,7 +959,8 @@ export const GetOrderResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1053,7 +1070,8 @@ export const UpdateOrderStatusResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1174,7 +1192,8 @@ export const AcceptOrderResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1291,7 +1310,8 @@ export const AdjustOrderEtaResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1396,7 +1416,8 @@ export const MarkOrderReadyResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1505,7 +1526,8 @@ export const ReassignOrderResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1639,7 +1661,8 @@ export const ListDelayedOrdersResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1749,7 +1772,8 @@ export const GetRecentOrdersResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -2168,7 +2192,12 @@ export const AiConciergeChatResponse = zod.object({
   "stockOnHand": zod.string().nullish(),
   "reservedQuantity": zod.string().nullish(),
   "availableQuantity": zod.string().nullish(),
-  "orderable": zod.boolean()
+  "orderable": zod.boolean(),
+  "components": zod.array(zod.object({
+  "name": zod.string(),
+  "label": zod.string(),
+  "quantity": zod.string()
+  })).optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -2264,7 +2293,12 @@ export const AiCatalogSearchResponse = zod.object({
   "stockOnHand": zod.string().nullish(),
   "reservedQuantity": zod.string().nullish(),
   "availableQuantity": zod.string().nullish(),
-  "orderable": zod.boolean()
+  "orderable": zod.boolean(),
+  "components": zod.array(zod.object({
+  "name": zod.string(),
+  "label": zod.string(),
+  "quantity": zod.string()
+  })).optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -2354,7 +2388,12 @@ export const AiUpsellSuggestionsResponse = zod.object({
   "stockOnHand": zod.string().nullish(),
   "reservedQuantity": zod.string().nullish(),
   "availableQuantity": zod.string().nullish(),
-  "orderable": zod.boolean()
+  "orderable": zod.boolean(),
+  "components": zod.array(zod.object({
+  "name": zod.string(),
+  "label": zod.string(),
+  "quantity": zod.string()
+  })).optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -2656,7 +2695,8 @@ export const ConfirmPaymentResponse = zod.object({
   "quantity": zod.number(),
   "unitPrice": zod.number(),
   "totalPrice": zod.number(),
-  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+  "inventoryDeductions": zod.array(zod.record(zod.string(), zod.unknown())).optional(),
+  "specialComponents": zod.array(zod.object({ "name": zod.string(), "quantity": zod.string() })).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),

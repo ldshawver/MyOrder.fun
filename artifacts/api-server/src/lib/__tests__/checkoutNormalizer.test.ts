@@ -121,6 +121,20 @@ describe("checkoutNormalizer", () => {
         .resolves.toHaveLength(1);
     });
 
+    it("charges a current employee 20% off unless the product dollar amount is set", async () => {
+      makeDbMock(makeSampleLocalMappedItem({ price: "25.00", homiePrice: null }));
+      const discounted = await normalizeCheckoutCartWithContext([{ catalogItemId: 1, quantity: 1 }], undefined, true, 1, false, { isCurrentEmployee: true });
+      expect(discounted[0].unit_price).toBe(20);
+
+      makeDbMock(makeSampleLocalMappedItem({ price: "25.00", homiePrice: "19.50" }));
+      const explicit = await normalizeCheckoutCartWithContext([{ catalogItemId: 1, quantity: 1 }], undefined, true, 1, false, { isCurrentEmployee: true });
+      expect(explicit[0].unit_price).toBe(19.5);
+
+      makeDbMock(makeSampleLocalMappedItem({ price: "25.00", homiePrice: "19.50" }));
+      const retail = await normalizeCheckoutCartWithContext([{ catalogItemId: 1, quantity: 1 }], undefined, true, 1, false, { isCurrentEmployee: false });
+      expect(retail[0].unit_price).toBe(25);
+    });
+
     it("classifies a locally-mapped Alavont item as local_mapped", async () => {
       makeDbMock(makeSampleLocalMappedItem());
       const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 2 }]);

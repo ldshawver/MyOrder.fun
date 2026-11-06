@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { staffFulfillmentAction, STAFF_FULFILLMENT_STATUSES, staffVisibleFulfillmentState } from "@/lib/staffFulfillmentAction";
+import { expectedEndingQuantity } from "@/lib/shiftInventory";
 
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
@@ -76,8 +77,10 @@ type ShiftSetup = {
   printerReady: boolean;
   locationReady: boolean;
   csrDeliveryOptIn?: boolean;
+  deliveryMode?: "personal" | "uber";
   wifiSsid?: string;
   pickupNote?: string;
+  inventoryConfirmed?: boolean;
 };
 
 type EnrichedItem = {
@@ -120,6 +123,7 @@ type ActiveShift = {
   accountableCash?: number;
   runningCashBank: number;
   csrDeliveryOptIn: boolean;
+  deliveryMode?: "personal" | "uber" | null;
   csrDeliveryEarnings: number;
   inventory: EnrichedItem[];
   stats: ShiftStats;
@@ -129,6 +133,7 @@ type ActiveShift = {
 type RawShift = Partial<ActiveShift> & {
   tech_id?: number | null;
   box_assignment_id?: string | null;
+  setupJson?: unknown;
   setup_json?: unknown;
 };
 
@@ -157,6 +162,12 @@ function normalizeActiveShift(raw: RawShift | null | undefined): ActiveShift | n
     accountableCash: Number(raw.accountableCash ?? raw.stats?.cashSales ?? 0),
     runningCashBank: Number(raw.runningCashBank ?? raw.cashBankStart ?? 0),
     csrDeliveryOptIn: Boolean(raw.csrDeliveryOptIn),
+    deliveryMode: raw.deliveryMode === "personal" || raw.deliveryMode === "uber"
+      ? raw.deliveryMode
+      : ((raw.setupJson ?? raw.setup_json) as { deliveryMode?: unknown } | null | undefined)?.deliveryMode === "personal"
+        || ((raw.setupJson ?? raw.setup_json) as { deliveryMode?: unknown } | null | undefined)?.deliveryMode === "uber"
+        ? ((raw.setupJson ?? raw.setup_json) as { deliveryMode: "personal" | "uber" }).deliveryMode
+        : raw.csrDeliveryOptIn ? "personal" : null,
     csrDeliveryEarnings: Number(raw.csrDeliveryEarnings ?? 0),
     inventory: safeArray<EnrichedItem>(raw.inventory),
     stats: {
@@ -270,21 +281,25 @@ function ClockInPanel({ onClockIn, getToken }: {
   const [locationReady, setLocationReady] = useState(false);
   const [wifiSsid, setWifiSsid] = useState("");
   const [pickupNote, setPickupNote] = useState("");
-  const [csrDeliveryOptIn, setCsrDeliveryOptIn] = useState(false);
+  const [deliveryMode, setDeliveryMode] = useState<"personal" | "uber" | "">("");
   const [quantities, setQuantities] = useState<Record<number, string>>({});
+  const [inventoryAgreed, setInventoryAgreed] = useState(false);
   const cashBankStart = "100";
   const [loadingTemplate, setLoadingTemplate] = useState(true);
   const [clocking, setClocking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     async function load() {
       setLoadingTemplate(true);
+      setInventoryAgreed(false);
       try {
         const token = await getToken();
-        const res = await fetch("/api/shifts/inventory-template", {
+        const res = await fetch(`/api/shifts/inventory-template?box=${encodeURIComponent(boxAssignmentId)}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (cancelled) return;
         if (res.ok) {
           const data = await res.json();
           const rows = safeArray<TemplateRow>(data.template);
@@ -315,10 +330,11 @@ function ClockInPanel({ onClockIn, getToken }: {
       } catch {
         setError("Could not reach the server. Check your connection and try again.");
       }
-      setLoadingTemplate(false);
+      if (!cancelled) setLoadingTemplate(false);
     }
-    load();
-  }, [getToken]);
+    void load();
+    return () => { cancelled = true; };
+  }, [getToken, boxAssignmentId]);
 
   const mandatoryChecksComplete = wifiReady && printerReady && locationReady;
   const safeApprovedSsids = safeArray<string>(printerNetworkConfig?.approvedSsids);
@@ -326,6 +342,14 @@ function ClockInPanel({ onClockIn, getToken }: {
   const handleSubmit = async () => {
     if (!mandatoryChecksComplete) {
       setError("Confirm WiFi, printer, and pickup/location before clocking in.");
+      return;
+    }
+    if (deliveryMode !== "personal" && deliveryMode !== "uber") {
+      setError("Choose personal delivery or Uber delivery for this shift.");
+      return;
+    }
+    if (!inventoryAgreed) {
+      setError("Confirm the box amounts before starting. You are responsible for any discrepancy.");
       return;
     }
     setClocking(true);
@@ -344,9 +368,11 @@ function ClockInPanel({ onClockIn, getToken }: {
         wifiReady,
         printerReady,
         locationReady,
-        csrDeliveryOptIn,
+        csrDeliveryOptIn: deliveryMode === "personal",
+        deliveryMode,
         wifiSsid: wifiSsid.trim(),
         pickupNote: pickupNote.trim(),
+        inventoryConfirmed: true,
       });
     } catch (err) {
       setError((err as Error).message ?? "Clock-in failed. Please try again.");
@@ -398,7 +424,7 @@ function ClockInPanel({ onClockIn, getToken }: {
         </div>
         <div>
           <div className="text-sm font-bold">Start Your Shift</div>
-          <div className="text-xs text-muted-foreground">Select tenant-wide location/delivery options, confirm inventory, then become active for orders</div>
+          <div className="text-xs text-muted-foreground">The amounts are the current inventory in the box you assign. Confirm them before you start.</div>
         </div>
       </div>
 
@@ -491,22 +517,18 @@ function ClockInPanel({ onClockIn, getToken }: {
             <SetupCheck label="I confirm printer is available" checked={printerReady} onChange={setPrinterReady} />
           </div>
 
-          {/* CSR personal delivery opt-in */}
-          {deliveryOptionId && deliveryOptionId !== "pickup" && (
-            <label className="md:col-span-3 flex items-start gap-3 rounded-xl border border-border/40 bg-primary/5 px-4 py-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={csrDeliveryOptIn}
-                onChange={e => setCsrDeliveryOptIn(e.target.checked)}
-                className="mt-0.5 size-4 accent-primary"
-                data-testid="checkbox-csr-delivery-opt-in"
-              />
-              <div>
-                <div className="text-xs font-semibold">I'll personally deliver orders this shift</div>
-                <div className="text-[11px] text-muted-foreground mt-0.5">Customers can choose personal delivery only within 2 miles. Fee is $6 + 3% of sale total and is shown before assignment.</div>
-              </div>
+          <div className="md:col-span-3 rounded-xl border border-border/40 bg-primary/5 px-4 py-3 space-y-2">
+            <div className="text-xs font-semibold">How will deliveries be handled this shift?</div>
+            <div className="text-[11px] text-muted-foreground">Customers only choose pickup or delivery. This choice decides who delivers, and the delivery price still comes from the courier quote. Personal delivery earns 80% of that fee.</div>
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input type="radio" name="shift-delivery-mode" value="personal" checked={deliveryMode === "personal"} onChange={() => setDeliveryMode("personal")} className="mt-0.5 size-4 accent-primary" data-testid="radio-delivery-personal" />
+              <span className="text-xs">I'll personally deliver. I earn 80% of the delivery fee.</span>
             </label>
-          )}
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input type="radio" name="shift-delivery-mode" value="uber" checked={deliveryMode === "uber"} onChange={() => setDeliveryMode("uber")} className="mt-0.5 size-4 accent-primary" data-testid="radio-delivery-uber" />
+              <span className="text-xs">Uber delivers this shift.</span>
+            </label>
+          </div>
 
           {/* Custom pickup note */}
           <div className="md:col-span-3 space-y-1">
@@ -544,6 +566,10 @@ function ClockInPanel({ onClockIn, getToken }: {
 
       {/* Inventory list */}
       <div className="divide-y divide-border/20">
+        <div className="flex items-center justify-between px-6 py-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+          <span>Item</span>
+          <span>On hand</span>
+        </div>
         {sections.length === 0 && (
           <div className="px-6 py-8 text-center text-sm text-muted-foreground">
             No Alavont inventory rows are available for clock-in. Ask a supervisor to import or seed the Alavont catalog inventory.
@@ -575,14 +601,9 @@ function ClockInPanel({ onClockIn, getToken }: {
                   <div className="text-[10px] text-muted-foreground shrink-0 w-8 text-center">
                     {row.unitType}
                   </div>
-                  <Input
-                    type="number"
-                    min="0"
-                    step={row.unitType === "G" ? "0.1" : "1"}
-                    value={quantities[row.id] ?? "0"}
-                    onChange={e => setQuantities(prev => ({ ...prev, [row.id]: e.target.value }))}
-                    className="h-8 w-24 text-right text-sm rounded-xl bg-background/50 border-border/50 font-mono"
-                  />
+                  <div className="h-8 w-24 rounded-xl border border-border/50 bg-background px-2 text-right text-sm font-mono leading-8 text-foreground" data-testid={`opening-qty-${row.id}`}>
+                    {quantities[row.id] ?? "0"}
+                  </div>
                 </div>
               ))}
             </div>
@@ -590,11 +611,15 @@ function ClockInPanel({ onClockIn, getToken }: {
         ))}
       </div>
 
-      <div className="px-6 py-5 border-t border-border/40">
+      <div className="px-6 py-5 border-t border-border/40 space-y-3">
+        <label className="flex items-start gap-3 text-sm">
+          <input type="checkbox" checked={inventoryAgreed} onChange={event => setInventoryAgreed(event.target.checked)} className="mt-1 size-4 accent-primary" data-testid="checkbox-inventory-agreement" />
+          <span>I agree these amounts are the current inventory in this box. I am responsible for any discrepancy.</span>
+        </label>
         <Button
           className="w-full rounded-xl h-10 font-bold text-sm shadow-lg shadow-primary/20"
           onClick={handleSubmit}
-          disabled={clocking || !mandatoryChecksComplete}
+          disabled={clocking || !mandatoryChecksComplete || !inventoryAgreed || (deliveryMode !== "personal" && deliveryMode !== "uber")}
           data-testid="button-clock-in"
         >
           <LogIn size={15} className="mr-2" />
@@ -638,7 +663,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
   };
   for (const item of shiftInventory) {
     if (item.rowType === "item") {
-      initialCounts[item.id] = String(item.quantityEnd ?? 0);
+      initialCounts[item.id] = String(expectedEndingQuantity(item));
     }
   }
 
@@ -771,7 +796,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
                     </div>
                   )}
                   {section.items.map(item => {
-                    const expected = item.quantityEnd ?? (item.quantityStart - item.quantitySold);
+                    const expected = expectedEndingQuantity(item);
                     const actual = parseFloat(actualCounts[item.id] ?? String(expected));
                     const disc = expected - actual;
                     const hasDisc = Math.abs(disc) > 0.001;
@@ -1134,7 +1159,7 @@ function PaymentStat({ label, amount }: { label: string; amount: number }) {
 
 // ─── Active Shift Panel ───────────────────────────────────────────────────────
 
-function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOut: () => void }) {
+function ActiveShiftPanel({ shift, onClockOut, onDeliveryMode }: { shift: ActiveShift; onClockOut: () => void; onDeliveryMode: (mode: "personal" | "uber") => Promise<void> }) {
   const shiftInventory = safeArray<EnrichedItem>(shift.inventory);
   const shiftStats = {
     ...emptyShiftStats(),
@@ -1209,6 +1234,18 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
           <LogOut size={12} className="mr-1.5" />
           End Shift
         </Button>
+      </div>
+      <div className="px-6 py-3 border-b border-border/40 flex flex-wrap items-center gap-4 text-xs">
+        <span className="font-semibold">Deliveries this shift</span>
+        <label className="flex items-center gap-2">
+          <input type="radio" name="active-delivery-mode" checked={shift.deliveryMode === "personal"} onChange={() => void onDeliveryMode("personal")} data-testid="radio-active-delivery-personal" />
+          Personal · you earn 80%
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="radio" name="active-delivery-mode" checked={shift.deliveryMode === "uber"} onChange={() => void onDeliveryMode("uber")} data-testid="radio-active-delivery-uber" />
+          Uber delivers
+        </label>
+        {!shift.deliveryMode && <span className="text-amber-500">Choose one so customers can select delivery.</span>}
       </div>
 
       {/* Stats bar */}
@@ -1661,6 +1698,11 @@ function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
                 {item.receiptName && (
                   <div className="text-muted-foreground/60 text-[10px]">Receipt: {item.receiptName}</div>
                 )}
+                {item.specialComponents && item.specialComponents.length > 0 && (
+                  <div className="text-muted-foreground text-[11px] mt-0.5">
+                    Includes {item.specialComponents.map(component => `${component.quantity} ${component.name}`).join(", ")}
+                  </div>
+                )}
                 {item.inventoryDeductions && item.inventoryDeductions.length > 0 && (
                   <div className="text-muted-foreground/70 text-[10px] mt-0.5">
                     Pulled from {item.inventoryDeductions.map(d => `${d.locationName ?? `location #${d.locationId}`} (${d.quantity})`).join(", ")}
@@ -1811,7 +1853,12 @@ function CustomerServiceRepQueueContent() {
         const rateLimited = sessionResponse.status === 429 || optionsResponse?.status === 429;
         throw new Error(rateLimited ? "General Queue is temporarily rate-limited. Try again shortly." : "Could not refresh General Queue settings.");
       }
-      setGeneralSession(await sessionResponse.json());
+      const sessionState = await sessionResponse.json() as GeneralQueueSessionState;
+      setGeneralSession(sessionState);
+      const expectedClose = sessionState.session?.expectedClosingCash ?? sessionState.session?.openingBalance;
+      if (expectedClose != null) {
+        setClosingBalance(current => current === "" ? Number(expectedClose).toFixed(2) : current);
+      }
       if (optionsResponse) {
         const data = await optionsResponse.json() as Partial<GeneralSessionOptions>;
         const options = { locations: safeArray(data.locations), boxes: safeArray(data.boxes), eligibleCsrs: safeArray(data.eligibleCsrs) };
@@ -1881,9 +1928,12 @@ function CustomerServiceRepQueueContent() {
           wifiReady: setup.wifiReady,
           printerReady: setup.printerReady,
           locationReady: setup.locationReady,
-          csrDeliveryOptIn: setup.csrDeliveryOptIn ?? false,
+          csrDeliveryOptIn: setup.deliveryMode === "personal",
+          deliveryMode: setup.deliveryMode,
           wifiSsid: setup.wifiSsid ?? "",
           pickupNote: setup.pickupNote ?? "",
+          inventoryConfirmed: setup.inventoryConfirmed === true,
+          startingInventoryConfirmed: setup.inventoryConfirmed === true,
         },
       }),
     });
@@ -2083,7 +2133,18 @@ function CustomerServiceRepQueueContent() {
         shiftLoading ? (
           <div className="h-24 animate-pulse bg-muted/20 rounded-2xl" />
         ) : shift ? (
-          <ActiveShiftPanel shift={shift} onClockOut={() => setShowClockOutModal(true)} />
+          <ActiveShiftPanel shift={shift} onClockOut={() => setShowClockOutModal(true)} onDeliveryMode={async (mode) => {
+            const token = await getToken();
+            const res = await fetch("/api/shifts/active-delivery-mode", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+              body: JSON.stringify({ deliveryMode: mode }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error((data as { error?: string }).error ?? "Could not save the delivery style");
+            if ((data as { shift?: RawShift }).shift) setShift(normalizeActiveShift((data as { shift: RawShift }).shift));
+            await refetchShift();
+          }} />
         ) : (
           <ClockInPanel onClockIn={handleClockIn} getToken={getToken} />
         )

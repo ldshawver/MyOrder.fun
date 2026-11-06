@@ -15,10 +15,11 @@ import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 import { canAccessStaffRoute, normalizeApplicationRole } from "@/lib/routingPolicy";
 import { getAccountApprovalScreenStatus } from "@/lib/accountApprovalError";
+import ProfileCompletion from "@/components/ProfileCompletion";
 
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
-import { luciferAuthAppearance } from "@/lib/luciferAuthAppearance";
+import { luciferAuthAppearance, luciferAuthContrastCss } from "@/lib/luciferAuthAppearance";
 import Home from "@/pages/home";
 import PublicCatalog from "@/pages/public-catalog";
 import WaitlistPage from "@/pages/waitlist";
@@ -85,6 +86,7 @@ if (!clerkPubKey) {
 function AuthBrandWrapper({ children, registration = false }: { children: ReactNode; registration?: boolean }) {
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#090909] px-4 py-10 text-white sm:px-6 sm:py-14">
+      <style>{luciferAuthContrastCss}</style>
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(139,0,0,0.2),transparent_55%)]" />
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#8b0000] to-transparent" />
       <div className="relative mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-md flex-col items-center justify-center gap-7 sm:min-h-[calc(100vh-7rem)]">
@@ -501,6 +503,16 @@ function AuthenticatedApp() {
         status={user.status}
         userEmail={user.email}
         onCheckStatus={user.status === "pending" ? handleCheckStatus : undefined}
+      />
+    );
+  }
+
+  if (user.profileCompletionRequired) {
+    return (
+      <ProfileCompletion
+        user={user}
+        onSaved={refreshCurrentUser}
+        onSignOut={() => signOut(() => window.location.replace(`${basePath}/sign-in`))}
       />
     );
   }

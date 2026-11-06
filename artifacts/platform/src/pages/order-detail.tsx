@@ -23,11 +23,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
+import { CustomerOrderStage } from "@/components/CustomerOrderStage";
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { CatalogNotice } from "@/components/CatalogNotice";
-import { useOrderEvents } from "@/hooks/useOrderEvents";
 import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
-import { customerTracker } from "@/lib/orderTracker";
 import { isOrderAccessFailure } from "@/lib/orderLoadState";
 
 type OrderWithTracking = Order & {
@@ -81,134 +80,7 @@ function formatCourierEta(value?: string | null) {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
-function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
-  const queryClient = useQueryClient();
-  const { getToken } = useAuth();
-  const [elapsed, setElapsed] = useState(0);
-  const [courier, setCourier] = useState<{ state: string; courierStatus: string | null } | null>(null);
-
-  useEffect(() => {
-    const start = performance.now();
-    setElapsed(0);
-    const t = setInterval(() => setElapsed(performance.now() - start), 1000);
-    return () => clearInterval(t);
-  }, [order.serverNow]);
-
-  useEffect(() => {
-    if (order.deliveryMethod !== "uber_direct") return;
-    let cancelled = false;
-    const refresh = async () => {
-      const token = await getToken();
-      const response = await fetch(`/api/orders/${order.id}/courier`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-      if (response.ok && !cancelled) setCourier(await response.json() as { state: string; courierStatus: string | null });
-    };
-    void refresh();
-    const t = setInterval(() => void refresh(), 15000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [getToken, order.id, order.deliveryMethod]);
-
-  useOrderEvents((ev) => {
-    if (ev.orderId !== order.id) return;
-    if (ev.type === "order.updated" || ev.type === "order.ready" || ev.type === "order.assigned") {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(order.id) });
-    }
-  });
-
-  const serverNow = Date.parse(order.serverNow ?? "");
-  const tracker = customerTracker(order, Number.isFinite(serverNow) ? serverNow + elapsed : NaN);
-  const isReady = tracker.phase === "ready";
-  const isCompleted = tracker.phase === "completed";
-
-  if (isReady || isCompleted) {
-    return (
-      <div
-        className="glass-card rounded-2xl p-8 border border-emerald-500/30 bg-emerald-500/5 flex flex-col items-center text-center"
-        data-testid="customer-ready-banner"
-      >
-        <AnimatedHourglass
-          size={150}
-          message={isCompleted ? "Thank you — your order is complete." : "Ready now — the hourglass is out of sand."}
-          progress={1}
-        />
-        <CheckCircle2 size={56} className="text-emerald-400" />
-        <div className="mt-4 text-2xl font-bold text-emerald-300">
-          {isCompleted ? "Order Complete" : tracker.label}
-        </div>
-        <p className="text-sm text-muted-foreground mt-2 max-w-sm" data-testid="customer-stage-message">
-          {isCompleted ? "Your order has been completed." : tracker.label}
-        </p>
-      </div>
-    );
-  }
-
-  const remaining = tracker.remainingMs;
-  const mins = Math.floor((remaining ?? 0) / 60000);
-  const secs = Math.floor(((remaining ?? 0) % 60000) / 1000);
-  const overdue = tracker.phase === "overdue";
-  const courierLabel: Record<string, string> = { pending: "Courier requested", pickup: "Courier on the way to pickup", picked_up: "Order picked up", dropoff: "Courier on the way", delivered: "Delivered", canceled: "Courier canceled" };
-
-  return (
-    <div
-      className="glass-card rounded-2xl p-8 border border-primary/20 bg-primary/3 flex flex-col items-center text-center"
-      data-testid="customer-hourglass-panel"
-    >
-      <AnimatedHourglass size={200} message={tracker.label} progress={tracker.progress} />
-      {remaining !== null && (
-        <div className="mt-6 w-full max-w-sm" data-testid="hourglass-countdown">
-          <div className={`font-mono text-3xl font-bold ${overdue ? "text-amber-400" : "text-primary"}`}>
-            {overdue ? "Finishing up" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
-          </div>
-          <div className="text-[11px] uppercase tracking-widest text-muted-foreground mt-1">
-            {overdue ? "finishing up — we'll notify you the moment it's ready" : "estimated time remaining"}
-          </div>
-          <div className="mt-3 h-1.5 rounded-full bg-border/40 overflow-hidden">
-            <div
-              className={`h-full transition-all ${overdue ? "bg-amber-400" : "bg-primary"}`}
-              style={{ width: `${tracker.progress * 100}%` }}
-            />
-          </div>
-        </div>
-      )}
-      <p className="text-sm text-muted-foreground mt-4 max-w-sm" data-testid="customer-stage-message" role="status" aria-live="polite">
-        {tracker.label}. We'll notify you when staff marks it ready.
-      </p>
-      {order.deliveryMethod === "uber_direct" && (
-        <div className="mt-5 w-full max-w-md rounded-xl border border-primary/20 bg-background/70 p-4 text-left" data-testid="customer-uber-info">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-primary">
-            <Truck size={14} /> Uber Courier
-          </div>
-          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-            <div>
-              <div className="text-muted-foreground">Delivery fee</div>
-              <div className="font-mono font-semibold">
-                {order.deliveryFee != null ? `$${order.deliveryFee.toFixed(2)}` : "Quoted at dispatch"}
-              </div>
-            </div>
-            <div>
-              <div className="text-muted-foreground">ETA</div>
-              <div className="font-mono font-semibold">
-                {formatCourierEta(order.deliveryQuote?.dropoffEta) ?? (order.deliveryQuote?.duration ? `${order.deliveryQuote.duration} min` : "Waiting for dispatch")}
-              </div>
-            </div>
-          </div>
-          {courier && <p className="mt-3 text-xs" role="status">{courierLabel[courier.courierStatus ?? ""] ?? ({ awaiting_staff_request: "Awaiting staff delivery request", delivery_create_pending: "Courier request pending", delivery_created: "Courier requested", reconciliation_required: "Courier status under review" }[courier.state] ?? "Delivery status pending")}</p>}
-          {(order as OrderWithTracking).trackingUrl && (
-            <a
-              href={(order as OrderWithTracking).trackingUrl ?? undefined}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-primary hover:underline"
-            >
-              Track delivery <ExternalLink size={12} />
-            </a>
-          )}
-        </div>
-      )}
-    </div>
-  );
+  return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 type ActiveCsrOption = {
@@ -704,7 +576,7 @@ export default function OrderDetail() {
 
       {/* ── Customer waiting view: Hourglass with ETA countdown ────── */}
       {isCustomer && isActiveFulfillment && (
-        <CustomerHourglassPanel order={order as OrderWithTracking} />
+        <CustomerOrderStage order={order as OrderWithTracking} />
       )}
 
       {canManageRouting && (
@@ -749,6 +621,11 @@ export default function OrderDetail() {
                     <div className="text-xs text-muted-foreground mt-0.5 font-mono">
                       ${item.unitPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })} × {item.quantity}
                     </div>
+                    {item.specialComponents && item.specialComponents.length > 0 && (
+                      <div className="text-xs text-muted-foreground mt-1">
+                        Includes {item.specialComponents.map(component => `${component.quantity} ${component.name}`).join(", ")}
+                      </div>
+                    )}
                     {item.inventoryDeductions && item.inventoryDeductions.length > 0 && (
                       <div className="text-[11px] text-muted-foreground mt-1">
                         Pulled from {item.inventoryDeductions.map(d => `${d.locationName ?? `location #${d.locationId}`} (${d.quantity})`).join(", ")}
@@ -789,12 +666,12 @@ export default function OrderDetail() {
               <div className="space-y-3">
                 {isNotesLoading ? (
                   <div className="text-sm text-muted-foreground animate-pulse">Loading notes...</div>
-                ) : notesRes?.notes?.length === 0 ? (
+                ) : (notesRes?.notes ?? []).filter(note => !isCustomer || (!note.isInternal && !/general\s*que/i.test(note.content ?? ""))).length === 0 ? (
                   <div className="text-sm text-muted-foreground text-center py-6 border border-dashed border-border/40 rounded-xl">
                     No notes yet.
                   </div>
                 ) : (
-                  notesRes?.notes?.map(note => (
+                  (notesRes?.notes ?? []).filter(note => !isCustomer || (!note.isInternal && !/general\s*que/i.test(note.content ?? ""))).map(note => (
                     <div
                       key={note.id}
                       className={`p-4 rounded-xl border ${
@@ -902,7 +779,7 @@ export default function OrderDetail() {
                 {order.pickupAt && (
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-muted-foreground">Pickup time</span>
-                    <span className="font-mono text-right">{(order.pickupSchedule as { localLabel?: string } | null)?.localLabel ?? new Date(order.pickupAt).toLocaleString()}</span>
+                    <span className="font-mono text-right">{(order.pickupSchedule as { localLabel?: string } | null)?.localLabel ?? new Date(order.pickupAt).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                   </div>
                 )}
                 {order.deliveryQuoteId && (
