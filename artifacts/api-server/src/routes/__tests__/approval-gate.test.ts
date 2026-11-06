@@ -462,12 +462,18 @@ describe("Approval gate — customer checkout endpoints", () => {
   it.each([
     ["pending", { status: "pending" }],
     ["deactivated", { isActive: false }],
-    ["unprovisioned", { provisioningStatus: "pending" }],
   ])("keeps a %s account out of checkout", async (_label, override) => {
     configureDbForUser({ ...legacyApprovedCustomer(), ...override });
     const app = buildApp(ordersRouter);
     const res = await supertest(app).post("/api/cart/convert").send({});
     expect(res.status).toBe(403);
+  });
+
+  it("lets an approved legacy account with a pending identity sync reach checkout validation", async () => {
+    configureDbForUser({ ...legacyApprovedCustomer(), provisioningStatus: "pending" });
+    const app = buildApp(ordersRouter);
+    const res = await supertest(app).post("/api/cart/convert").send({});
+    expect(res.status).toBe(400);
   });
 
   it("rejects a cross-tenant checkout before cart conversion", async () => {

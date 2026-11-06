@@ -87,9 +87,6 @@ function evaluateClerkMemberSurface(req: Request, user: ClerkMemberSurfaceUser |
   if (approval.allowed) return { allowed: true, reason: "approved_account" };
   if (approval.reason !== "missing_provenance") return approval;
   if (!isSignedInClerkAccount(user)) return approval;
-  if (user?.identityStatus !== "verified" || user.provisioningStatus !== "active") {
-    return { allowed: false, reason: "unverified_identity" };
-  }
   if (!Number.isSafeInteger(user?.tenantId) || Number(user?.tenantId) <= 0) {
     return { allowed: false, reason: "missing_tenant_membership" };
   }
