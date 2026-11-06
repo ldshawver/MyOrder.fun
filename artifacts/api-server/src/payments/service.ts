@@ -192,6 +192,41 @@ export class PaymentService {
     return outcome;
   }
 
+  async cancelBuyerCheckout(input: { tenantId: number; customerId: number; orderId: number; attemptId: number; actorUserId: number }) {
+    const outcome = await db.transaction(async tx => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
+      const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, input.orderId), eq(ordersTable.tenantId, input.tenantId))).limit(1);
+      if (!order) throw new PaymentServiceError(404, "ORDER_NOT_FOUND", "Order not found");
+      if (order.customerId !== input.customerId) throw new PaymentServiceError(403, "ORDER_FORBIDDEN", "Forbidden");
+      const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.id, input.attemptId), eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId))).limit(1);
+      if (!attempt?.providerOrderId || attempt.providerEnvironment !== this.config.environment) throw new PaymentServiceError(404, "PAYMENT_NOT_FOUND", "Payment attempt not found");
+      if (attempt.state === "cancelled" && order.status === "cancelled") return { status: "cancelled", replayed: true } as const;
+      if (order.paymentStatus === "paid" || !["created"].includes(attempt.state)) throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Payment cancellation requires reconciliation");
+      const [capture] = await tx.select().from(paymentCapturesTable).where(and(eq(paymentCapturesTable.tenantId, input.tenantId), eq(paymentCapturesTable.paymentAttemptId, attempt.id))).limit(1);
+      if (capture) throw new PaymentServiceError(409, "CAPTURE_RECONCILIATION_REQUIRED", "Captured payment cannot be cancelled");
+      let authoritative;
+      try { authoritative = await this.provider.getOrder(attempt.providerOrderId); }
+      catch (error) {
+        const failureClass = error instanceof PayPalProviderError ? error.failureClass : "provider_error";
+        await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "pending", failureClass: `cancellation_${failureClass}` }).where(eq(paymentAttemptsTable.id, attempt.id));
+        return { providerError: error };
+      }
+      if (authoritative.id !== attempt.providerOrderId || authoritative.status !== "CREATED" || authoritative.capture || !sameMoney(authoritative.amount.value, attempt.requestedAmount) || authoritative.amount.currency !== attempt.requestedCurrency) {
+        await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "cancellation_provider_state_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        return { providerError: new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Provider state prevents cancellation") };
+      }
+      await tx.update(paymentAttemptsTable).set({ state: "cancelled", reconciliationState: "not_required", failureClass: "buyer_cancelled" }).where(eq(paymentAttemptsTable.id, attempt.id));
+      await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+      const creditCents = dollarsToCents(order.customerCreditApplied);
+      if (creditCents > 0) await releaseCustomerCredit(tx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.actorUserId, orderId: order.id, amountCents: creditCents, idempotencyKey: `release:cancel:${attempt.id}`, reason: "Buyer cancelled PayPal checkout" });
+      const now = new Date();
+      await tx.update(ordersTable).set({ status: "cancelled", fulfillmentStatus: "cancelled", cancelledAt: now, cancelledByUserId: input.actorUserId, customerCreditApplied: creditCents > 0 ? "0.00" : order.customerCreditApplied, remainingTenderAmount: creditCents > 0 ? order.total : order.remainingTenderAmount, updatedAt: now }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, input.tenantId)));
+      return { status: "cancelled", replayed: false } as const;
+    });
+    if ("providerError" in outcome) throw outcome.providerError;
+    return outcome;
+  }
+
   /**
    * Commit the provider intent before the external POST.  This deliberately
    * uses its own transaction: callers must never wrap the provider call in a

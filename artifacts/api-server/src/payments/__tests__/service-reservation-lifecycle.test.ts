@@ -82,6 +82,16 @@ const config = { enabled: true, environment: "sandbox" } as never;
 beforeEach(() => { state.attempts = []; state.captures = []; state.snapshots = []; state.reservations = []; state.audit = []; state.reserved.mockReset(); state.released.mockReset(); testOrder.status = "submitted"; testOrder.remainingTenderAmount = "12.00"; });
 
 describe("payment attempt and inventory lifecycle", () => {
+  it("rejects cross-user and cross-tenant payment access before calling PayPal", async () => {
+    const provider = { createOrder: vi.fn(), getOrder: vi.fn() };
+    const service = new PaymentService(config, provider as never);
+    await expect(service.create({ ...input, customerId: 999 })).rejects.toMatchObject({ code: "ORDER_FORBIDDEN" });
+    await expect(service.create({ ...input, tenantId: 999 })).rejects.toMatchObject({ code: "ORDER_NOT_FOUND" });
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, providerOrderId: "P-1", providerEnvironment: "sandbox", state: "created", requestedAmount: "12.00", requestedCurrency: "USD" });
+    await expect(service.cancelBuyerCheckout({ tenantId: 2, customerId: 999, orderId: 4, attemptId: 1, actorUserId: 999 })).rejects.toMatchObject({ code: "ORDER_FORBIDDEN" });
+    expect(provider.createOrder).not.toHaveBeenCalled();
+    expect(provider.getOrder).not.toHaveBeenCalled();
+  });
   it("expires an unapproved sandbox order with an expired reservation exactly once and audits it", async () => {
     state.attempts.push({ id: 12, tenantId: 2, orderId: 4, providerOrderId: "P-CREATED", providerEnvironment: "sandbox", state: "created", requestedAmount: "12.00", requestedCurrency: "USD" });
     state.reservations.push({ id: 49, orderId: 4, status: "reserved", expiresAt: new Date(Date.now() - 60_000) });
@@ -153,6 +163,42 @@ describe("payment attempt and inventory lifecycle", () => {
     await expect(service.capture({ ...input, attemptId: 1, finalize: vi.fn() })).rejects.toThrow("declined");
     expect(state.attempts[0]).toMatchObject({ state: "failed" });
     expect(state.released).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels and releases exactly once only after PayPal confirms the order is still CREATED", async () => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, idempotencyKey: "first", providerOrderId: "P-1",
+      state: "created", providerEnvironment: "sandbox", requestedAmount: "12.00", requestedCurrency: "USD" });
+    const provider = { getOrder: vi.fn(async () => ({ id: "P-1", status: "CREATED", amount: { value: "12.00", currency: "USD" } })) };
+    const service = new PaymentService(config, provider as never);
+    const request = { tenantId: 2, customerId: 9, orderId: 4, attemptId: 1, actorUserId: 9 };
+    await expect(service.cancelBuyerCheckout(request)).resolves.toEqual({ status: "cancelled", replayed: false });
+    expect(state.attempts[0]).toMatchObject({ state: "cancelled", failureClass: "buyer_cancelled" });
+    expect(state.released).toHaveBeenCalledTimes(1);
+    expect(testOrder.status).toBe("cancelled");
+    await expect(service.cancelBuyerCheckout(request)).resolves.toEqual({ status: "cancelled", replayed: true });
+    expect(provider.getOrder).toHaveBeenCalledTimes(1);
+    expect(state.released).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["APPROVED", "cancellation_provider_state_mismatch"],
+    ["COMPLETED", "cancellation_provider_state_mismatch"],
+  ])("does not release a %s PayPal order on browser cancellation", async (status, failureClass) => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, idempotencyKey: "first", providerOrderId: "P-1",
+      state: "created", providerEnvironment: "sandbox", requestedAmount: "12.00", requestedCurrency: "USD" });
+    const service = new PaymentService(config, { getOrder: vi.fn(async () => ({ id: "P-1", status, amount: { value: "12.00", currency: "USD" } })) } as never);
+    await expect(service.cancelBuyerCheckout({ tenantId: 2, customerId: 9, orderId: 4, attemptId: 1, actorUserId: 9 })).rejects.toMatchObject({ code: "PAYMENT_RECONCILIATION_REQUIRED" });
+    expect(state.attempts[0]).toMatchObject({ state: "reconciliation_required", failureClass });
+    expect(state.released).not.toHaveBeenCalled();
+  });
+
+  it("keeps inventory held and records an unknown cancellation lookup outcome", async () => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, idempotencyKey: "first", providerOrderId: "P-1",
+      state: "created", providerEnvironment: "sandbox", requestedAmount: "12.00", requestedCurrency: "USD" });
+    const service = new PaymentService(config, { getOrder: vi.fn(async () => { throw new PayPalProviderError("unknown_outcome", "lookup timed out"); }) } as never);
+    await expect(service.cancelBuyerCheckout({ tenantId: 2, customerId: 9, orderId: 4, attemptId: 1, actorUserId: 9 })).rejects.toThrow("lookup timed out");
+    expect(state.attempts[0]).toMatchObject({ state: "reconciliation_required", failureClass: "cancellation_unknown_outcome" });
+    expect(state.released).not.toHaveBeenCalled();
   });
 
   it("keeps a captured provider payment in reconciliation when local finalization fails", async () => {

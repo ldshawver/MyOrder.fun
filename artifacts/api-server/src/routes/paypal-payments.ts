@@ -24,6 +24,7 @@ const adminAuth = [limiter, requireAuth, loadDbUser, requireDbUser, requireAppro
 const Id = z.coerce.number().int().positive();
 const Empty = z.object({}).strict();
 const Capture = z.object({ attemptId: z.number().int().positive() }).strict();
+const Cancel = z.object({ attemptId: z.number().int().positive() }).strict();
 const Refund = z.object({ amount: z.string().regex(/^\d+\.\d{2}$/).optional(), reason: z.string().trim().min(3).max(500) }).strict();
 
 function key(value: unknown): string {
@@ -91,6 +92,20 @@ router.post("/payments/paypal/orders/:orderId/capture", ...customerAuth, async (
     }
     fail(res, error);
   }
+});
+
+router.post("/payments/paypal/orders/:orderId/cancel", ...customerAuth, async (req, res) => {
+  try {
+    const body = Cancel.parse(req.body);
+    const orderId = Id.parse(req.params.orderId);
+    const actor = req.dbUser!;
+    key(req.get("Idempotency-Key"));
+    const result = await (await service(req.authorizedTenantId!)).cancelBuyerCheckout({
+      tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, actorUserId: actor.id,
+    });
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CHECKOUT_CANCELLED", tenantId: req.authorizedTenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed }, ipAddress: req.ip });
+    res.json(result);
+  } catch (error) { fail(res, error); }
 });
 
 router.post("/admin/payments/paypal/orders/:orderId/refund", ...adminAuth, requirePermission("orders.refund"), async (req, res) => {
