@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
+type SalesRow = { date: string; orders: number; revenue: number };
+
 type ReportsSummary = {
   totals: { orderCount: number; paidOrderCount: number; revenue: number; averageOrderValue: number; activeShiftCount: number; discrepancyTotal: number };
   salesTrend: SalesRow[];
