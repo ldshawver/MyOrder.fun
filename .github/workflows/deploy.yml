@@ -67,6 +67,8 @@ jobs:
           set -euo pipefail
           git show "${GITHUB_SHA}:artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts" \
             > artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts
+          git show "${GITHUB_SHA}:artifacts/api-server/src/lib/__tests__/itemConversion.test.ts" \
+            > artifacts/api-server/src/lib/__tests__/itemConversion.test.ts
           git show "${GITHUB_SHA}:.github/workflows/deploy.yml" \
             > .github/workflows/deploy.yml
           git show "${GITHUB_SHA}:deploy/production-release.mjs" \
