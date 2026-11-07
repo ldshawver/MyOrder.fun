@@ -448,6 +448,7 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
         originalInternalName: line.catalog_display_name,
         originalInternalDescription: line.display_description,
         originalInternalCategory: line.display_category,
+        originalDisplayImage: line.display_image,
         customerSafeCategory: line.customer_safe_category,
         customerSafeImage: line.customer_safe_image,
         displayCategory: line.customer_safe_category,
