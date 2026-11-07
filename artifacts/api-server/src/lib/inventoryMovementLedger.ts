@@ -1,5 +1,5 @@
-import { sql } from "drizzle-orm";
-import { auditLogsTable, db } from "@workspace/db";
+import { and, eq, sql } from "drizzle-orm";
+import { auditLogsTable, catalogItemsTable, db, inventoryLocationsTable, inventoryReceiptsTable } from "@workspace/db";
 
 export const inventoryMovementTypes = [
   "receipt", "sale", "usage", "transfer_out", "transfer_in", "customer_return",
@@ -306,6 +306,66 @@ export async function postInventoryMovement(tx: LedgerExecutor, command: PostInv
 
 export async function postInventoryMovementInTransaction(command: PostInventoryMovementCommand): Promise<PostedInventoryMovement> {
   return db.transaction((tx) => postInventoryMovement(tx, command));
+}
+
+export type InventoryReceiptCommand = {
+  tenantId: number;
+  actor: InventoryMovementActor;
+  entityType: InventoryEntityType;
+  itemId: number;
+  locationId: number;
+  quantity: string;
+  unitCost: string;
+  supplierReference?: string | null;
+  reference?: string | null;
+  receivedAt?: string | null;
+  idempotencyKey: string;
+};
+
+/** Posts a supplier receipt through the inventory ledger. Catalog receipts keep an inventory_receipts row. */
+export async function postInventoryReceipt(tx: LedgerExecutor, command: InventoryReceiptCommand): Promise<{ receipt: typeof inventoryReceiptsTable.$inferSelect | null; movement: PostedInventoryMovement }> {
+  const actor = command.actor;
+  if (command.entityType === "catalog") {
+    const [validItem] = await tx.select({ id: catalogItemsTable.id }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, command.tenantId), eq(catalogItemsTable.id, command.itemId))).limit(1);
+    if (!validItem) throw new InventoryMovementError(404, "Inventory item was not found for this tenant");
+    const [validLocation] = await tx.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, command.tenantId), eq(inventoryLocationsTable.id, command.locationId), eq(inventoryLocationsTable.isActive, true))).limit(1);
+    if (!validLocation) throw new InventoryMovementError(404, "Active inventory location was not found for this tenant");
+    const [existingReceipt] = await tx.select().from(inventoryReceiptsTable).where(and(eq(inventoryReceiptsTable.tenantId, command.tenantId), eq(inventoryReceiptsTable.idempotencyKey, command.idempotencyKey))).limit(1);
+    if (existingReceipt?.movementId) {
+      const sameRequest = existingReceipt.productId === command.itemId
+        && existingReceipt.locationId === command.locationId
+        && normalizedCanonicalDecimal(String(existingReceipt.quantityReceived)) === normalizedCanonicalDecimal(command.quantity)
+        && normalizedCanonicalDecimal(String(existingReceipt.actualUnitCost)) === normalizedCanonicalDecimal(command.unitCost)
+        && (existingReceipt.supplierReference ?? null) === (command.supplierReference ?? null)
+        && (existingReceipt.reference ?? null) === (command.reference ?? null);
+      if (!sameRequest) throw new InventoryMovementError(409, "Idempotency key is already in use for a different inventory receipt");
+      const movement = await postInventoryMovement(tx, {
+        tenantId: command.tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: actor.ipAddress }, entityType: "catalog", itemId: command.itemId, locationId: command.locationId,
+        movementType: "receipt", quantity: command.quantity, unitCost: command.unitCost, sourceType: "inventory_receipt", sourceId: String(existingReceipt.id), receiptId: existingReceipt.id,
+        supplierReference: command.supplierReference ?? null, reasonCode: "receipt", reasonText: command.reference ?? "Inventory receipt", idempotencyKey: command.idempotencyKey,
+      });
+      return { receipt: existingReceipt, movement };
+    }
+    const [receipt] = await tx.insert(inventoryReceiptsTable).values({
+      tenantId: command.tenantId, productId: command.itemId, locationId: command.locationId, quantityReceived: command.quantity, quantityBefore: "0", quantityAfter: "0",
+      reason: "receipt", reference: command.reference ?? null, receivedByUserId: actor.id, idempotencyKey: command.idempotencyKey,
+      actualUnitCost: command.unitCost, supplierReference: command.supplierReference ?? null, receivedAt: command.receivedAt ? new Date(command.receivedAt) : new Date(),
+    }).returning();
+    if (!receipt) throw new Error("Inventory receipt insert did not return a row");
+    const movement = await postInventoryMovement(tx, {
+      tenantId: command.tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: actor.ipAddress }, entityType: "catalog", itemId: command.itemId, locationId: command.locationId,
+      movementType: "receipt", quantity: command.quantity, unitCost: command.unitCost, sourceType: "inventory_receipt", sourceId: String(receipt.id), receiptId: receipt.id,
+      supplierReference: command.supplierReference ?? null, reasonCode: "receipt", reasonText: command.reference ?? "Inventory receipt", idempotencyKey: command.idempotencyKey,
+    });
+    const [updatedReceipt] = await tx.update(inventoryReceiptsTable).set({ quantityBefore: movement.preQuantity, quantityAfter: movement.postQuantity, movementId: movement.id }).where(eq(inventoryReceiptsTable.id, receipt.id)).returning();
+    return { receipt: updatedReceipt ?? receipt, movement };
+  }
+  const movement = await postInventoryMovement(tx, {
+    tenantId: command.tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: actor.ipAddress }, entityType: "non_catalog", itemId: command.itemId, locationId: command.locationId,
+    movementType: "receipt", quantity: command.quantity, unitCost: command.unitCost, sourceType: "inventory_receipt", sourceId: command.reference ?? null,
+    supplierReference: command.supplierReference ?? null, reasonCode: "receipt", reasonText: command.reference ?? "Inventory receipt", idempotencyKey: command.idempotencyKey,
+  });
+  return { receipt: null, movement };
 }
 
 export type CatalogOpeningCountCommand = {

@@ -10,7 +10,6 @@ import {
   nonCatalogInventoryItemsTable,
   nonCatalogInventoryBalancesTable,
   inventoryMovementsTable,
-  inventoryReceiptsTable,
   inventoryValuationStatesTable,
   auditLogsTable,
 } from "@workspace/db";
@@ -32,7 +31,7 @@ import {
 import { collectPosIntegrityReport, assertPosIntegrityReport, PosIntegrityError } from "../lib/posIntegrity";
 import { collectInventoryReconcileReport, reconcileInventoryState } from "../lib/inventoryAuthority";
 import { ensureInventoryTransactionLogTable, replayInventoryTransaction } from "../lib/inventoryKernel";
-import { InventoryMovementError, inventoryMovementTypes, normalizedCanonicalDecimal, postCatalogOpeningCount, postInventoryMovement, setCatalogBalanceParProjection, transferInventory } from "../lib/inventoryMovementLedger";
+import { InventoryMovementError, inventoryMovementTypes, postCatalogOpeningCount, postInventoryMovement, postInventoryReceipt, setCatalogBalanceParProjection, transferInventory } from "../lib/inventoryMovementLedger";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -212,48 +211,11 @@ router.post("/admin/inventory/receipts", requirePermission("inventory.manage"), 
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
   const actor = req.dbUser!; const tenantId = await resolveInventoryTenantId(req); const body = parsed.data;
   try {
-    const result = await db.transaction(async (tx) => {
-      if (body.entityType === "catalog") {
-        const [validItem] = await tx.select({ id: catalogItemsTable.id }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, body.itemId))).limit(1);
-        if (!validItem) throw new InventoryMovementError(404, "Inventory item was not found for this tenant");
-        const [validLocation] = await tx.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.id, body.locationId), eq(inventoryLocationsTable.isActive, true))).limit(1);
-        if (!validLocation) throw new InventoryMovementError(404, "Active inventory location was not found for this tenant");
-        const [existingReceipt] = await tx.select().from(inventoryReceiptsTable).where(and(eq(inventoryReceiptsTable.tenantId, tenantId), eq(inventoryReceiptsTable.idempotencyKey, body.idempotencyKey))).limit(1);
-        if (existingReceipt?.movementId) {
-          const sameRequest = existingReceipt.productId === body.itemId
-            && existingReceipt.locationId === body.locationId
-            && normalizedCanonicalDecimal(String(existingReceipt.quantityReceived)) === normalizedCanonicalDecimal(body.quantity)
-            && normalizedCanonicalDecimal(String(existingReceipt.actualUnitCost)) === normalizedCanonicalDecimal(body.unitCost)
-            && (existingReceipt.supplierReference ?? null) === (body.supplierReference ?? null)
-            && (existingReceipt.reference ?? null) === (body.reference ?? null);
-          if (!sameRequest) throw new InventoryMovementError(409, "Idempotency key is already in use for a different inventory receipt");
-          const movement = await postInventoryMovement(tx, {
-            tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip }, entityType: "catalog", itemId: body.itemId, locationId: body.locationId,
-            movementType: "receipt", quantity: body.quantity, unitCost: body.unitCost, sourceType: "inventory_receipt", sourceId: String(existingReceipt.id), receiptId: existingReceipt.id,
-            supplierReference: body.supplierReference ?? null, reasonCode: "receipt", reasonText: body.reference ?? "Inventory receipt", idempotencyKey: body.idempotencyKey,
-          });
-          return { receipt: existingReceipt, movement };
-        }
-        const [receipt] = await tx.insert(inventoryReceiptsTable).values({
-          tenantId, productId: body.itemId, locationId: body.locationId, quantityReceived: body.quantity, quantityBefore: "0", quantityAfter: "0",
-          reason: "receipt", reference: body.reference ?? null, receivedByUserId: actor.id, idempotencyKey: body.idempotencyKey,
-          actualUnitCost: body.unitCost, supplierReference: body.supplierReference ?? null, receivedAt: body.receivedAt ? new Date(body.receivedAt) : new Date(),
-        }).returning();
-        const movement = await postInventoryMovement(tx, {
-          tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip }, entityType: "catalog", itemId: body.itemId, locationId: body.locationId,
-          movementType: "receipt", quantity: body.quantity, unitCost: body.unitCost, sourceType: "inventory_receipt", sourceId: String(receipt.id), receiptId: receipt.id,
-          supplierReference: body.supplierReference ?? null, reasonCode: "receipt", reasonText: body.reference ?? "Inventory receipt", idempotencyKey: body.idempotencyKey,
-        });
-        const [updatedReceipt] = await tx.update(inventoryReceiptsTable).set({ quantityBefore: movement.preQuantity, quantityAfter: movement.postQuantity, movementId: movement.id }).where(eq(inventoryReceiptsTable.id, receipt.id)).returning();
-        return { receipt: updatedReceipt, movement };
-      }
-      const movement = await postInventoryMovement(tx, {
-        tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip }, entityType: "non_catalog", itemId: body.itemId, locationId: body.locationId,
-        movementType: "receipt", quantity: body.quantity, unitCost: body.unitCost, sourceType: "inventory_receipt", sourceId: body.reference ?? null,
-        supplierReference: body.supplierReference ?? null, reasonCode: "receipt", reasonText: body.reference ?? "Inventory receipt", idempotencyKey: body.idempotencyKey,
-      });
-      return { receipt: null, movement };
-    });
+    const result = await db.transaction((tx) => postInventoryReceipt(tx, {
+      tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip },
+      entityType: body.entityType, itemId: body.itemId, locationId: body.locationId, quantity: body.quantity, unitCost: body.unitCost,
+      supplierReference: body.supplierReference ?? null, reference: body.reference ?? null, receivedAt: body.receivedAt ?? null, idempotencyKey: body.idempotencyKey,
+    }));
     res.status(result.movement.idempotent ? 200 : 201).json(result);
   } catch (error) { res.status(error instanceof InventoryMovementError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Receipt failed" }); }
 });

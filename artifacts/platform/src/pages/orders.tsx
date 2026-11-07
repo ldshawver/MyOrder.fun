@@ -1,10 +1,13 @@
 import { useMemo } from "react";
-import { useListOrders, useGetCurrentUser } from "@workspace/api-client-react";
+import { getGetOrderQueryKey, useGetOrder, useListOrders, useGetCurrentUser } from "@workspace/api-client-react";
 import { Link } from "wouter";
-import { Plus, Package, Clock, ShieldAlert } from "lucide-react";
+import { Plus, Package, Clock, ShieldAlert, ShoppingCart } from "lucide-react";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
+import { CustomerOrderStage } from "@/components/CustomerOrderStage";
 import { SupervisorDelayedOrders } from "@/components/SupervisorDelayedOrders";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
+
+const CLOSED_ORDER_STATES = new Set(["completed", "cancelled", "canceled", "refunded", "voided", "archived", "delivered"]);
 
 function StatusBadge({ status }: { status: string }) {
   const cls = `status-${status.toLowerCase()}`;
@@ -40,10 +43,48 @@ export default function Orders() {
 
   // The API enforces tenant and ownership scoping; customers see only their own persisted orders.
   const visibleOrders = useMemo(() => data?.orders ?? [], [data?.orders]);
+  const liveOrderId = useMemo(() => {
+    const live = visibleOrders.filter(order => !CLOSED_ORDER_STATES.has(order.status.toLowerCase()));
+    return live.sort((a, b) => b.id - a.id)[0]?.id ?? 0;
+  }, [visibleOrders]);
+  const { data: liveOrder, isLoading: isLiveLoading } = useGetOrder(
+    liveOrderId,
+    { query: { enabled: isCustomer && liveOrderId > 0, queryKey: getGetOrderQueryKey(liveOrderId) } },
+  );
 
   const hasPendingOrders = visibleOrders.some(o =>
     o.status === "pending" || o.status === "processing"
   );
+
+  if (isCustomer) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight" data-testid="text-title">Order Status</h1>
+          <p className="text-muted-foreground text-sm mt-1">The order being prepared right now.</p>
+        </div>
+        {isLoading || (liveOrderId > 0 && isLiveLoading) ? (
+          <div className="flex flex-col items-center justify-center py-24 gap-6">
+            <AnimatedHourglass size={160} message="Loading your order..." />
+          </div>
+        ) : liveOrder ? (
+          <CustomerOrderStage order={liveOrder} />
+        ) : (
+          <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center px-6" data-testid="text-empty-state">
+            <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mb-4">
+              <ShoppingCart size={24} className="text-primary" />
+            </div>
+            <h3 className="font-semibold text-base mb-2">No order is being prepared</h3>
+            <p className="text-sm text-muted-foreground max-w-xs mb-6">When you place an order, the hourglass and preparation updates show up here.</p>
+            <Link href="/cart" className="inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-5 py-2.5 rounded-xl hover:opacity-90 transition-all">
+              <ShoppingCart size={15} />
+              My Cart
+            </Link>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

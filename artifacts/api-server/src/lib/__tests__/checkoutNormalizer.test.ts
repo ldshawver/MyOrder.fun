@@ -56,6 +56,12 @@ function makeSampleLocalMappedItem(overrides: Record<string, unknown> = {}) {
     luciferCruzDescription: "LC description",
     luciferCruzCategory: "Adult",
     merchantBrand: "alavont",
+    customerSafeName: "Safe Customer Name",
+    customerSafeDescription: "Safe customer description",
+    merchantName: "Legacy merchant name",
+    merchantDescription: "Legacy merchant description",
+    merchantCategory: "Safe customer category",
+    merchantImage: "https://safe.example/product.jpg",
     merchantSku: "LC-SKU-1",
     labName: "Lab Product A",
     receiptName: null,
@@ -83,6 +89,10 @@ function makeSampleWooItem(overrides: Record<string, unknown> = {}) {
     luciferCruzName: "Woo LC Name",
     luciferCruzImageUrl: "https://lucifercruz.com/img/woo.jpg",
     luciferCruzCategory: "Adult",
+    customerSafeName: "Woo Safe Name",
+    customerSafeDescription: "Woo safe description",
+    merchantCategory: "Woo safe category",
+    merchantImage: "https://safe.example/woo.jpg",
     labName: "Woo Lab",
     receiptName: null,
     imageUrl: null,
@@ -121,13 +131,27 @@ describe("checkoutNormalizer", () => {
         .resolves.toHaveLength(1);
     });
 
+    it("charges a current employee 20% off unless the product dollar amount is set", async () => {
+      makeDbMock(makeSampleLocalMappedItem({ price: "25.00", homiePrice: null }));
+      const discounted = await normalizeCheckoutCartWithContext([{ catalogItemId: 1, quantity: 1 }], undefined, true, 1, false, { isCurrentEmployee: true });
+      expect(discounted[0].unit_price).toBe(20);
+
+      makeDbMock(makeSampleLocalMappedItem({ price: "25.00", homiePrice: "19.50" }));
+      const explicit = await normalizeCheckoutCartWithContext([{ catalogItemId: 1, quantity: 1 }], undefined, true, 1, false, { isCurrentEmployee: true });
+      expect(explicit[0].unit_price).toBe(19.5);
+
+      makeDbMock(makeSampleLocalMappedItem({ price: "25.00", homiePrice: "19.50" }));
+      const retail = await normalizeCheckoutCartWithContext([{ catalogItemId: 1, quantity: 1 }], undefined, true, 1, false, { isCurrentEmployee: false });
+      expect(retail[0].unit_price).toBe(25);
+    });
+
     it("classifies a locally-mapped Alavont item as local_mapped", async () => {
       makeDbMock(makeSampleLocalMappedItem());
       const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 2 }]);
       expect(result).toHaveLength(1);
       expect(result[0].source_type).toBe("local_mapped");
       expect(result[0].catalog_display_name).toBe("Alavont Display Name");
-      expect(result[0].merchant_name).toBe("Lucifer Cruz Merchant Name");
+      expect(result[0].merchant_name).toBe("Safe Customer Name");
     });
 
     it("classifies a WooCommerce-managed item as woo", async () => {
@@ -171,9 +195,9 @@ describe("checkoutNormalizer", () => {
         alavontName: "Customer Alavont",
         alavontDescription: "Customer description",
         alavontCategory: "Customer category",
-        luciferCruzName: "Safe Merchant",
-        luciferCruzDescription: "Safe merchant description",
-        luciferCruzCategory: "Safe merchant category",
+        customerSafeName: "Safe Merchant",
+        customerSafeDescription: "Safe merchant description",
+        merchantCategory: "Safe merchant category",
       }));
       const [line] = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
       expect(line.display_name).toBe("Customer Alavont");
@@ -181,14 +205,17 @@ describe("checkoutNormalizer", () => {
       expect(line.display_category).toBe("Customer category");
       expect(buildMerchantPayloadLines([line])[0].name).toBe("Safe Merchant");
     });
-    it("uses branded name fallbacks when local_mapped item has no lucifer_cruz_name", async () => {
-      makeDbMock(makeSampleLocalMappedItem({ luciferCruzName: null, merchantName: "Merchant Fallback Name" }));
+    it("uses only the canonical Safe name for customer-facing checkout", async () => {
+      makeDbMock(makeSampleLocalMappedItem({ customerSafeName: "Canonical Safe Name", luciferCruzName: "Legacy Lucifer Name", merchantName: "Legacy Merchant Name" }));
       const [line] = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
-      expect(line.merchant_name).toBe("Merchant Fallback Name");
+      expect(line.merchant_name).toBe("Canonical Safe Name");
+      expect(line.customer_safe_description).toBe("Safe customer description");
+      expect(line.customer_safe_category).toBe("Safe customer category");
+      expect(line.customer_safe_image).toBe("https://safe.example/product.jpg");
     });
 
     it("throws when all branded checkout name fallbacks are empty", async () => {
-      makeDbMock(makeSampleLocalMappedItem({ customerSafeName: null, luciferCruzName: null, merchantName: null, alavontName: null, name: " " }));
+      makeDbMock(makeSampleLocalMappedItem({ customerSafeName: null }));
       await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }])).rejects.toThrow(
         /branded checkout name/
       );
@@ -335,11 +362,11 @@ describe("checkoutNormalizer", () => {
     });
   });
 
-  describe("Lucifer toggle filter", () => {
-    it("local_mapped items have merchant_name set to lucifer_cruz_name", async () => {
+  describe("legacy Lucifer isolation", () => {
+    it("local_mapped items use the canonical Safe name instead of lucifer_cruz_name", async () => {
       makeDbMock(makeSampleLocalMappedItem());
       const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
-      expect(result[0].merchant_name).toBe("Lucifer Cruz Merchant Name");
+      expect(result[0].merchant_name).toBe("Safe Customer Name");
     });
   });
 
@@ -362,7 +389,7 @@ describe("checkoutNormalizer", () => {
       makeDbMock(makeSampleLocalMappedItem());
       const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
       expect(result[0].receipt_alavont_name).toBe("Alavont Display Name");
-      expect(result[0].receipt_lucifer_name).toBe("Lucifer Cruz Merchant Name");
+      expect(result[0].receipt_lucifer_name).toBe("Safe Customer Name");
       // These must differ — if they're the same, the isolation is broken
       expect(result[0].receipt_alavont_name).not.toBe(result[0].merchant_name.replace(/alavont/i, ""));
     });

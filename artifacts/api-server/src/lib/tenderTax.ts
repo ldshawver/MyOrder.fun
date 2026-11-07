@@ -4,10 +4,11 @@ export type CheckoutTender = typeof CHECKOUT_TENDERS[number];
 export type CustomerTaxTreatment = "non_tax_added" | "tax_added" | "unsupported";
 
 export function customerTaxTreatment(tender: string): CustomerTaxTreatment {
-  // Customer Credit is stored value used as payment. Payment source does not
-  // change the taxability of the merchandise being purchased.
-  if (tender === "gift_card") return "non_tax_added";
-  if (tender === "cash" || tender === "paypal" || tender === "paypal_card" || tender === "customer_credit" || tender === "venmo" || tender === "cash_app" || tender === "apple_pay") return "tax_added";
+  // Cash does not add sales tax. Gift cards are also non-tax-added tenders.
+  // Customer Credit is stored value: when it is the tender, it does not change
+  // the taxability of the merchandise being purchased.
+  if (tender === "gift_card" || tender === "cash") return "non_tax_added";
+  if (tender === "paypal" || tender === "paypal_card" || tender === "customer_credit" || tender === "venmo" || tender === "cash_app" || tender === "apple_pay") return "tax_added";
   return "unsupported";
 }
 

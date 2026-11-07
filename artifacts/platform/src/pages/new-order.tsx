@@ -12,16 +12,17 @@ import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Ba
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
-import { ClosedStoreNotice } from "@/components/ClosedStoreNotice";
 import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
 import { toast } from "@/hooks/use-toast";
 import { checkoutOptionLines } from "@/lib/sellableOptions";
+import { formatPickupSlotLabel } from "@/lib/pickupTimeLabel";
 
 type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
 type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct" | "csr_delivery";
 type CsrDeliveryStatus = {
   hasActiveShift: boolean;
   csrDeliveryAvailable: boolean;
+  deliveryMode?: "personal" | "uber" | null;
   shiftId?: number;
   pickupNote?: string | null;
 };
@@ -65,6 +66,8 @@ type ConversionPreview = {
       displayDescription: string;
       displayCategory: string;
       displayImage: string | null;
+      originalDisplayImage?: string | null;
+      customerSafeImage?: string | null;
       customerSafeName?: string;
       customerSafeDescription?: string;
       originalInternalName?: string;
@@ -134,6 +137,7 @@ export default function NewOrder() {
   const preItemId = parseInt(new URLSearchParams(window.location.search).get("item") || "0", 10) || undefined;
   const [search, setSearch] = useState("");
   const [shippingAddress, setShippingAddress] = useState("");
+  const [fulfillment, setFulfillment] = useState<"pickup" | "delivery">("pickup");
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>("pickup");
   const [deliveryQuote, setDeliveryQuote] = useState<DeliveryQuote | null>(null);
   const [deliveryQuoteError, setDeliveryQuoteError] = useState<string | null>(null);
@@ -143,7 +147,7 @@ export default function NewOrder() {
   const [conversionPreview, setConversionPreview] = useState<ConversionPreview | null>(null);
   const [conversionError, setConversionError] = useState<string | null>(null);
   const [isConverting, setIsConverting] = useState(false);
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("cash");
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("paypal");
   const [useCustomerCredit, setUseCustomerCredit] = useState(false);
   const [customerCreditAmount, setCustomerCreditAmount] = useState("");
   const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
@@ -191,12 +195,9 @@ export default function NewOrder() {
   const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   const csrDeliveryDistanceMiles = 0; // TODO: replace with geocoded customer distance when address verification is enabled
   const csrDeliveryAllowed = csrDeliveryDistanceMiles <= 2;
-  const csrDeliveryFee = deliveryMethod === "csr_delivery" ? Math.round((6 + 0.03 * (conversionPreview?.pricingSnapshot.total ?? subtotal)) * 100) / 100 : 0;
-  const deliveryFee = deliveryMethod === "uber_direct" && deliveryQuote?.fee != null
+  const deliveryFee = (deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && deliveryQuote?.fee != null
     ? deliveryQuote.fee
-    : deliveryMethod === "csr_delivery"
-      ? csrDeliveryFee
-      : 0;
+    : 0;
   const tipBase = conversionPreview?.pricingSnapshot.subtotal ?? subtotal;
   const customTipAmount = Math.max(0, Number.parseFloat(customTip) || 0);
   const tipAmount = tipMode === "none"
@@ -245,7 +246,7 @@ export default function NewOrder() {
     });
   }, [pickupLocationId, selectedPickupLocation]);
 
-  // Fetch active CSR delivery status — drives whether "CSR Delivery" option is shown
+  // The on-shift specialist chooses personal delivery or Uber. Customers only choose pickup or delivery.
   useEffect(() => {
     getToken()
       .then(token => fetch("/api/shifts/active-csr-status", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
@@ -253,6 +254,14 @@ export default function NewOrder() {
       .then((data: CsrDeliveryStatus | null) => setCsrStatus(data))
       .catch(() => setCsrStatus(null));
   }, [getToken]);
+
+  const shiftDeliveryMode = csrStatus?.deliveryMode ?? (csrStatus?.csrDeliveryAvailable ? "personal" : null);
+  const deliveryBlocked = fulfillment === "delivery" && shiftDeliveryMode == null;
+  useEffect(() => {
+    if (fulfillment === "pickup") setDeliveryMethod("pickup");
+    else if (shiftDeliveryMode === "personal") setDeliveryMethod("csr_delivery");
+    else if (shiftDeliveryMode === "uber") setDeliveryMethod("uber_direct");
+  }, [fulfillment, shiftDeliveryMode]);
 
   useEffect(() => {
     const cartStr = cart.map(c=>c.id).sort().join(",");
@@ -300,36 +309,41 @@ export default function NewOrder() {
     }
   };
 
+  const requestConversionPreview = async (): Promise<ConversionPreview> => {
+    const token = await getToken();
+    const res = await fetch("/api/cart/convert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        items: checkoutOptionLines(cart),
+        confirmation: {
+          acceptedAllSalesFinal: true,
+          confirmedAt: new Date().toISOString(),
+          legalDisclaimerText: FINAL_SALE_TEXT,
+        },
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error ?? "Could not prepare checkout.");
+    return data as ConversionPreview;
+  };
+
+  const applyConversionPreview = (converted: ConversionPreview) => {
+    setConversionPreview(converted);
+    setSelectedPaymentMethod(current => converted.converted.paymentMethods.some(method => method.id === current && method.available !== false)
+      ? current
+      : converted.converted.paymentMethods.find(method => method.available !== false)?.id || "customer_credit");
+  };
+
   const handlePreviewConversion = async () => {
     if (cart.length === 0 || !acceptedFinalSale) return;
     setIsConverting(true);
     setConversionError(null);
     try {
-      const token = await getToken();
-      const res = await fetch("/api/cart/convert", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          items: checkoutOptionLines(cart),
-          confirmation: {
-            acceptedAllSalesFinal: true,
-            confirmedAt: new Date().toISOString(),
-            legalDisclaimerText: FINAL_SALE_TEXT,
-          },
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error ?? "Could not prepare checkout.");
-      }
-      const converted = data as ConversionPreview;
-      setConversionPreview(converted);
-      setSelectedPaymentMethod(current => converted.converted.paymentMethods.some(method => method.id === current && method.available !== false)
-        ? current
-        : converted.converted.paymentMethods.find(method => method.available !== false)?.id || "customer_credit");
+      applyConversionPreview(await requestConversionPreview());
     } catch (e) {
       setConversionError(e instanceof Error ? e.message : "Could not prepare checkout.");
     } finally {
@@ -338,10 +352,29 @@ export default function NewOrder() {
   };
 
   const handleDeliveryQuote = async () => {
-    if (cart.length === 0 || !shippingAddress.trim() || !conversionPreview) return;
+    if (cart.length === 0) {
+      setDeliveryQuoteError("Add an item before getting a delivery price.");
+      return;
+    }
+    if (!shippingAddress.trim()) {
+      setDeliveryQuoteError("Enter a delivery address before getting a delivery price.");
+      return;
+    }
+    if (!pickupLocationId) {
+      setDeliveryQuoteError("A pickup location is required before a delivery price can be quoted.");
+      return;
+    }
+    const scheduledHandoff = !!selectedPickupLocation?.configured && !selectedPickupLocation.immediateAvailable;
+    const selectedSlot = !!selectedPickupLocation && pickupChoice !== "immediate" && selectedPickupLocation.slots.some(slot => slot.at === pickupChoice);
+    if (!pickupChoice || (scheduledHandoff && !selectedSlot)) {
+      setDeliveryQuoteError("Choose a pickup time before getting a delivery price.");
+      return;
+    }
     setIsQuotingDelivery(true);
     setDeliveryQuoteError(null);
     try {
+      const preview = conversionPreview ?? await requestConversionPreview();
+      if (!conversionPreview) applyConversionPreview(preview);
       const token = await getToken();
       const res = await fetch("/api/orders/delivery-quote", {
         method: "POST",
@@ -352,20 +385,23 @@ export default function NewOrder() {
         body: JSON.stringify({
           items: checkoutOptionLines(cart),
           dropoffAddress: shippingAddress,
-          checkoutConversionToken: conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken,
-          checkoutConversionSnapshot: checkoutSnapshotFromConversion(conversionPreview),
-          checkoutConfirmation: conversionPreview.confirmation,
+          checkoutConversionToken: preview.checkoutConversionToken ?? preview.conversionToken,
+          checkoutConversionSnapshot: checkoutSnapshotFromConversion(preview),
+          checkoutConfirmation: preview.confirmation,
           pickupLocationId,
-          ...(pickupChoice && pickupChoice !== "immediate" ? { pickupAt: pickupChoice } : {}),
+          ...(pickupChoice !== "immediate" ? { pickupAt: pickupChoice } : {}),
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.message ?? data?.error ?? "Uber Courier quote failed.");
+        const message = data?.message ?? data?.error ?? "Delivery price is unavailable.";
+        throw new Error(/quote settings are incomplete|not configured/i.test(message)
+          ? "Delivery pricing is not finished in store settings, so a price cannot be added yet."
+          : message);
       }
       setDeliveryQuote(data as DeliveryQuote);
     } catch (e) {
-      setDeliveryQuoteError(e instanceof Error ? e.message : "Uber Courier quote failed.");
+      setDeliveryQuoteError(e instanceof Error ? e.message : "Delivery price is unavailable.");
     } finally {
       setIsQuotingDelivery(false);
     }
@@ -374,13 +410,14 @@ export default function NewOrder() {
   const createCheckoutOrder = useCallback(async (paymentMethodOverride = selectedPaymentMethod): Promise<number> => {
     if (cart.length === 0 || !conversionPreview || !checkoutQuote) throw new Error("Checkout quote is not ready.");
     if ((deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && selectedPickupLocation?.configured && !selectedPickupLocation.immediateAvailable && (!pickupChoice || pickupChoice === "immediate" || !selectedPickupLocation.slots.some(slot => slot.at === pickupChoice))) {
-      throw new Error("The store is closed. Choose a pickup time during business hours. You cannot place this order without one.");
+      throw new Error("Choose a pickup time to place this order.");
     }
     if (!conversionPreview.converted.paymentMethods.some(method => method.id === paymentMethodOverride && method.available !== false)) {
       throw new Error("This payment method is unavailable. Review the checkout options again.");
     }
-    if (deliveryMethod === "uber_direct" && !deliveryQuote) throw new Error("A current delivery quote is required.");
-    if ((deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct") && !shippingAddress.trim()) throw new Error("A delivery address is required.");
+    if (deliveryBlocked) throw new Error("Delivery is unavailable until the specialist on shift chooses how deliveries are handled.");
+    if ((deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && !deliveryQuote) throw new Error("A current delivery price is required.");
+    if ((deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && !shippingAddress.trim()) throw new Error("A delivery address is required.");
 
     setOrderSubmitError(null);
     const paymentMethod = (checkoutQuote.tenderDue === 0 && checkoutQuote.appliedCustomerCredit > 0 ? "customer_credit" : paymentMethodOverride) as "cash" | "paypal" | "paypal_card" | "customer_credit";
@@ -401,7 +438,7 @@ export default function NewOrder() {
       const order = await createOrderMutation.mutateAsync({
         data: {
           items: checkoutOptionLines(cart) as unknown as Array<{ catalogItemId: number; quantity: number }>,
-          shippingAddress: deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct" ? shippingAddress : "",
+          shippingAddress: deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery" ? shippingAddress : "",
           notes,
           deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,
           checkoutConversionToken,
@@ -409,7 +446,7 @@ export default function NewOrder() {
           selectedPaymentMethod: paymentMethod,
           paymentMethod,
           csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? 0 : undefined,
-          deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
+          deliveryQuote: (deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && deliveryQuote ? deliveryQuote : undefined,
           pickupLocationId: deliveryMethod === "pickup" || deliveryMethod === "uber_direct" ? pickupLocationId ?? undefined : undefined,
           pickupAt: (deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && pickupChoice && pickupChoice !== "immediate" ? pickupChoice : undefined,
           checkoutConfirmation,
@@ -428,7 +465,7 @@ export default function NewOrder() {
       toast({ title: "Order failed", description: message, variant: "destructive" });
       throw error;
     }
-  }, [cart, checkoutQuote, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, pickupChoice, pickupLocationId, selectedPaymentMethod, selectedPickupLocation, shippingAddress, tipAmount, tipMode]);
+  }, [cart, checkoutQuote, conversionPreview, createOrderMutation, deliveryBlocked, deliveryMethod, deliveryQuote, notes, pickupChoice, pickupLocationId, selectedPaymentMethod, selectedPickupLocation, shippingAddress, tipAmount, tipMode]);
 
   const finishCheckout = useCallback(async (orderId: number) => {
     notifyOrderPlaced(orderId, user?.firstName || undefined);
@@ -439,7 +476,7 @@ export default function NewOrder() {
       const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
       sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, orderId]));
     } catch { /* ignore storage errors */ }
-    setLocation(`/orders/${orderId}`);
+    setLocation("/orders");
   }, [clearCart, notifyOrderPlaced, queryClient, setLocation, user?.firstName]);
 
   const handleSubmit = async (paymentMethodOverride = selectedPaymentMethod) => {
@@ -455,25 +492,28 @@ export default function NewOrder() {
 
   const convertedItemById = new Map((conversionPreview?.converted.items ?? []).map(item => [item.catalogItemId, item]));
   const displayedTotal = checkoutQuote?.finalAmountDue ?? (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
-  const requiresDeliveryAddress = deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct";
+  const requiresDeliveryAddress = deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery";
   const lastItemPromptRequired = promotedItems.length > 0 && cart.length > 0 && !reviewedLastItemPrompt;
+  const customerPickupNote = (csrStatus?.pickupNote ?? "").split(/\n+/).map(line => line.trim()).filter(line => line && !/general\s*que/i.test(line)).join("\n");
   const scheduledPickupSelected = !!selectedPickupLocation && pickupChoice !== "immediate" && selectedPickupLocation.slots.some(slot => slot.at === pickupChoice);
-  const pickupWaitingForBusinessHours = (deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && !!selectedPickupLocation?.configured && !selectedPickupLocation.immediateAvailable;
-  const deliveryReady = (deliveryMethod === "pickup" && !!selectedPickupLocation?.configured && (pickupChoice === "immediate" ? selectedPickupLocation.immediateAvailable : scheduledPickupSelected))
-    || (deliveryMethod === "csr_delivery" && csrDeliveryAllowed)
+  const pickupWaitingForBusinessHours = (deliveryMethod === "pickup" || deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && !!selectedPickupLocation?.configured && !selectedPickupLocation.immediateAvailable;
+  const deliveryReady = !deliveryBlocked && (
+    (fulfillment === "pickup" && deliveryMethod === "pickup" && !!selectedPickupLocation?.configured && (pickupChoice === "immediate" ? selectedPickupLocation.immediateAvailable : scheduledPickupSelected))
+    || (deliveryMethod === "csr_delivery" && csrDeliveryAllowed && !!deliveryQuote && shippingAddress.trim().length > 0)
     || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
-    || (deliveryMethod === "uber_direct" && !!deliveryQuote && (!pickupWaitingForBusinessHours || scheduledPickupSelected));
+    || (deliveryMethod === "uber_direct" && !!deliveryQuote && shippingAddress.trim().length > 0 && (!pickupWaitingForBusinessHours || scheduledPickupSelected))
+  );
   const paymentBusy = createOrderMutation.isPending;
-  const canSubmit = cart.length > 0 && !!conversionPreview && !!checkoutQuote && !checkoutQuoteError && !isQuotingCheckout && deliveryReady && !paymentBusy;
+  const canSubmit = cart.length > 0 && acceptedFinalSale && !!conversionPreview && !!checkoutQuote && !checkoutQuoteError && !isQuotingCheckout && deliveryReady && !paymentBusy;
   const selectedMethodAvailable = conversionPreview?.converted.paymentMethods.some(method => method.id === selectedPaymentMethod && method.available !== false) ?? false;
   const canCurateSuggestions = ["csr", "supervisor", "admin", "global_admin"].includes(normalizeNotificationRole(user?.role));
 
   useEffect(() => {
     setCheckoutQuote(null);
     setCheckoutQuoteError(null);
-    if (!conversionPreview || cart.length === 0 || (deliveryMethod === "uber_direct" && !deliveryQuote)) return;
+    if (!conversionPreview || cart.length === 0 || deliveryBlocked || ((deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && !deliveryQuote)) return;
     if (pickupWaitingForBusinessHours && !scheduledPickupSelected) {
-      setCheckoutQuoteError("The store is closed. Choose a pickup time during business hours. You cannot place this order without one.");
+      setCheckoutQuoteError("Choose a pickup time to place this order.");
       return;
     }
     let cancelled = false;
@@ -501,7 +541,7 @@ export default function NewOrder() {
       }).finally(() => { if (!cancelled) setIsQuotingCheckout(false); });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryMethod, deliveryQuote, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected]);
+  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryBlocked, deliveryMethod, deliveryQuote, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">
@@ -510,14 +550,10 @@ export default function NewOrder() {
           <ArrowLeft size={20} />
         </Link>
         <div>
-          <h1 className="text-3xl font-bold tracking-tight" data-testid="text-title">My Order</h1>
-          <p className="text-muted-foreground">Review your order, choose fulfillment, and pay securely.</p>
+          <h1 className="text-3xl font-bold tracking-tight" data-testid="text-title">My Cart</h1>
+          <p className="text-muted-foreground">Review your cart, choose pickup or delivery, and pay securely.</p>
         </div>
       </div>
-      {(deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && (
-        <ClosedStoreNotice location={selectedPickupLocation} />
-      )}
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         {/* Cart */}
         <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-card">
@@ -579,7 +615,7 @@ export default function NewOrder() {
                   return (
                   <div key={item.id} className="border-b border-dashed border-border/40 pb-3 last:border-0" data-testid={`cart-item-${item.id}`}>
                     <div className="flex items-start justify-between gap-3">
-                    {converted?.displayImage && <img src={converted.displayImage} alt="" className="h-12 w-12 rounded-sm object-cover border border-border/50" />}
+                    {converted?.customerSafeImage && <img src={converted.customerSafeImage} alt="" className="h-12 w-12 rounded-sm object-cover border border-border/50" />}
                     <div className="flex-1 min-w-0">
                         <div className="font-semibold text-sm leading-tight pr-4">{converted?.customerSafeName ?? converted?.displayName ?? item.name}</div>
                       {converted && <div className="text-[10px] uppercase tracking-widest text-primary mt-0.5">{converted.displayCategory}</div>}
@@ -622,7 +658,7 @@ export default function NewOrder() {
                 {(checkoutQuote?.deliveryFee ?? deliveryFee) > 0 && (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">
-                      {deliveryMethod === "csr_delivery" ? "CSR Delivery Fee" : "Uber Courier"}
+                      Delivery
                     </span>
                     <span className="font-mono">${(checkoutQuote?.deliveryFee ?? deliveryFee).toFixed(2)}</span>
                   </div>
@@ -635,7 +671,7 @@ export default function NewOrder() {
                 )}
                 <div className="flex justify-between font-bold text-lg pt-2 border-t border-border/40">
                   <span>Total</span>
-                  <span className="font-mono" data-testid="text-total">{checkoutQuote ? `$${checkoutQuote.finalAmountDue.toFixed(2)}` : "Updating quote…"}</span>
+                  <span className="font-mono" data-testid="text-total">${displayedTotal.toFixed(2)}</span>
                 </div>
               </div>
             </div>
@@ -652,28 +688,29 @@ export default function NewOrder() {
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 <MapPin size={14} /> Fulfillment
               </div>
-              <div className={`grid gap-2 ${csrStatus?.csrDeliveryAvailable ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"}`}>
-                    {[
+              <div className="grid grid-cols-2 gap-2">
+                    {([
                       { id: "pickup", label: "Pickup" },
-                      { id: "manual_delivery", label: "Delivery" },
-                      { id: "uber_direct", label: "Uber Courier" },
-                      ...(csrStatus?.csrDeliveryAvailable ? [{ id: "csr_delivery", label: "Personal delivery" }] : []),
-                    ].map(option => (
+                      { id: "delivery", label: "Delivery" },
+                    ] as const).map(option => (
                       <button
                         key={option.id}
                         type="button"
-                        onClick={() => setDeliveryMethod(option.id as DeliveryMethod)}
-                        className={`rounded-sm border px-2 py-2 text-xs font-semibold transition-colors ${deliveryMethod === option.id ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-muted/10 text-muted-foreground hover:border-primary/40"}`}
+                        onClick={() => setFulfillment(option.id)}
+                        className={`rounded-sm border px-2 py-2 text-xs font-semibold transition-colors ${fulfillment === option.id ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-muted/10 text-muted-foreground hover:border-primary/40"}`}
                         data-testid={`delivery-method-${option.id}`}
                       >
                         {option.label}
                       </button>
                     ))}
                   </div>
+                  {deliveryBlocked && (
+                    <p className="text-xs font-medium text-amber-800" data-testid="delivery-unavailable">Delivery is unavailable until the specialist on shift chooses how deliveries are handled. Pickup is available.</p>
+                  )}
 
-                  {(deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && (
+                  {(deliveryMethod === "pickup" || deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && (
                     <div className="rounded-sm border border-border/50 bg-muted/10 p-3 space-y-3" data-testid="pickup-scheduling">
-                      <div className="font-semibold text-sm">{deliveryMethod === "uber_direct" ? "Courier pickup time" : "Pickup time"}</div>
+                      <div className="font-semibold text-sm">{deliveryMethod === "pickup" ? "Pickup time" : "Handoff time"}</div>
                       {pickupAvailabilityError && <p className="text-xs text-destructive">{pickupAvailabilityError}</p>}
                       {pickupLocations.length > 1 && (
                         <label className="block text-xs space-y-1">
@@ -685,14 +722,12 @@ export default function NewOrder() {
                       )}
                       {selectedPickupLocation && (
                         <>
-                          <p className={`text-xs ${selectedPickupLocation.immediateAvailable ? "text-emerald-700" : "font-medium text-amber-800"}`}>{selectedPickupLocation.message}</p>
-                          {selectedPickupLocation.timeZone && <p className="text-[11px] text-muted-foreground">Times shown in the store’s local time ({selectedPickupLocation.timeZone}).</p>}
-                          {selectedPickupLocation.regularHours && <div className="text-xs"><div className="font-medium">Store hours</div><div className="mt-2 grid grid-cols-[6rem_1fr] gap-x-2 gap-y-1">{selectedPickupLocation.regularHours.map(row => <div key={row.dayOfWeek} className="contents"><span>{row.day}</span><span className="text-muted-foreground">{row.hours}</span></div>)}</div></div>}
+                          <p className="text-xs text-muted-foreground">{selectedPickupLocation.immediateAvailable ? "Open now. Pickup can be immediate, or choose a later time." : "Closed. You can still place this order. Choose a pickup time."}</p>
                           {(selectedPickupLocation.immediateAvailable || selectedPickupLocation.slots.length > 0) ? (
-                            <select className="w-full rounded-sm border border-border bg-background p-2 text-sm" value={pickupChoice} onChange={event => setPickupChoice(event.target.value)} data-testid="select-pickup-time">
-                              <option value="">{pickupWaitingForBusinessHours ? "Choose an open pickup time" : "Select a pickup time"}</option>
+                            <select className="w-full rounded-xl border border-border bg-background px-3 py-3 text-base" value={pickupChoice} onChange={event => setPickupChoice(event.target.value)} data-testid="select-pickup-time">
+                              <option value="">Choose a pickup time</option>
                               {selectedPickupLocation.immediateAvailable && <option value="immediate">Immediate pickup</option>}
-                              {selectedPickupLocation.slots.map(slot => <option key={slot.at} value={slot.at}>{slot.label}</option>)}
+                              {selectedPickupLocation.slots.map(slot => <option key={slot.at} value={slot.at}>{formatPickupSlotLabel(slot.at, selectedPickupLocation.timeZone, slot.label)}</option>)}
                             </select>
                           ) : <p className="text-xs font-medium text-destructive">No upcoming pickup times are available. A pickup order cannot be placed.</p>}
                         </>
@@ -700,14 +735,12 @@ export default function NewOrder() {
                     </div>
                   )}
 
-                  {deliveryMethod === "csr_delivery" && (
+                  {fulfillment === "delivery" && shiftDeliveryMode && (
                     <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 text-xs space-y-1">
-                      <div className="font-semibold text-primary">Personal delivery</div>
-                      <div className="text-muted-foreground">Your order will be personally delivered by the on-shift rep only within 2 miles.</div>
-                      <div className="font-mono text-primary pt-1">Delivery fee: ${(checkoutQuote?.deliveryFee ?? csrDeliveryFee).toFixed(2)} ($6 + 3% of merchandise subtotal)</div>
-                      {!csrDeliveryAllowed && <div className="text-destructive">Personal delivery is blocked beyond 2 miles.</div>}
-                      {csrStatus?.pickupNote && (
-                        <div className="text-muted-foreground italic mt-1">{csrStatus.pickupNote}</div>
+                      <div className="font-semibold text-primary">Delivery</div>
+                      <div className="text-muted-foreground">{shiftDeliveryMode === "personal" ? "The specialist on this shift brings the order to you." : "A courier brings the order to you. The specialist on this shift chose courier delivery."}</div>
+                      {customerPickupNote && shiftDeliveryMode === "personal" && (
+                        <div className="text-muted-foreground italic mt-1">{customerPickupNote}</div>
                       )}
                     </div>
                   )}
@@ -721,27 +754,27 @@ export default function NewOrder() {
                       data-testid="input-shipping"
                     />
                   )}
-                  {deliveryMethod === "uber_direct" && (
+                  {(deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && (
                     <div className="space-y-2">
                       <Button
                         type="button"
                         variant="outline"
                         className="w-full rounded-sm h-9 text-xs font-semibold uppercase tracking-wider"
-                        disabled={cart.length === 0 || !shippingAddress.trim() || !pickupLocationId || !pickupChoice || isQuotingDelivery}
+                        disabled={isQuotingDelivery}
                         onClick={handleDeliveryQuote}
                         data-testid="button-uber-quote"
                       >
                         {isQuotingDelivery ? <RefreshCw size={14} className="mr-2 animate-spin" /> : <Truck size={14} className="mr-2" />}
-                        {isQuotingDelivery ? "Quoting..." : "Quote Uber Courier"}
+                        {isQuotingDelivery ? "Quoting..." : "Get delivery price"}
                       </Button>
                       {deliveryQuote && (
                         <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs" data-testid="uber-quote-summary">
                           <div className="font-semibold text-emerald-700">
-                            Uber Courier quoted{deliveryQuote.fee != null ? ` at $${deliveryQuote.fee.toFixed(2)}` : ""}
+                            Delivery priced{deliveryQuote.fee != null ? ` at $${deliveryQuote.fee.toFixed(2)}` : ""}
                           </div>
                           <div className="text-muted-foreground mt-1">
                             {deliveryQuote.duration ? `${deliveryQuote.duration} min estimated delivery` : "Delivery ETA available after dispatch."}
-                            {deliveryQuote.expires ? ` Quote expires ${new Date(deliveryQuote.expires).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.` : ""}
+                            {deliveryQuote.expires ? ` Quote expires ${new Date(deliveryQuote.expires).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}.` : ""}
                           </div>
                         </div>
                       )}
@@ -828,7 +861,7 @@ export default function NewOrder() {
                 {isConverting ? "Preparing checkout..." : "Continue to payment"}
                 </Button>
                 {pickupWaitingForBusinessHours && !scheduledPickupSelected && (
-                  <p className="text-xs font-medium text-amber-800" data-testid="pickup-time-required">Choose an open pickup time to place this order. Payment stays unavailable until you do.</p>
+                  <p className="text-xs text-muted-foreground" data-testid="pickup-time-required">Choose a pickup time to place this order.</p>
                 )}
                 {conversionError && (
                   <div className="text-xs text-destructive" data-testid="text-conversion-error">{conversionError}</div>
@@ -889,6 +922,10 @@ export default function NewOrder() {
                   </div>
 
                   <div className="rounded-sm border border-border/60 bg-background p-3 space-y-3">
+                    <div className="space-y-1" data-testid="split-payment">
+                      <p className="text-sm font-semibold">Split payment</p>
+                      <p className="text-xs text-muted-foreground">Use store credit for part of this order. The rest is paid in cash or with one digital option. Cash and a card cannot be combined on the same order.</p>
+                    </div>
                     <div className="flex justify-between text-xs">
                       <span>Customer Credit available</span>
                       <span className="font-mono" data-testid="text-customer-credit-available">${(checkoutQuote?.availableCustomerCredit ?? 0).toFixed(2)}</span>
@@ -899,7 +936,7 @@ export default function NewOrder() {
                           setUseCustomerCredit(event.target.checked);
                           if (event.target.checked && !customerCreditAmount) setCustomerCreditAmount(Math.min(checkoutQuote?.availableCustomerCredit ?? 0, checkoutQuote?.finalAmountDue ?? 0).toFixed(2));
                         }} data-testid="checkbox-use-customer-credit" />
-                        Apply Customer Credit
+                        Apply store credit to part of this order
                       </label>
                     )}
                     {useCustomerCredit && selectedPaymentMethod !== "customer_credit" && (
@@ -914,8 +951,12 @@ export default function NewOrder() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {conversionPreview.converted.paymentMethods.filter(method => method.id !== "paypal_card").map(method => {
-                      const Icon = method.id === "cash" ? Banknote : method.id === "customer_credit" ? Gift : CheckCircle2;
+                      const Icon = method.id === "cash" ? Banknote : method.id === "customer_credit" ? Gift : CreditCard;
                       const active = selectedPaymentMethod === method.id;
+                      const label = method.id === "paypal" ? "Pay digitally" : method.label;
+                      const message = method.id === "paypal"
+                        ? "Venmo, debit, credit, Apple Pay, and Google Pay. PayPal processes the payment."
+                        : method.message;
                       return (
                         <button
                           key={method.id}
@@ -927,9 +968,9 @@ export default function NewOrder() {
                         >
                           <span className="flex items-center gap-2 text-sm font-semibold">
                             <Icon size={16} className={method.promoted ? "text-emerald-500" : "text-primary"} />
-                            {method.label}
+                            {label}
                           </span>
-                          {method.message && <span className={`block mt-1 text-[11px] ${method.available === false ? "text-destructive" : "text-emerald-600"}`}>{method.message}</span>}
+                          {message && <span className={`block mt-1 text-[11px] ${method.available === false ? "text-destructive" : "text-muted-foreground"}`}>{message}</span>}
                         </button>
                       );
                     })}
@@ -945,7 +986,7 @@ export default function NewOrder() {
               )}
 
               {pickupWaitingForBusinessHours && !scheduledPickupSelected && (
-                <p className="text-xs font-medium text-amber-800">You cannot pay until you choose a pickup time during business hours.</p>
+                <p className="text-xs text-muted-foreground">Choose a pickup time before payment.</p>
               )}
               {orderSubmitError && (
                 <div className="rounded-sm border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive" data-testid="text-order-submit-error">{orderSubmitError}</div>
@@ -953,8 +994,8 @@ export default function NewOrder() {
 
               {selectedPaymentMethod === "paypal" && selectedMethodAvailable && (checkoutQuote?.tenderDue ?? 0) > 0 ? (
                 <div className="rounded-sm border border-border/50 bg-background/50 p-4 space-y-2" data-testid="paypal-checkout">
-                  <p className="text-sm font-semibold">Pay securely with PayPal</p>
-                  <p className="text-xs text-muted-foreground">Continue in the secure PayPal Wallet approval window. Your order is created only after you start a provider-controlled payment.</p>
+                  <p className="text-sm font-semibold">Pay digitally</p>
+                  <p className="text-xs text-muted-foreground">Choose Venmo, a debit card, a credit card, Apple Pay, or Google Pay. PayPal processes the payment. Your order is created only after you start a provider-controlled payment.</p>
                   <PayPalCheckoutButton
                     createOrder={() => createCheckoutOrder("paypal")}
                     eligibilityAmount={checkoutQuote?.tenderDue}
@@ -997,15 +1038,12 @@ export default function NewOrder() {
                 <div className="space-y-3">
                   {conversionPreview.converted.items.map(item => (
                     <div key={item.catalogItemId} className="rounded-sm overflow-hidden border border-primary/20 bg-background shadow-sm" data-testid={`converted-item-${item.catalogItemId}`}>
-                      {item.displayImage && (
-                        <div className="h-24 bg-muted/30 overflow-hidden">
-                          <img src={item.displayImage} alt={item.displayName} className="h-full w-full object-cover" />
-                        </div>
-                      )}
                       <div className="p-3 space-y-2">
                         <div className="grid gap-3 md:grid-cols-[1fr_auto_1.15fr] md:items-stretch">
                           <div className="rounded-sm border border-amber-500/20 bg-amber-500/5 p-3">
                             <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-amber-700 dark:text-amber-300">Before</div>
+                            {item.originalDisplayImage && <img src={item.originalDisplayImage} alt={item.originalInternalName ?? item.displayName} className="mb-3 h-24 w-full rounded-sm border border-border/50 object-cover" />}
+                            {item.originalInternalCategory && <div className="text-[10px] uppercase tracking-widest text-amber-700 dark:text-amber-300">{item.originalInternalCategory}</div>}
                             <div className="font-semibold text-sm leading-tight text-muted-foreground">{item.originalInternalName ?? item.displayName}</div>
                             <div className="mt-1 text-xs font-mono text-muted-foreground">${item.unitPrice.toFixed(2)}</div>
                             {item.originalInternalDescription && (
@@ -1015,6 +1053,7 @@ export default function NewOrder() {
                           <div className="hidden items-center text-primary md:flex" aria-hidden="true">→</div>
                           <div className="rounded-sm border border-emerald-500/25 bg-emerald-500/5 p-3">
                             <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-300">After</div>
+                            {item.customerSafeImage && <img src={item.customerSafeImage} alt={item.customerSafeName ?? item.displayName} className="mb-3 h-24 w-full rounded-sm border border-border/50 object-cover" />}
                             <div className="text-[10px] uppercase tracking-widest text-primary">{item.displayCategory}</div>
                             <div className="font-semibold text-sm leading-tight">{item.customerSafeName ?? item.displayName}</div>
                             <p className="mt-2 text-xs text-muted-foreground leading-relaxed">{item.customerSafeDescription ?? item.displayDescription}</p>

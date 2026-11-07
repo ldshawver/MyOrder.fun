@@ -35,6 +35,7 @@ export const usersTable = pgTable("users", {
   approvedAt: timestamp("approved_at", { withTimezone: true }),
   isActive: boolean("is_active").notNull().default(true),
   isDefaultTech: boolean("is_default_tech").notNull().default(false),
+  isCurrentEmployee: boolean("is_current_employee").notNull().default(false),
   identityStatus: text("identity_status").notNull().default("verification_pending"),
   provisioningStatus: text("provisioning_status").notNull().default("pending"),
   provisioningError: text("provisioning_error"),

@@ -1127,8 +1127,8 @@ test("candidate builder is frozen to the exact source selected for immutable ima
     "utf8",
   );
   const candidate = {
-    sha: "35796c261f91589e9208bce9d3838beef97f64d3",
-    tree: "9abdf759762d907fcc85bd022afa3919245e9ba5",
+    sha: "461a219936713699e5e19325b40e725e0200bb42",
+    tree: "426140807d5240298af31c2e89e075d73e7b3e3f",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));

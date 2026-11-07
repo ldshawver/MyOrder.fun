@@ -34,6 +34,8 @@ export default function CsrSettings() {
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const userRole = normalizeNotificationRole(user?.role);
   const canEdit = userRole === "global_admin" || userRole === "admin";
+  const canEditWifi = canEdit || userRole === "supervisor" || userRole === "csr";
+  const [wifiNotice, setWifiNotice] = useState<string | null>(null);
 
   const [pickupOptions, setPickupOptions] = useState<PickupOption[]>([]);
   const [shiftLocations, setShiftLocations] = useState<ShiftLocation[]>([]);
@@ -43,6 +45,8 @@ export default function CsrSettings() {
   const [selectedPickupId, setSelectedPickupId] = useState("");
   const [selectedDeliveryId, setSelectedDeliveryId] = useState("");
   const [message, setMessage] = useState<string | null>(null);
+  const [passwordDraft, setPasswordDraft] = useState("");
+  const [savingWifi, setSavingWifi] = useState(false);
 
   const selectedLocation = useMemo(
     () => shiftLocations.find(location => location.id === selectedLocationId),
@@ -98,6 +102,28 @@ export default function CsrSettings() {
 
   function saveFromClick() {
     save().catch(err => setMessage(err.message));
+  }
+
+  async function saveWifi() {
+    setMessage(null);
+    setWifiNotice(null);
+    setSavingWifi(true);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/csr-settings/wifi", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ printerNetworkConfig: { ...printerConfig, password: passwordDraft } }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Wi-Fi settings could not be saved.");
+      if (data.printerNetworkConfig) setPrinterConfig({ ...data.printerNetworkConfig, password: undefined });
+      setPasswordDraft("");
+      const pi = data.raspberryPi as { ok?: boolean; error?: string } | undefined;
+      setWifiNotice(pi?.ok ? "The Raspberry Pi joined that Wi-Fi. Remote printing can reach it from there." : (pi?.error ?? "Wi-Fi settings were saved."));
+    } finally {
+      setSavingWifi(false);
+    }
   }
 
   function updatePickup(id: string, patch: Partial<PickupOption>) {
@@ -248,7 +274,7 @@ export default function CsrSettings() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
               <div>
                 <Label className="text-xs uppercase tracking-wider text-muted-foreground">Onsite Mode</Label>
-                <select disabled={!canEdit} className="mt-1 h-9 w-full rounded-sm bg-background border border-input px-3 text-sm" value={printerConfig.onsiteMode} onChange={(e) => setPrinterConfig(prev => ({ ...prev, onsiteMode: e.target.value }))}>
+                <select disabled={!canEditWifi} className="mt-1 h-9 w-full rounded-sm bg-background border border-input px-3 text-sm" value={printerConfig.onsiteMode} onChange={(e) => setPrinterConfig(prev => ({ ...prev, onsiteMode: e.target.value }))}>
                   <option value="auto">Auto detect</option>
                   <option value="onsite">Force onsite</option>
                   <option value="remote">Force remote</option>
@@ -256,11 +282,11 @@ export default function CsrSettings() {
               </div>
               <div>
                 <Label className="text-xs uppercase tracking-wider text-muted-foreground">Primary SSID</Label>
-                <Input disabled={!canEdit} value={printerConfig.ssid} onChange={(e) => setPrinterConfig(prev => ({ ...prev, ssid: e.target.value }))} className="mt-1 rounded-sm" />
+                <Input disabled={!canEditWifi} value={printerConfig.ssid} onChange={(e) => setPrinterConfig(prev => ({ ...prev, ssid: e.target.value }))} className="mt-1 rounded-sm" />
               </div>
               <div>
                 <Label className="text-xs uppercase tracking-wider text-muted-foreground">Wi-Fi Password</Label>
-                <Input disabled={!canEdit} type="password" placeholder={printerConfig.passwordSet ? "Saved" : ""} onChange={(e) => setPrinterConfig(prev => ({ ...prev, password: e.target.value }))} className="mt-1 rounded-sm" />
+                <Input disabled={!canEditWifi || savingWifi} type="password" value={passwordDraft} placeholder={printerConfig.passwordSet ? "Saved — enter a new one to replace it" : "Password for this network"} onChange={(e) => setPasswordDraft(e.target.value)} className="mt-1 rounded-sm" />
               </div>
             </div>
 
@@ -270,7 +296,7 @@ export default function CsrSettings() {
                   <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Approved SSIDs for CSR Clock-In</div>
                   <div className="text-xs text-muted-foreground mt-0.5">CSRs entering any of these SSIDs will be auto-approved for Wi-Fi at clock-in. Case-insensitive match.</div>
                 </div>
-                {canEdit && (
+                {canEditWifi && (
                   <Button variant="outline" size="sm" className="rounded-sm shrink-0" onClick={() => setPrinterConfig(prev => ({ ...prev, approvedSsids: [...(prev.approvedSsids ?? []), ""] }))}>
                     + Add SSID
                   </Button>
@@ -283,7 +309,7 @@ export default function CsrSettings() {
                 {(printerConfig.approvedSsids ?? []).map((ssid, idx) => (
                   <div key={idx} className="flex items-center gap-2">
                     <Input
-                      disabled={!canEdit}
+                      disabled={!canEditWifi}
                       value={ssid}
                       onChange={(e) => setPrinterConfig(prev => {
                         const next = [...(prev.approvedSsids ?? [])];
@@ -293,7 +319,7 @@ export default function CsrSettings() {
                       placeholder={`Approved SSID ${idx + 1}`}
                       className="rounded-sm font-mono text-xs h-9"
                     />
-                    {canEdit && (
+                    {canEditWifi && (
                       <Button variant="ghost" size="sm" className="rounded-sm px-2 text-destructive hover:text-destructive" onClick={() => setPrinterConfig(prev => ({ ...prev, approvedSsids: (prev.approvedSsids ?? []).filter((_, i) => i !== idx) }))}>
                         Remove
                       </Button>
@@ -304,9 +330,10 @@ export default function CsrSettings() {
             </div>
 
             <div className="text-xs text-muted-foreground border-t border-border/50 pt-3">
-              Auto detect uses the primary SSID plus the Tailscale printer bridge. Browsers cannot scan nearby Wi-Fi directly — CSRs enter their SSID at clock-in and it is validated against the approved list above.
+              Saving the primary network tells the Raspberry Pi to join it. The printer stays reachable over the remote link once that network has internet. If the name or password is wrong, the Pi goes back to the previous network. Clock-in still checks the approved list, because a phone cannot scan nearby Wi-Fi.
             </div>
-            {canEdit && <Button onClick={saveFromClick} className="rounded-sm">Save Wi-Fi Settings</Button>}
+            {wifiNotice && <p role="status" className="text-sm font-semibold">{wifiNotice}</p>}
+            {canEditWifi && <Button disabled={savingWifi} onClick={() => { saveWifi().catch(err => setWifiNotice(err.message)); }} className="rounded-sm">{savingWifi ? "Updating the Raspberry Pi…" : "Save Wi-Fi and update the Pi"}</Button>}
           </CardContent>
         </Card>
       )}

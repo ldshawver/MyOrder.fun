@@ -4,6 +4,7 @@ const updateSets: Array<Record<string, unknown>> = [];
 const updateWheres: unknown[] = [];
 const insertedAttempts: Array<Record<string, unknown>> = [];
 const bridgeProfiles = vi.hoisted(() => [] as Array<{ id: number; tenantId: number; apiKey: string }>);
+const printerRows = vi.hoisted(() => ({ rows: [] as Array<Record<string, unknown>> }));
 // Rows returned by the atomic "sending" claim; empty means another dispatcher won.
 const claimRows = vi.hoisted(() => ({ rows: [{ id: 1 }] as Array<{ id: number }> }));
 
@@ -22,25 +23,39 @@ vi.mock("@workspace/db", () => {
   const insert = vi.fn(() => ({
     values: vi.fn((values: Record<string, unknown>) => {
       insertedAttempts.push(values);
-      return Promise.resolve([]);
+      const row = { id: 900, retryCount: 0, maxRetries: 1, locationId: null, renderFormat: "text", status: "queued", ...values };
+      return Object.assign(Promise.resolve([]), {
+        returning: vi.fn(async () => [row]),
+      });
     }),
   }));
   // Bridge profile lookup: evaluates the eq() predicates on id and tenantId.
+  // A Brightek fallback lookup returns printerRows instead.
   const select = vi.fn(() => ({
     from: () => ({
       where: (predicates: Array<{ column: string; value: unknown }>) => ({
-        limit: async () => bridgeProfiles
-          .filter((row) => predicates.every(({ column, value }) =>
-            (column === "bridgeProfileId" && row.id === value) ||
-            (column === "bridgeTenantId" && row.tenantId === value)))
-          .map((row) => ({ apiKey: row.apiKey })),
+        limit: async () => {
+          const list = Array.isArray(predicates) ? predicates : [predicates];
+          const serialized = JSON.stringify(list);
+          if (serialized.includes("Brightek_POS80") || serialized.includes("Brightek POS80")) return printerRows.rows;
+          return bridgeProfiles
+            .filter((row) => list.every((predicate) => {
+              const column = predicate && typeof predicate === "object" && "column" in predicate ? predicate.column : undefined;
+              const value = predicate && typeof predicate === "object" && "value" in predicate ? predicate.value : undefined;
+              return (column === "bridgeProfileId" && row.id === value) || (column === "bridgeTenantId" && row.tenantId === value);
+            }))
+            .map((row) => ({ apiKey: row.apiKey }));
+        },
       }),
     }),
   }));
   return {
     db: { update, insert, select },
     printBridgeProfilesTable: { id: "bridgeProfileId", tenantId: "bridgeTenantId", apiKey: "bridgeApiKey" },
-    printPrintersTable: { id: "printerId", role: "role", isActive: "isActive" },
+    printPrintersTable: {
+      id: "printerId", role: "role", isActive: "isActive", tenantId: "printerTenantId",
+      bridgePrinterName: "bridgePrinterName", name: "printerName",
+    },
     printJobsTable: { id: "jobId", idempotencyKey: "idempotencyKey", status: "status", tenantId: "jobTenantId", lastAttemptAt: "lastAttemptAt" },
     printJobAttemptsTable: {},
     printSettingsTable: {},
@@ -84,6 +99,7 @@ describe("print job status integrity", () => {
     insertedAttempts.length = 0;
     process.env.PRINT_BRIDGE_API_KEY = "central-secret";
     bridgeProfiles.length = 0;
+    printerRows.rows = [];
     claimRows.rows = [{ id: 1 }];
     vi.restoreAllMocks();
   });
@@ -186,6 +202,7 @@ describe("print job status integrity", () => {
       errorMessage: "CUPS rejected unknown queue",
     });
     expect(insertedAttempts[0]).toMatchObject({ success: false });
+    expect(insertedAttempts.some((row) => String(row.idempotencyKey ?? "").startsWith("reroute:"))).toBe(false);
   });
 
   it("rejects an empty queue before contacting the bridge or CUPS default", async () => {
@@ -219,6 +236,123 @@ describe("print job status integrity", () => {
     expect(updateSets.some((update) => update.status === "printed")).toBe(false);
     expect(updateSets.at(-1)?.status).toBe("failed");
     expect(String(updateSets.at(-1)?.errorMessage)).toContain("system-default CUPS fallback");
+    expect(insertedAttempts.some((row) => String(row.idempotencyKey ?? "").startsWith("reroute:"))).toBe(false);
+  });
+
+  it("reroutes a failed location slip to Brightek_POS80 with the source printer on the first line", async () => {
+    const bodies: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      bodies.push(String(init?.body ?? ""));
+      throw new Error("connect ECONNREFUSED 100.121.53.58:3100");
+    });
+    printerRows.rows = [{
+      id: 1,
+      tenantId: 1,
+      locationId: null,
+      routingScope: "general",
+      isActive: true,
+      name: "Brightek POS80",
+      bridgePrinterName: "Brightek_POS80",
+      connectionType: "bridge",
+      bridgeUrl: "http://mac.test:3100",
+      bridgeProfileId: null,
+      apiKey: null,
+      timeoutMs: 8000,
+      copies: 1,
+    }];
+
+    await dispatchReceiptJob({
+      id: 139,
+      tenantId: 1,
+      locationId: 4,
+      shiftId: null,
+      orderId: 77,
+      printerId: 11,
+      operatorUserId: null,
+      jobType: "customer_receipt",
+      status: "queued",
+      idempotencyKey: "order_receipt:1:77",
+      renderFormat: "text",
+      payloadJson: { documentType: "ORDER_RECEIPT" },
+      renderedText: "ORDER 77",
+      retryCount: 0,
+      maxRetries: 5,
+    } as never, {
+      id: 11,
+      tenantId: 1,
+      locationId: 4,
+      routingScope: "location",
+      isActive: true,
+      name: "Box 2 RPP02N",
+      bridgePrinterName: "RPP02N",
+      connectionType: "pi_bridge",
+      bridgeUrl: "http://100.121.53.58:3100",
+      apiKey: null,
+      timeoutMs: 8000,
+      copies: 1,
+    } as never);
+
+    const rerouted = insertedAttempts.filter((row) => String(row.idempotencyKey ?? "").startsWith("reroute:"));
+    expect(rerouted).toHaveLength(1);
+    expect(rerouted[0]).toMatchObject({
+      tenantId: 1,
+      locationId: null,
+      orderId: 77,
+      printerId: 1,
+      jobType: "customer_receipt",
+      status: "queued",
+      idempotencyKey: "reroute:order_receipt:1:77",
+      renderedText: "******** Rerouted from RPP02N  ********\nORDER 77",
+      payloadJson: {
+        documentType: "ORDER_RECEIPT",
+        reroutedFrom: "RPP02N",
+        rerouteOfJobId: 139,
+        fallbackPrinter: "Brightek_POS80",
+      },
+    });
+    expect(updateSets).toContainEqual(expect.objectContaining({
+      status: "failed",
+      errorMessage: expect.stringContaining("rerouted to Brightek_POS80"),
+    }));
+    const rerouteFailure = updateSets.findIndex((update) => String(update.errorMessage ?? "").includes("rerouted to Brightek_POS80"));
+    expect(rerouteFailure).toBeGreaterThanOrEqual(0);
+    expect(updateSets.slice(0, rerouteFailure).some((update) => update.status === "retrying")).toBe(false);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toContain("ORDER 77");
+    expect(bodies[0]).not.toContain("Rerouted from");
+    expect(bodies[1]).toContain("******** Rerouted from RPP02N  ********");
+    expect(bodies[1]).toContain("Brightek_POS80");
+  });
+
+  it("keeps retrying the routed printer when no Brightek_POS80 is registered", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("connect ECONNREFUSED"));
+    await dispatchReceiptJob({
+      id: 140,
+      tenantId: 1,
+      locationId: 4,
+      retryCount: 0,
+      maxRetries: 5,
+      jobType: "expo_ticket",
+      renderFormat: "text",
+      renderedText: "EXPO",
+      idempotencyKey: "expo_ticket:1:77",
+      payloadJson: {},
+    } as never, {
+      id: 11,
+      tenantId: 1,
+      locationId: 4,
+      routingScope: "location",
+      isActive: true,
+      name: "Box 2 RPP02N",
+      bridgePrinterName: "RPP02N",
+      connectionType: "pi_bridge",
+      bridgeUrl: "http://box.test:3100",
+      timeoutMs: 8000,
+      copies: 1,
+      apiKey: null,
+    } as never);
+    expect(updateSets.at(-1)).toMatchObject({ status: "retrying" });
+    expect(insertedAttempts.some((row) => String(row.idempotencyKey ?? "").startsWith("reroute:"))).toBe(false);
   });
 
   it("submits ordinary rendered labels as non-raw PNG without borrowing sticker media", async () => {

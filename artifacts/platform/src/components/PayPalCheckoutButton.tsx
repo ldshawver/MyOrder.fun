@@ -11,6 +11,11 @@ type ApplePaySessionApi = {
   validateMerchant(options: { validationUrl: string }): Promise<{ merchantSession: unknown }>;
   confirmOrder(options: { orderId: string; token: unknown; billingContact?: unknown; shippingContact?: unknown }): Promise<{ status?: string }>;
 };
+type ApplePaySetup = {
+  session: ApplePaySessionApi;
+  merchant: Awaited<ReturnType<ApplePaySessionApi["config"]>>;
+  order: WalletOrderInfo;
+};
 type GooglePaySessionApi = {
   formatConfigForPaymentRequest(config: unknown): Record<string, unknown> & { allowedPaymentMethods: unknown[]; apiVersion: number; apiVersionMinor: number; countryCode: string };
   confirmOrder(options: { orderId: string; paymentMethodData: unknown }): Promise<{ status?: string }>;
@@ -79,7 +84,7 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
   const internalOrderId = useRef<number | undefined>(orderId);
   const sessions = useRef<Partial<Record<Method, WalletSession>>>({}); const attempt = useRef<{ id: number; providerOrderId: string } | undefined>(undefined);
   const busyRef = useRef(false);
-  const applePaySession = useRef<ApplePaySessionApi | null>(null);
+  const applePay = useRef<ApplePaySetup | null>(null);
   const googlePay = useRef<{ session: GooglePaySessionApi; client: GooglePaymentsClient; config: ReturnType<GooglePaySessionApi["formatConfigForPaymentRequest"]> } | null>(null);
   const [walletEligible, setWalletEligible] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false); const [message, setMessage] = useState<string | null>(null);
@@ -118,18 +123,20 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
   }, [authHeaders, resolveInternalOrder]);
   const cancelAfterBuyerCancellation = useCallback(async () => {
     const checkoutOrderId = internalOrderId.current;
-    if (!checkoutOrderId) return;
+    const currentAttempt = attempt.current;
+    if (!checkoutOrderId || !currentAttempt) {
+      setMessage("Apple Pay was canceled. No payment was submitted.");
+      return;
+    }
     try {
-      const response = await fetch(`/api/orders/${checkoutOrderId}/status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...await authHeaders() },
-        body: JSON.stringify({ status: "cancelled", reason: "Buyer cancelled PayPal approval" }),
+      const response = await fetch(`/api/payments/paypal/orders/${checkoutOrderId}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": `paypal-cancel-${checkoutOrderId}-${currentAttempt.id}`, ...await authHeaders() },
+        body: JSON.stringify({ attemptId: currentAttempt.id }),
       });
-      if (!response.ok) throw new Error("Checkout cancellation needs review");
-      // The provider session has explicitly reported buyer cancellation. The
-      // existing order lifecycle releases its unpaid reservation atomically.
-      // A new click therefore starts a new, server-validated checkout rather
-      // than attaching to a cancelled order.
+      if (!response.ok) throw new Error("Provider-verified cancellation needs review");
+      // The server verifies that PayPal still reports an uncaptured CREATED
+      // order before atomically releasing the local reservation and credit.
       const abandonedOrderId = checkoutOrderId;
       internalOrderId.current = undefined; attempt.current = undefined; sessionStorage.removeItem(pendingKey);
       onAbandoned?.(abandonedOrderId);
@@ -140,44 +147,44 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
       setMessage("PayPal approval was canceled, but checkout recovery is still pending. Do not retry payment until the order status is confirmed.");
     }
   }, [authHeaders, onAbandoned]);
-  const startApplePay = useCallback(async () => {
-    const providerSession = applePaySession.current;
+  const startApplePay = useCallback(() => {
+    const setup = applePay.current;
     const ApplePay = window.ApplePaySession;
-    if (busyRef.current || disabled || !providerSession || !ApplePay || !ApplePay.canMakePayments()) return;
+    if (busyRef.current || disabled || !setup || !ApplePay || !ApplePay.canMakePayments()) return;
     busyRef.current = true; setBusy(true); setMessage(null);
+    const finish = () => { busyRef.current = false; setBusy(false); };
     try {
-      const walletOrder = await readWalletOrderInfo();
-      const merchant = await providerSession.config();
       const session = new ApplePay(4, {
-        countryCode: walletOrder.countryCode,
-        currencyCode: walletOrder.currency,
-        merchantCapabilities: merchant.merchantCapabilities,
-        supportedNetworks: merchant.supportedNetworks,
+        countryCode: setup.order.countryCode,
+        currencyCode: setup.order.currency,
+        merchantCapabilities: setup.merchant.merchantCapabilities,
+        supportedNetworks: setup.merchant.supportedNetworks,
         requiredBillingContactFields: ["name", "postalAddress"],
         requiredShippingContactFields: [],
-        total: { label: "MyOrder.fun", amount: walletOrder.amount, type: "final" },
+        total: { label: "MyOrder.fun", amount: setup.order.amount, type: "final" },
       });
       session.onvalidatemerchant = async event => {
-        try { const { merchantSession } = await providerSession.validateMerchant({ validationUrl: event.validationURL }); session.completeMerchantValidation(merchantSession); }
-        catch { setMessage("Apple Pay merchant validation failed. No payment was captured."); session.abort(); }
+        try { const { merchantSession } = await setup.session.validateMerchant({ validationUrl: event.validationURL }); session.completeMerchantValidation(merchantSession); }
+        catch { setMessage("Apple Pay merchant validation failed. No payment was captured."); session.abort(); finish(); }
       };
       session.onpaymentauthorized = async event => {
         try {
           const attempt = await createProviderOrder();
-          const result = await providerSession.confirmOrder({ orderId: attempt.providerOrderId, token: event.payment.token, billingContact: event.payment.billingContact, shippingContact: event.payment.shippingContact });
+          const result = await setup.session.confirmOrder({ orderId: attempt.providerOrderId, token: event.payment.token, billingContact: event.payment.billingContact, shippingContact: event.payment.shippingContact });
           if (result.status && result.status !== "APPROVED") throw new Error("Apple Pay order requires reconciliation");
           await capture(attempt.providerOrderId);
           session.completePayment({ status: ApplePay.STATUS_SUCCESS });
         } catch {
           session.completePayment({ status: ApplePay.STATUS_FAILURE });
           setMessage("Apple Pay could not be confirmed. Check order status before retrying.");
-        }
+        } finally { finish(); }
       };
-      session.oncancel = () => { void cancelAfterBuyerCancellation(); };
+      session.oncancel = () => { finish(); void cancelAfterBuyerCancellation(); };
+      // Apple requires construction and begin() to happen directly inside the
+      // click gesture. All network-dependent configuration is prefetched.
       session.begin();
-    } catch { setMessage("Apple Pay could not start. No payment was confirmed."); }
-    finally { busyRef.current = false; setBusy(false); }
-  }, [cancelAfterBuyerCancellation, capture, createProviderOrder, disabled, readWalletOrderInfo]);
+    } catch { finish(); setMessage("Apple Pay could not start. No payment was confirmed."); }
+  }, [cancelAfterBuyerCancellation, capture, createProviderOrder, disabled]);
   const startGooglePay = useCallback(async () => {
     const wallet = googlePay.current;
     if (busyRef.current || disabled || !wallet) return;
@@ -232,38 +239,84 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
       const container = walletContainer.current;
       container?.replaceChildren();
       let eligibleCount = 0;
+      const unavailable = (testId: string, label: string, reason: string) => {
+        if (!container) return;
+        const row = document.createElement("p");
+        row.dataset.testid = testId;
+        row.className = "rounded-sm border border-border/60 px-3 py-2 text-xs text-muted-foreground";
+        row.textContent = `${label}: ${reason}`;
+        container.appendChild(row);
+      };
       for (const method of supported) {
-        if (!container || !methods.isEligible(method.method)) continue;
+        if (method.method === "card") continue;
+        if (!container || !methods.isEligible(method.method)) {
+          if (method.method === "venmo") unavailable("digital-option-venmo", "Venmo", "not available in this browser");
+          continue;
+        }
         const session = await method.create();
-        if (!session) continue;
+        if (!session) {
+          if (method.method === "venmo") unavailable("digital-option-venmo", "Venmo", "not available in this browser");
+          continue;
+        }
         sessions.current[method.method] = session;
         const button = document.createElement(method.tag);
         button.setAttribute("type", "pay"); button.setAttribute("aria-label", method.label);
         if (method.method === "paypal") button.dataset.testid = "paypal-button";
+        if (method.method === "venmo") button.dataset.testid = "digital-option-venmo";
         if (method.method === "paylater") {
           const details = methods.getDetails?.("paylater");
           if (!details?.productCode || !details.countryCode) continue;
           Object.assign(button, { productCode: details.productCode, countryCode: details.countryCode });
         }
         button.addEventListener("click", () => { void startWallet(method.method); });
-        if (method.method === "card") {
-          const wrapper = document.createElement("paypal-basic-card-container");
-          wrapper.appendChild(button); container.appendChild(wrapper);
-        } else container.appendChild(button);
+        container.appendChild(button);
         eligibleCount++;
+      }
+      const cardMethod = supported.find(method => method.method === "card");
+      const cardSession = methods.isEligible("card") ? await cardMethod?.create() : undefined;
+      if (cardSession && container) {
+        sessions.current.card = cardSession;
+        for (const card of [
+          { id: "digital-option-debit", label: "Debit card", aria: "Pay with debit card" },
+          { id: "digital-option-credit", label: "Credit card", aria: "Pay with credit card" },
+        ]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.testid = card.id;
+          button.className = "w-full rounded-sm border border-border/60 bg-background px-3 py-2 text-left text-sm font-semibold";
+          button.setAttribute("aria-label", card.aria);
+          button.textContent = card.label;
+          button.addEventListener("click", () => { void startWallet("card"); });
+          container.appendChild(button);
+          eligibleCount++;
+        }
+      } else {
+        unavailable("digital-option-debit", "Debit card", "not enabled for this PayPal account");
+        unavailable("digital-option-credit", "Credit card", "not enabled for this PayPal account");
       }
       if (container && methods.isEligible("applepay") && sdk.createApplePayOneTimePaymentSession) {
         let appleScript = document.querySelector<HTMLScriptElement>('script[data-myorder-apple-pay="v1"]');
-        if (!appleScript) { appleScript = document.createElement("script"); appleScript.dataset.myorderApplePay = "v1"; appleScript.src = "https://applepay.cdn-apple.com/jsapi/1.latest/apple-pay-sdk.js"; appleScript.async = true; document.head.appendChild(appleScript); }
+        if (!appleScript) { appleScript = document.createElement("script"); appleScript.dataset.myorderApplePay = "v1"; appleScript.src = "https://applepay.cdn-apple.com/jsapi/1.latest/apple-pay-sdk.js"; appleScript.crossOrigin = "anonymous"; appleScript.async = true; document.head.appendChild(appleScript); }
         if (!window.ApplePaySession) await new Promise<void>((resolve, reject) => { appleScript!.addEventListener("load", () => resolve(), { once: true }); appleScript!.addEventListener("error", () => reject(new Error("Apple Pay SDK unavailable")), { once: true }); });
       }
       if (container && methods.isEligible("applepay") && window.ApplePaySession?.canMakePayments() && sdk.createApplePayOneTimePaymentSession) {
+        const quotedAmount = Number(eligibilityAmount);
+        const walletOrder = orderId
+          ? await readWalletOrderInfo()
+          : Number.isFinite(quotedAmount) && quotedAmount > 0
+            ? { amount: quotedAmount.toFixed(2), currency: config.currency ?? "USD", countryCode: config.countryCode ?? "US" }
+            : null;
+        if (!walletOrder) throw new Error("A server quote is required for Apple Pay");
         const session = await sdk.createApplePayOneTimePaymentSession();
-        applePaySession.current = session;
+        const merchant = await session.config();
+        if (disposed) return;
+        applePay.current = { session, merchant, order: walletOrder };
         const button = document.createElement("apple-pay-button");
         button.setAttribute("type", "pay"); button.setAttribute("buttonstyle", "black"); button.setAttribute("locale", "en"); button.setAttribute("aria-label", "Pay with Apple Pay");
-        button.addEventListener("click", () => { void startApplePay(); });
+        button.addEventListener("click", startApplePay);
         container.appendChild(button); eligibleCount++;
+      } else if (!(methods.isEligible("applepay") && window.ApplePaySession?.canMakePayments())) {
+        unavailable("digital-option-apple-pay", "Apple Pay", methods.isEligible("applepay") ? "not available on this device or browser" : "not enabled for this store's PayPal account");
       }
       if (container && methods.isEligible("googlepay") && sdk.createGooglePayOneTimePaymentSession) {
         const details = methods.getDetails?.("googlepay");
@@ -294,10 +347,11 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
               googlePay.current = { session, client: paymentsClient, config: paymentConfig };
               const button = paymentsClient.createButton({ onClick: () => { void startGooglePay(); } });
               button.setAttribute("aria-label", "Pay with Google Pay"); container.appendChild(button); eligibleCount++;
-            }
-          }
-        }
-      }
+            } else unavailable("digital-option-google-pay", "Google Pay", "not available for this browser or PayPal account");
+          } else unavailable("digital-option-google-pay", "Google Pay", "not available for this browser or PayPal account");
+        } else unavailable("digital-option-google-pay", "Google Pay", "not available for this browser or PayPal account");
+      } else unavailable("digital-option-google-pay", "Google Pay", "not available for this browser or PayPal account");
+      unavailable("digital-option-cash-app", "Cash App", "not available through this PayPal account");
       setWalletEligible(eligibleCount > 0);
       const returned = Object.values(sessions.current).find(session => session?.hasReturned?.());
       if (returned?.resume) {
@@ -311,7 +365,7 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
     }
     start().catch(() => { if (!disposed) { setWalletEligible(false); setMessage("Online PayPal checkout is unavailable."); } });
     return () => { disposed = true; };
-  }, [authHeaders, cancelAfterBuyerCancellation, capture, createProviderOrder, eligibilityAmount, startApplePay, startGooglePay, startWallet]);
+  }, [authHeaders, cancelAfterBuyerCancellation, capture, createProviderOrder, eligibilityAmount, orderId, readWalletOrderInfo, startApplePay, startGooglePay, startWallet]);
 
   return <div className="space-y-3" aria-busy={busy}>
     <div ref={walletContainer} data-testid="paypal-wallet-container" aria-label="PayPal Wallet" />

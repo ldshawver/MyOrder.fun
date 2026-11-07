@@ -49,7 +49,10 @@ describe("pickup scheduling", () => {
     const closed = calculatePickupAvailability(overnight, closedAtEleven);
     expect(closed.immediateAvailable).toBe(false);
     expect(closed.openNow).toBe(false);
-    expect(closed.message).toContain("has to wait for pickup during business hours");
+    expect(closed.message).toContain("You can still order");
+    expect(closed.slots.find(slot => slot.at === "2026-11-01T22:00:00.000Z")?.label).toMatch(/2:00/);
+    expect(closed.slots.find(slot => slot.at === "2026-11-01T22:00:00.000Z")?.label).toMatch(/PM/);
+    expect(closed.slots.find(slot => slot.at === "2026-11-01T22:00:00.000Z")?.label).not.toMatch(/14:00/);
     expect(closed.regularHours.every(row => row.hours === "14:00–02:00 next day")).toBe(true);
     expect(closed.slots.some(slot => slot.at === "2026-11-01T22:00:00.000Z")).toBe(true);
     expect(closed.slots.some(slot => slot.at === closedAtEleven.toISOString())).toBe(false);
@@ -63,7 +66,7 @@ describe("pickup scheduling", () => {
     expect(stillOpenAfterMidnight.immediateAvailable).toBe(true);
     const afterClose = calculatePickupAvailability(overnight, new Date("2026-11-05T11:00:00.000Z"));
     expect(afterClose.immediateAvailable).toBe(false);
-    expect(pickupSelectionErrorMessage("PICKUP_TIME_REQUIRED")).toContain("cannot be placed");
+    expect(pickupSelectionErrorMessage("PICKUP_TIME_REQUIRED")).toBe("Choose a pickup time to place this order.");
   });
 
   it("skips nonexistent DST wall times and represents repeated times as distinct instants", () => {
@@ -98,7 +101,7 @@ describe("pickup scheduling", () => {
     const unavailable = calculatePickupAvailability({ ...schedule, weeklyHours: [], maxAdvanceDays: 1 }, new Date("2026-11-03T02:00:00.000Z"));
     expect(unavailable.immediateAvailable).toBe(false);
     expect(unavailable.slots).toEqual([]);
-    expect(unavailable.message).toContain("no pickup times");
+    expect(unavailable.message).toContain("No pickup times");
   });
 
   it("snapshots the selected schedule so later edits cannot alter an order", () => {

@@ -82,7 +82,7 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
     expect(layout).not.toContain('label: "WooCommerce"');
     expect(layout).not.toContain('label: "Integrations"');
     expect(layout).toContain('label: isCustomer ? "Order Status" : "Orders"');
-    expect(layout).toContain('{ href: "/cart", label: isCustomer ? "My Order" : "Cart"');
+    expect(layout).toContain('{ href: "/cart", label: isCustomer ? "My Cart" : "Cart"');
     expect(app).toContain('path="/cart" component={NewOrder}');
     expect(app).toContain('path="/orders/new" component={LegacyCartRedirect}');
   });
@@ -542,7 +542,7 @@ describe("admin/POS/security cleanup regressions", () => {
     expect(staff).toContain('I confirm WiFi is working');
     expect(staff).toContain('I confirm printer is available');
     expect(staff).toContain('I confirm pickup/location is set');
-    expect(staff).toContain('disabled={clocking || !mandatoryChecksComplete}');
+    expect(staff).toContain('disabled={clocking || !mandatoryChecksComplete || !inventoryAgreed || (deliveryMode !== "personal" && deliveryMode !== "uber")}');
   });
 
   it("keeps featured AI products admin-only and blocks non-admin callers", () => {

@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, orderItemsTable, ordersTable, usersTable } from "@workspace/db";
+import { displaySpecialComponents } from "./specialComponents";
 
 export async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
   const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
@@ -45,7 +46,9 @@ export async function buildOrderResponse(order: typeof ordersTable.$inferSelect)
     handoffChecklist: (order.handoffChecklist as Record<string, boolean> | null) ?? null,
     handoffCompletedAt: order.handoffCompletedAt ?? null,
     handoffCompletedByUserId: order.handoffCompletedByUserId ?? null,
-    items: items.map(i => ({
+    items: items.map(i => {
+      const specialComponents = displaySpecialComponents(i.variantSnapshot);
+      return {
       id: i.id,
       catalogItemId: i.catalogItemId,
       catalogItemName: i.catalogItemName,
@@ -53,7 +56,9 @@ export async function buildOrderResponse(order: typeof ordersTable.$inferSelect)
       unitPrice: parseFloat(i.unitPrice as string),
       totalPrice: parseFloat(i.totalPrice as string),
       inventoryDeductions: Array.isArray(i.inventoryDeductions) ? i.inventoryDeductions : [],
-    })),
+      ...(specialComponents.length ? { specialComponents } : {}),
+      };
+    }),
     assignedCsrUserId: order.assignedCsrUserId ?? null,
     assignedShiftId: order.assignedShiftId ?? null,
     routeSource: order.routeSource ?? null,

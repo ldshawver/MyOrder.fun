@@ -201,6 +201,15 @@ describe("GET /api/users/me", () => {
     expect(res.body.firstName).toBe("Old");
     expect(res.body.avatarUrl).toBe("https://cdn.example.com/me.png");
     expect(res.body.contactPhone).toBe("+15551112222");
+    expect(res.body.isCurrentEmployee).toBe(false);
+    expect(res.body.profileCompletionRequired).toBe(false);
+  });
+
+  it("asks for the missing name, phone, email, or profile picture on the next sign-in", async () => {
+    seedUser({ firstName: "", lastName: null, email: "", contactPhone: null, avatarUrl: null });
+    const res = await supertest(buildApp()).get("/api/users/me");
+    expect(res.status).toBe(200);
+    expect(res.body.profileCompletionRequired).toBe(true);
   });
 });
 
@@ -352,6 +361,23 @@ describe("PATCH /api/users/me", () => {
     expect(clerkClient.users.updateUserProfileImage).not.toHaveBeenCalled();
   });
 
+  it("rejects a customer assigning their own employee status", async () => {
+    seedUser();
+    const res = await supertest(buildApp()).patch("/api/users/me").send({ isCurrentEmployee: true });
+    expect(res.status).toBe(400);
+    expect(dbState.users[0].isCurrentEmployee).toBeUndefined();
+  });
+
+  it("stores an email only when the account does not already have one", async () => {
+    seedUser({ email: "" });
+    const created = await supertest(buildApp()).patch("/api/users/me").send({ email: "new.member@example.com" });
+    expect(created.status).toBe(200);
+    expect(dbState.users[0].email).toBe("new.member@example.com");
+    const changed = await supertest(buildApp()).patch("/api/users/me").send({ email: "other@example.com" });
+    expect(changed.status).toBe(400);
+    expect(dbState.users[0].email).toBe("new.member@example.com");
+  });
+
   it("accepts empty payloads as a no-op", async () => {
     seedUser();
     const res = await supertest(buildApp()).patch("/api/users/me").send({});
@@ -378,6 +404,15 @@ describe("PATCH /api/admin/users/:id/profile", () => {
     expect(assertTemporaryProfileImage).toHaveBeenCalledWith(imageId, "member@example.com");
     expect(finalizeProfileImage).toHaveBeenCalledWith(imageId);
     expect(dbState.audits).toContainEqual(expect.objectContaining({ action: "UPDATE_MEMBER_PROFILE", tenantId: 5, resourceId: "2", metadata: { fields: ["firstName", "contactPhone", "avatarUrl"] } }));
+  });
+
+  it("lets an admin assign current employee status and keeps it off the customer's own update", async () => {
+    seedManagerAndTarget();
+    const res = await supertest(buildApp()).patch("/api/admin/users/2/profile").send({ isCurrentEmployee: true });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(dbState.users[1].isCurrentEmployee).toBe(true);
+    expect(res.body.isCurrentEmployee).toBe(true);
+    expect(dbState.audits).toContainEqual(expect.objectContaining({ metadata: { fields: ["isCurrentEmployee"] } }));
   });
 
   it("denies cross-tenant profile edits", async () => {

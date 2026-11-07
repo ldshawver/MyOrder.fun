@@ -249,7 +249,7 @@ function EditDialog({
               {input("Price ($)", "price", isWoo, "number")}
               {input("Regular / Compare-at Price ($)", "regularPrice", false, "number")}
               {input("Sale Price ($)", "compareAtPrice", false, "number")}
-              {input("Employee Discount ($)", "homiePrice", false, "number")}
+              {input("Employee Discount ($)", "homiePrice", false, "number", "Current employees pay this amount for this item instead of 20% off. Leave blank for the 20% employee discount.")}
               {input("PAR", "parLevel", false, "number")}
               {input("Minimum Order Quantity", "moq", false, "number")}
               {input("Preferred Reorder Quantity", "preferredReorderQuantity", false, "number")}
@@ -643,12 +643,12 @@ export default function AdminEditCatalog() {
                     </td>
                     <td className="p-3">
                       <div className="flex items-center gap-1 justify-end">
-                        <a href={`/admin/catalogue-products?catalogItemId=${item.id}`}
+                        {!item.isWooManaged && <a href={`/admin/catalogue-products?catalogItemId=${item.id}`}
                           className="p-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
                           title="Manage variants and location inventory"
                           aria-label={`Manage variants and inventory for ${item.name}`}>
                           <Package size={13} />
-                        </a>
+                        </a>}
                         <button
                           onClick={() => setEditItem(item)}
                           className="p-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"

@@ -15,7 +15,7 @@ import { approvalMutationFailureMessage, ApprovalMutationError, isApprovalReveri
 type StatusFilter = "all" | "pending" | "approved" | "rejected" | "deactivated";
 type PageTab = "users" | "waitlist";
 type RoleFilter = "all" | "global_admin" | "admin" | "supervisor" | "csr" | "user";
-type ProfileTarget = { id: number; email: string; firstName?: string | null; lastName?: string | null; contactPhone?: string | null };
+type ProfileTarget = { id: number; email: string; firstName?: string | null; lastName?: string | null; contactPhone?: string | null; isCurrentEmployee?: boolean };
 
 const ROLE_OPTIONS: { value: SetUserApprovalBodyRole; label: string; globalOnly?: boolean }[] = [
   { value: "user", label: "Customer/User" },
@@ -87,11 +87,10 @@ function waitlistDisplayName(entry: WaitlistEntry): string {
 }
 
 // ─── Waitlist tab ────────────────────────────────────────────────────────────
-// Lists Clerk waitlist entries. Each row has an inline role picker and a
-// single "Approve as <role>" button — one click sends the Clerk invite AND
-// pre-creates an approved users row with the picked role. Admin-only: the
-// underlying API requires admin, so supervisors get a dedicated banner
-// instead of a silently-empty table.
+// Lists Clerk waitlist entries. Each row has an inline role picker and an
+// invite button. The invite creates a pending account. It does not approve
+// anyone. Admin-only: the underlying API requires admin, so supervisors get
+// a dedicated banner instead of a silently-empty table.
 function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string | undefined; currentUserLoaded: boolean }) {
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
@@ -170,7 +169,7 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
       if (body.clerkInviteFailed) {
         // Clerk invite email couldn't be sent (user may have already signed up),
         // but the DB row was approved — show a warning, not an error.
-        setActionMsg({ id: entry.id, msg: `Approved as ${role} in database. No invite email sent — if they already have an account, they can sign in now.`, ok: true });
+        setActionMsg({ id: entry.id, msg: `Invited as ${role}. The account stays pending until the owner approves it. No invite email was sent.`, ok: true });
       } else {
         setActionMsg({ id: entry.id, msg: `Invited as ${role}.`, ok: true });
       }
@@ -323,7 +322,7 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
                               ? "Inviting…"
                               : entry.status === "invited"
                                 ? `Re-invite as ${role}`
-                                : `Approve as ${role}`}
+                                : `Invite as ${role}`}
                           </Button>
                         )}
                         {entry.status !== "rejected" && (
@@ -361,9 +360,10 @@ export default function AdminUsers() {
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
   const [profileTarget, setProfileTarget] = useState<ProfileTarget | null>(null);
-  const [profileDraft, setProfileDraft] = useState({ firstName: "", lastName: "", contactPhone: "" });
+  const [profileDraft, setProfileDraft] = useState({ firstName: "", lastName: "", contactPhone: "", isCurrentEmployee: false });
   const [profileFile, setProfileFile] = useState<File | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [employeeSavingId, setEmployeeSavingId] = useState<number | null>(null);
   const [profileMessage, setProfileMessage] = useState("");
   const [approvalFeedback, setApprovalFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const approvalRequestActive = useRef(false);
@@ -446,6 +446,29 @@ export default function AdminUsers() {
     setApprovalFeedback(null);
     approvalMutation.mutate({ id, data: { approve: true, role } });
   };
+
+  async function setCurrentEmployee(userId: number, isCurrentEmployee: boolean) {
+    if (employeeSavingId != null) return;
+    setEmployeeSavingId(userId);
+    setApprovalFeedback(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Your session expired. Sign in again.");
+      const response = await fetch(`${import.meta.env.BASE_URL}api/admin/users/${userId}/profile`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ isCurrentEmployee }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error ?? "Could not update employee status.");
+      await queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
+      setApprovalFeedback({ type: "success", message: isCurrentEmployee ? "Current employee discount is on." : "Current employee discount is off." });
+    } catch (err) {
+      setApprovalFeedback({ type: "error", message: err instanceof Error ? err.message : "Could not update employee status." });
+    } finally {
+      setEmployeeSavingId(null);
+    }
+  }
 
   async function saveMemberProfile() {
     if (!profileTarget || profileSaving) return;
@@ -613,25 +636,26 @@ export default function AdminUsers() {
                   <TableHead className="font-semibold text-xs uppercase tracking-wider">Phone</TableHead>
                   <TableHead className="font-semibold text-xs uppercase tracking-wider">Role</TableHead>
                   <TableHead className="font-semibold text-xs uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="font-semibold text-xs uppercase tracking-wider">Employee</TableHead>
                   <TableHead className="font-semibold text-xs uppercase tracking-wider">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest">
+                    <TableCell colSpan={7} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest">
                       Loading directory...
                     </TableCell>
                   </TableRow>
                 ) : isError ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="h-32 text-center text-red-400/80 text-xs leading-relaxed px-8">
+                    <TableCell colSpan={7} className="h-32 text-center text-red-400/80 text-xs leading-relaxed px-8">
                       {usersErrorMsg}
                     </TableCell>
                   </TableRow>
                 ) : filtered.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest border-dashed">
+                    <TableCell colSpan={7} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest border-dashed">
                       No {statusFilter === "all" ? "" : statusFilter} users found.
                     </TableCell>
                   </TableRow>
@@ -712,6 +736,23 @@ export default function AdminUsers() {
                           <StatusBadge status={status} />
                         </TableCell>
                         <TableCell>
+                          {currentUser?.id !== user.id && canEditMemberProfileFromUserManagement(currentUser?.role, user.role) ? (
+                            <label className="flex items-center gap-2 text-xs font-medium">
+                              <input
+                                type="checkbox"
+                                checked={user.isCurrentEmployee === true}
+                                disabled={employeeSavingId === user.id}
+                                onChange={(event) => void setCurrentEmployee(user.id, event.target.checked)}
+                                aria-label={`Current employee ${user.firstName ?? ""} ${user.lastName ?? ""}`.trim()}
+                                data-testid={`checkbox-employee-${user.id}`}
+                              />
+                              Employee
+                            </label>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">{user.isCurrentEmployee === true ? "Employee" : "—"}</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
                           <div className="flex items-center gap-2">
                             {isPending && (
                               <Button
@@ -765,7 +806,7 @@ export default function AdminUsers() {
                             {currentUser?.id !== user.id && canEditMemberProfileFromUserManagement(currentUser?.role, user.role) && (
                               <Button size="sm" variant="outline" className="h-7 text-[10px] uppercase tracking-widest rounded-sm" data-testid={`btn-edit-profile-${user.id}`} onClick={() => {
                                 setProfileTarget(user);
-                                setProfileDraft({ firstName: user.firstName ?? "", lastName: user.lastName ?? "", contactPhone: user.contactPhone ?? "" });
+                                setProfileDraft({ firstName: user.firstName ?? "", lastName: user.lastName ?? "", contactPhone: user.contactPhone ?? "", isCurrentEmployee: user.isCurrentEmployee === true });
                                 setProfileFile(null);
                                 setProfileMessage("");
                               }}>Edit profile</Button>
@@ -791,6 +832,10 @@ export default function AdminUsers() {
             <label className="block space-y-1 text-sm">First name<Input value={profileDraft.firstName} onChange={(event) => setProfileDraft((v) => ({ ...v, firstName: event.target.value }))} /></label>
             <label className="block space-y-1 text-sm">Last name<Input value={profileDraft.lastName} onChange={(event) => setProfileDraft((v) => ({ ...v, lastName: event.target.value }))} /></label>
             <label className="block space-y-1 text-sm">Phone<Input value={profileDraft.contactPhone} onChange={(event) => setProfileDraft((v) => ({ ...v, contactPhone: event.target.value }))} /></label>
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1" checked={profileDraft.isCurrentEmployee} onChange={(event) => setProfileDraft((v) => ({ ...v, isCurrentEmployee: event.target.checked }))} />
+              <span>Current employee<span className="block text-xs text-muted-foreground">A current employee gets 20% off. A dollar amount on a product or variation replaces that 20% for that item.</span></span>
+            </label>
             <label className="flex cursor-pointer items-center gap-2 text-sm"><Upload size={16} />
               {profileFile ? profileFile.name : "Choose profile picture (optional)"}
               <input type="file" className="sr-only" accept="image/png,image/jpeg,image/webp" onChange={(event) => setProfileFile(event.target.files?.[0] ?? null)} aria-label="Choose profile picture" />

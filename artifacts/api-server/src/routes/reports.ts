@@ -5,6 +5,15 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } 
 import { isGlobalAdmin } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
 import { buildSalesTaxReportFromRows } from "../lib/salesTaxReport";
+import {
+  emptyHours,
+  emptyWeekdays,
+  hourInBusinessZone,
+  inventoryRollup,
+  suggestedOrderLines,
+  weekdayInBusinessZone,
+  type StockLocationRow,
+} from "../lib/reportSeries";
 
 const router: IRouter = Router();
 function requireReportTenantContext(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
@@ -120,6 +129,79 @@ function csvEscape(value: unknown): string {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+function resultRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  return ((result as { rows?: T[] } | undefined)?.rows ?? []);
+}
+
+function asBool(value: unknown): boolean {
+  return value === true || value === "t" || value === "true";
+}
+
+function personName(user: { firstName?: string | null; lastName?: string | null } | undefined, id: number): string {
+  const name = [user?.firstName, user?.lastName].filter(Boolean).join(" ").trim();
+  return name || `CSR #${id}`;
+}
+
+async function loadStockRows(tenantId: number | undefined): Promise<StockLocationRow[]> {
+  if (tenantId == null) return [];
+  const probe = resultRows<{ present: string | null }>(await db.execute(sql`SELECT to_regclass('public.inventory_balances') AS present`));
+  if (!probe[0]?.present) return [];
+  return resultRows<Record<string, unknown>>(await db.execute(sql`
+    SELECT DISTINCT ON (ii.id, il.id)
+      ii.id AS "inventoryItemId",
+      cp.name AS "productName",
+      co.label AS "optionLabel",
+      il.id AS "locationId",
+      il.name AS "locationName",
+      COALESCE(b.quantity_on_hand, 0)::text AS "onHand",
+      GREATEST(0, COALESCE(b.quantity_on_hand, 0) - COALESCE((
+        SELECT SUM(r.quantity) FROM inventory_reservations r
+        JOIN orders o ON o.id = r.order_id AND o.tenant_id = ii.tenant_id
+        WHERE r.catalog_item_id = ii.catalog_item_id AND r.location_id = il.id AND r.status = 'reserved'
+          AND (r.expires_at > now() OR EXISTS (
+            SELECT 1 FROM payment_attempts pa
+            WHERE pa.tenant_id = ii.tenant_id AND pa.order_id = r.order_id
+              AND pa.state IN ('creating','created','approved','capturing','reconciliation_required')
+          ))
+      ), 0))::text AS available,
+      COALESCE(p.par, 0)::text AS par,
+      COALESCE(p.reorder_point, 0)::text AS "reorderPoint",
+      COALESCE(p.preferred_reorder_quantity, 0)::text AS "preferredReorderQuantity",
+      COALESCE(p.moq, 0)::text AS moq,
+      il.is_active AS eligible
+    FROM inventory_items ii
+    JOIN catalogue_options co ON co.tenant_id = ii.tenant_id AND co.inventory_item_id = ii.id AND co.active = true
+    JOIN catalogue_products cp ON cp.tenant_id = co.tenant_id AND cp.id = co.product_id AND cp.active = true
+    JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
+    JOIN inventory_locations il ON il.tenant_id = ii.tenant_id
+    LEFT JOIN inventory_balances b ON b.tenant_id = ii.tenant_id AND b.location_id = il.id
+      AND b.product_id = ii.catalog_item_id AND b.inventory_kind = 'sellable_catalog'
+      AND b.is_sellable = true AND b.quarantined_at IS NULL
+    LEFT JOIN inventory_reorder_policies p ON p.tenant_id = ii.tenant_id AND p.location_id = il.id AND p.inventory_item_id = ii.id
+    WHERE ii.tenant_id = ${tenantId}
+      AND COALESCE(ci.is_woo_managed, false) = false
+      AND COALESCE(ci.is_local_alavont, true) = true
+      AND COALESCE(ci.metadata->>'safeOnlyDuplicate', 'false') <> 'true'
+      AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
+    ORDER BY ii.id, il.id, co.id
+    LIMIT 800
+  `)).map((row): StockLocationRow => ({
+    inventoryItemId: Number(row.inventoryItemId),
+    productName: String(row.productName ?? "Item"),
+    optionLabel: String(row.optionLabel ?? "Standard"),
+    locationId: Number(row.locationId),
+    locationName: String(row.locationName ?? "Location"),
+    onHand: String(row.onHand ?? "0"),
+    available: String(row.available ?? "0"),
+    par: String(row.par ?? "0"),
+    reorderPoint: String(row.reorderPoint ?? "0"),
+    preferredReorderQuantity: String(row.preferredReorderQuantity ?? "0"),
+    moq: String(row.moq ?? "0"),
+    eligible: asBool(row.eligible),
+  }));
+}
+
 async function buildReport(tenantId: number | undefined, query: Record<string, unknown>) {
   await ensureReportSchema();
   const filters = parseFilters(query);
@@ -188,6 +270,38 @@ async function buildReport(tenantId: number | undefined, query: Record<string, u
   }
 
   const usersById = new Map(users.map((user) => [user.id, user]));
+  const hours = emptyHours();
+  const weekdays = emptyWeekdays();
+  const byCsr = new Map<string, { id: number | null; name: string; orders: number; revenue: number }>();
+  for (const order of filteredOrders) {
+    const createdAt = new Date(order.createdAt);
+    const hour = hours[hourInBusinessZone(createdAt)]!;
+    const weekday = weekdays[weekdayInBusinessZone(createdAt)]!;
+    hour.orders += 1;
+    weekday.orders += 1;
+    if (order.paymentStatus === "paid") {
+      const paid = money(order.total);
+      hour.revenue += paid;
+      weekday.revenue += paid;
+    }
+    const csrKey = order.assignedCsrUserId == null ? "none" : String(order.assignedCsrUserId);
+    const csr = byCsr.get(csrKey) ?? {
+      id: order.assignedCsrUserId,
+      name: order.assignedCsrUserId == null ? "Unassigned" : personName(usersById.get(order.assignedCsrUserId), order.assignedCsrUserId),
+      orders: 0,
+      revenue: 0,
+    };
+    csr.orders += 1;
+    if (order.paymentStatus === "paid") csr.revenue += money(order.total);
+    byCsr.set(csrKey, csr);
+  }
+  const csrIds = new Set<number>();
+  for (const order of orders) if (order.assignedCsrUserId != null) csrIds.add(order.assignedCsrUserId);
+  for (const shift of shifts) if (shift.techId != null) csrIds.add(shift.techId);
+  const stock = (await loadStockRows(tenantId)).filter((row) => {
+    if (!filters.product) return true;
+    return `${row.productName} ${row.optionLabel}`.toLowerCase().includes(filters.product);
+  });
   const workforce = filteredShifts.map((shift) => {
     const user = usersById.get(shift.techId);
     const summary = (shift.summary ?? {}) as { totalRevenue?: number; orderCount?: number };
@@ -215,8 +329,21 @@ async function buildReport(tenantId: number | undefined, query: Record<string, u
       discrepancyTotal: workforce.reduce((sum, row) => sum + row.differenceAmount, 0),
     },
     salesTrend: Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date)).slice(-30),
+    salesByCsr: Array.from(byCsr.values()).sort((a, b) => b.revenue - a.revenue),
+    hourOfDay: hours,
+    weekdayTrend: weekdays,
     paymentTrend: Array.from(byPayment.values()).sort((a, b) => b.revenue - a.revenue),
     productPerformance: Array.from(byProduct.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 30),
+    inventory: inventoryRollup(stock),
+    inventoryLocations: stock.filter((row) => row.eligible).map((row) => ({
+      product: row.optionLabel === "Standard" ? row.productName : `${row.productName} — ${row.optionLabel}`,
+      location: row.locationName,
+      onHand: row.onHand,
+      available: row.available,
+      par: row.par,
+    })),
+    suggestedOrder: suggestedOrderLines(stock),
+    csrOptions: [...csrIds].map((id) => ({ id, name: personName(usersById.get(id), id) })).sort((a, b) => a.name.localeCompare(b.name)),
     workforce,
     receipts: filteredOrders.slice(0, 50).map((order) => ({
       orderId: order.id,
@@ -237,8 +364,13 @@ router.get("/admin/reports/export.csv", ...authChain, async (req, res): Promise<
   const lines = [
     ["section", "name", "count", "revenue"].map(csvEscape).join(","),
     ...report.salesTrend.map(row => ["sales_trend", row.date, row.orders, row.revenue].map(csvEscape).join(",")),
+    ...report.salesByCsr.map(row => ["sales_csr", row.name, row.orders, row.revenue].map(csvEscape).join(",")),
+    ...report.hourOfDay.map(row => ["hour_of_day", row.label, row.orders, row.revenue].map(csvEscape).join(",")),
+    ...report.weekdayTrend.map(row => ["weekday", row.day, row.orders, row.revenue].map(csvEscape).join(",")),
     ...report.paymentTrend.map(row => ["payment", row.method, row.orders, row.revenue].map(csvEscape).join(",")),
     ...report.productPerformance.map(row => ["product", row.name, row.quantity, row.revenue].map(csvEscape).join(",")),
+    ...report.inventory.map(row => ["inventory", row.name, row.available, row.onHand].map(csvEscape).join(",")),
+    ...report.suggestedOrder.map(row => ["suggested_order", `${row.product} @ ${row.location}`, row.orderQuantity, row.transfer].map(csvEscape).join(",")),
     ...report.workforce.map(row => ["workforce", `${row.name} shift ${row.shiftId}`, row.orderCount, row.revenue].map(csvEscape).join(",")),
   ];
   res.setHeader("Content-Type", "text/csv; charset=utf-8");

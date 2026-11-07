@@ -92,6 +92,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = userRole === "user";
   const showOperationalQueueStatus = ["global_admin", "admin", "supervisor"].includes(userRole);
+  const customerStorefront = /^\/(catalog|catalogue|cart|checkout|orders)(\/|$)/.test(location);
   const [queueStatus, setQueueStatus] = useState<{
     activeShift: { clockedInAt: string } | null;
     activeCsr: { firstName?: string | null; lastName?: string | null; email?: string | null } | null;
@@ -117,18 +118,14 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       roles: ALL_ROLES,
       items: [
         { href: "/catalog", label: "Catalogue", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
-        { href: "/cart", label: isCustomer ? "My Order" : "Cart", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
+        { href: "/cart", label: isCustomer ? "My Cart" : "Cart", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         {
           href: "/orders",
           label: isCustomer ? "Order Status" : "Orders",
           mobileLabel: isCustomer ? "Order Status" : "Orders",
-          icon: ShoppingCart,
+          icon: ListTodo,
           roles: ALL_ROLES,
           mobileShow: true,
-          children: isCustomer ? [
-            { href: "/orders", label: "Order Status", icon: ListTodo, roles: ALL_ROLES },
-            { href: "/cart", label: "My Order", icon: ShoppingCart, roles: ALL_ROLES },
-          ] : undefined,
         },
         {
           href: "/ai-concierge",
@@ -495,7 +492,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               exit={{ opacity: 0, y: -10, scale: 1.01 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
             >
-              {showOperationalQueueStatus && queueStatus && (
+              {showOperationalQueueStatus && !customerStorefront && queueStatus && (
                 <div className={`mb-5 rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${queueStatus.activeShift ? "border-emerald-500/40 bg-emerald-500/10" : "border-amber-500/40 bg-amber-500/10"}`} data-testid="queue-status-banner">
                   <div>
                     <div className="font-semibold" data-testid="queue-status-title">

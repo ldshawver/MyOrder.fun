@@ -4,6 +4,7 @@ import type { NormalizedCartLine } from "./checkoutNormalizer";
 import { safeDecrypt } from "./crypto";
 import { quantityUnits } from "./exactQuantity";
 import { inspectCheckoutInventoryAvailability } from "./inventoryReservations";
+import { loadCheckoutSpecialComponents, specialsAvailable } from "./specialComponents";
 import { fetchWooSafely } from "./wooSafeHttp";
 
 export type WooAvailabilityEntity = {
@@ -119,6 +120,18 @@ function rows<T>(result: unknown): T[] {
 }
 
 async function requireLocalInventoryAvailable(tenantId: number, catalogItemId: number, quantity: number): Promise<void> {
+  const special = (await loadCheckoutSpecialComponents(db, tenantId, [catalogItemId])).get(catalogItemId);
+  if (special) {
+    if (special.incomplete) throw new CartItemUnavailableError(catalogItemId, "A product in this special is no longer available.");
+    const verdict = specialsAvailable(special.stock, quantity);
+    if (!verdict.orderable) {
+      throw new CartItemUnavailableError(catalogItemId,
+        verdict.inventoryStatus === "ready"
+          ? "This item does not have enough local inventory available."
+          : "This locally managed item has no active sellable inventory balance.");
+    }
+    return;
+  }
   const option = rows<{ inventoryCatalogItemId: number; consumptionQuantity: string }>(await db.execute(sql`
     SELECT ii.catalog_item_id AS "inventoryCatalogItemId", co.consumption_quantity AS "consumptionQuantity"
     FROM catalogue_options co

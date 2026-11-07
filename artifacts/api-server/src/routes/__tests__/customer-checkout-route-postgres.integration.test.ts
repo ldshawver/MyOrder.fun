@@ -255,13 +255,14 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
     const created = await placeOrder("legacyCustomer");
     expect(created.status, created.text).toBe(201);
 
-    // Server-side pricing: totals come from the catalogue price and the
-    // tenant's tax configuration, never from the client.
+    // Server-side pricing: the catalogue price is authoritative. Cash does
+    // not add sales tax. Client totals are ignored.
     const order = await storedOrder(created.body.id);
     expect(order.tenantId).toBe(tenantId);
     expect(order.customerId).toBe(legacyCustomerId);
     expect(Number(order.subtotal)).toBe(20);
-    expect(Number(order.tax)).toBe(2);
+    expect(Number(order.tax)).toBe(0);
+    expect(Number(order.total)).toBe(20);
     expect(order.paymentStatus).toBe("unpaid");
     const { db, orderItemsTable, usersTable } = dbModule;
     const { eq } = await import("drizzle-orm");
@@ -281,7 +282,8 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
       if (res.status === 201) {
         const order = await storedOrder(res.body.id);
         expect(Number(order.subtotal)).toBe(20);
-        expect(Number(order.tax)).toBe(2);
+        expect(Number(order.tax)).toBe(0);
+        expect(Number(order.total)).toBe(20);
       } else {
         expect(res.status, res.text).toBe(400);
       }
@@ -329,9 +331,6 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
       ["pendingCustomer", "ACCOUNT_PENDING_APPROVAL"],
       ["inactiveCustomer", "ACCOUNT_DEACTIVATED"],
       ["rejectedCustomer", "ACCOUNT_REJECTED"],
-      ["unverifiedCustomer", "ACCOUNT_IDENTITY_REQUIRED"],
-      ["unprovisionedCustomer", "ACCOUNT_IDENTITY_REQUIRED"],
-      ["staffWithoutProvenance", "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED"],
     ] as const)("denies %s with %s", async (who, code) => {
       for (const call of [
         () => as(who).post("/api/orders").send(orderBody()),
@@ -343,6 +342,22 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
         expect(res.body.code).toBe(code);
       }
     });
+
+    it.each(["unverifiedCustomer", "unprovisionedCustomer", "staffWithoutProvenance"] as const)(
+      "does not block an approved Clerk account with provenance or identity provisioning: %s",
+      async (who) => {
+        for (const call of [
+          () => as(who).post("/api/orders").send(orderBody()),
+          () => as(who).post("/api/cart/convert").send({ items: [{ catalogItemId, quantity: 1 }], confirmation: confirmation() }),
+          () => as(who).get("/api/catalog"),
+          () => as(who).get("/api/credits/me"),
+        ]) {
+          const res = await call();
+          expect(res.body.code).not.toBe("ACCOUNT_APPROVAL_PROVENANCE_REQUIRED");
+          expect(res.body.code).not.toBe("ACCOUNT_IDENTITY_REQUIRED");
+        }
+      },
+    );
 
     it("denies a cross-tenant checkout attempt", async () => {
       const res = await as("legacyCustomer").post("/api/orders").send({ ...orderBody(), tenantId: otherTenantId });

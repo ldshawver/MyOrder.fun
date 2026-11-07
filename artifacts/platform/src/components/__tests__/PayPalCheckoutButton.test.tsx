@@ -18,6 +18,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
   document.querySelector('script[data-myorder-paypal-sdk="v6"]')?.remove();
+  document.querySelector('script[data-myorder-apple-pay="v1"]')?.remove();
   delete window.paypal;
   delete window.ApplePaySession;
   delete window.google;
@@ -59,7 +60,31 @@ describe("PayPal Wallet checkout", () => {
     window.paypal = { createInstance: vi.fn().mockResolvedValue({ findEligibleMethods: async () => ({ isEligible: () => false }), createPayPalOneTimePaymentSession: vi.fn() }) };
     await renderButton();
     expect(host.querySelector("paypal-button")).toBeNull();
+    expect(document.querySelector('script[data-myorder-apple-pay="v1"]')).toBeNull();
     expect(host.textContent).toContain("PayPal Wallet is unavailable");
+    expect(host.textContent).toContain("Venmo: not available in this browser");
+    expect(host.textContent).toContain("Debit card: not enabled for this PayPal account");
+    expect(host.textContent).toContain("Credit card: not enabled for this PayPal account");
+    expect(host.textContent).toContain("Apple Pay: not enabled for this store's PayPal account");
+    expect(host.textContent).toContain("Google Pay: not available for this browser or PayPal account");
+    expect(host.textContent).toContain("Cash App: not available through this PayPal account");
+  });
+
+  it("keeps Apple Pay hidden when PayPal is eligible but the device cannot make payments", async () => {
+    class UnavailableApplePaySession { static canMakePayments = () => false; }
+    Object.assign(window, { ApplePaySession: UnavailableApplePaySession });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ enabled: true, mode: "live", clientId: "public-test-client", currency: "USD" }) }));
+    window.paypal = { createInstance: vi.fn().mockResolvedValue({
+      findEligibleMethods: async () => ({ isEligible: (method: string) => method === "applepay" }),
+      createPayPalOneTimePaymentSession: vi.fn(),
+      createApplePayOneTimePaymentSession: vi.fn(),
+    }) };
+    await act(async () => {
+      root.render(<PayPalCheckoutButton eligibilityAmount={10} getToken={async () => "test-token"} onCaptured={() => undefined} />);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(host.querySelector("apple-pay-button")).toBeNull();
+    expect(window.paypal.createInstance).toHaveBeenCalledTimes(1);
   });
 
   it("passes the server-created PayPal order to v6 and captures only after onApprove", async () => {
@@ -90,7 +115,9 @@ describe("PayPal Wallet checkout", () => {
   it("uses the authoritative order amount for the eligible Apple Pay sheet and captures through MyOrder", async () => {
     let authorize: ((event: { payment: { token: unknown; billingContact: unknown } }) => Promise<void>) | null = null;
     const appleRequest: { current?: Record<string, unknown> } = {};
-    let began = false;
+    let began = 0;
+    let inClickGesture = false;
+    let constructedDuringGesture = false;
     class NativeApplePaySession {
       static latest: NativeApplePaySession | undefined;
       static STATUS_SUCCESS = 1;
@@ -99,8 +126,8 @@ describe("PayPal Wallet checkout", () => {
       onvalidatemerchant: ((event: { validationURL: string }) => void) | null = null;
       onpaymentauthorized: typeof authorize = null;
       oncancel: (() => void) | null = null;
-      constructor(_version: number, request: Record<string, unknown>) { appleRequest.current = request; NativeApplePaySession.latest = this; }
-      begin() { began = true; }
+      constructor(_version: number, request: Record<string, unknown>) { constructedDuringGesture = inClickGesture; appleRequest.current = request; NativeApplePaySession.latest = this; }
+      begin() { began++ ; }
       abort() {}
       completeMerchantValidation() {}
       completePayment() {}
@@ -125,8 +152,15 @@ describe("PayPal Wallet checkout", () => {
     vi.stubGlobal("fetch", fetchMock);
     const sdkScript = document.createElement("script"); sdkScript.dataset.myorderPaypalSdk = "v6"; document.head.append(sdkScript);
     await act(async () => { root.render(<PayPalCheckoutButton orderId={43} getToken={async () => "test-token"} onCaptured={onCaptured} />); await new Promise(resolve => setTimeout(resolve, 0)); });
-    await act(async () => { host.querySelector('apple-pay-button[aria-label="Pay with Apple Pay"]')?.dispatchEvent(new MouseEvent("click")); await new Promise(resolve => setTimeout(resolve, 0)); });
-    expect(began).toBe(true);
+    await act(async () => {
+      inClickGesture = true;
+      host.querySelector('apple-pay-button[aria-label="Pay with Apple Pay"]')?.dispatchEvent(new MouseEvent("click"));
+      inClickGesture = false;
+      host.querySelector('apple-pay-button[aria-label="Pay with Apple Pay"]')?.dispatchEvent(new MouseEvent("click"));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(constructedDuringGesture).toBe(true);
+    expect(began).toBe(1);
     expect((appleRequest.current?.total as { amount?: string }).amount).toBe("1.09");
     authorize = NativeApplePaySession.latest?.onpaymentauthorized ?? null;
     expect(authorize).toBeTypeOf("function");
@@ -136,6 +170,26 @@ describe("PayPal Wallet checkout", () => {
     expect(appleSession.confirmOrder).toHaveBeenCalledWith(expect.objectContaining({ orderId: "PROVIDER-APPLE-43" }));
     expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/capture"))).toBe(true);
     expect(onCaptured).toHaveBeenCalledWith(43);
+  });
+
+  it("uses the provider-verified cancellation endpoint for an opened PayPal Wallet order", async () => {
+    let onCancel: (() => void) | undefined;
+    window.paypal = { createInstance: vi.fn(async () => ({
+      findEligibleMethods: async () => ({ isEligible: (method: string) => method === "paypal" }),
+      createPayPalOneTimePaymentSession: (options: { onCancel(): void }) => { onCancel = options.onCancel; return { start: async (_options: unknown, order: Promise<unknown>) => { await order; } }; },
+    })) };
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(
+      url === "/api/payments/config" ? { enabled: true, mode: "sandbox", clientId: "public-client", currency: "USD" }
+        : url.endsWith("/cancel") ? { status: "cancelled", replayed: false }
+          : { attemptId: 12, providerOrderId: "PROVIDER-CANCEL-43" },
+    ), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const script = document.createElement("script"); script.dataset.myorderPaypalSdk = "v6"; document.head.append(script);
+    await act(async () => { root.render(<PayPalCheckoutButton orderId={43} getToken={async () => "test-token"} onCaptured={() => undefined} />); await new Promise(resolve => setTimeout(resolve, 0)); });
+    await act(async () => { host.querySelector("paypal-button")?.dispatchEvent(new MouseEvent("click")); await new Promise(resolve => setTimeout(resolve, 0)); });
+    await act(async () => { onCancel?.(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/payments/paypal/orders/43/cancel")).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/orders/43/status")).toBe(false);
   });
 
   it("confirms eligible Google Pay through PayPal v6 before calling the MyOrder capture endpoint", async () => {

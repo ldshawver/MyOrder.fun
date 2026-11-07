@@ -162,6 +162,7 @@ export type CatalogItemSellableProductOptionsItem = {
   reservedQuantity?: string | null;
   availableQuantity?: string | null;
   orderable: boolean;
+  components?: Array<{ name: string; label: string; quantity: string }>;
 };
 
 export type CatalogItemSellableProduct = {
@@ -419,6 +420,7 @@ export interface OrderItem {
   unitPrice: number;
   totalPrice: number;
   inventoryDeductions?: OrderItemInventoryDeductionsItem[];
+  specialComponents?: Array<{ name: string; quantity: string }>;
 }
 
 export type OrderStatus = typeof OrderStatus[keyof typeof OrderStatus];
@@ -849,6 +851,10 @@ export interface UserProfile {
   contactPhone?: string | null;
   avatarUrl?: string | null;
   notificationPreferences?: UserProfileNotificationPreferences;
+  /** Assigned only by a supervisor or admin. Customers cannot set this. */
+  isCurrentEmployee?: boolean;
+  /** True when name, phone, email, or profile picture is still missing. */
+  profileCompletionRequired?: boolean;
   createdAt: string;
 }
 

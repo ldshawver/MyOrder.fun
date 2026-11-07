@@ -6,7 +6,11 @@ describe("server-side tender tax allocation", () => {
     expect(customerTaxTreatment("customer_credit")).toBe("tax_added");
     expect(isTaxableTender("customer_credit")).toBe(true);
   });
-  it.each(["cash", "paypal", "paypal_card"]) ("classifies %s as tax-added", tender => {
+  it("does not add sales tax to a cash tender", () => {
+    expect(customerTaxTreatment("cash")).toBe("non_tax_added");
+    expect(isTaxableTender("cash")).toBe(false);
+  });
+  it.each(["paypal", "paypal_card", "venmo", "cash_app", "apple_pay"]) ("classifies %s as tax-added", tender => {
     expect(customerTaxTreatment(tender)).toBe("tax_added");
     expect(isTaxableTender(tender)).toBe(true);
   });

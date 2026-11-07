@@ -10,7 +10,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { useCart } from "@/contexts/CartContext";
-import { optionAxes, optionForValues, optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
+import { optionAxes, optionForValues, optionCartEntry, selectedSellableOption, showOptionSelector, specialComponentSummary, type SellableProduct } from "@/lib/sellableOptions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ArrowLeft, Edit, Trash, Loader2, ShoppingCart, ChevronLeft, ChevronRight } from "lucide-react";
@@ -19,6 +19,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
+import { CatalogClosedStoreNotice } from "@/components/ClosedStoreNotice";
 
 type SellableProducts = { products: SellableProduct[] };
 
@@ -105,6 +106,7 @@ export default function CatalogItemDetail() {
 
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
+      <CatalogClosedStoreNotice />
       <div className="flex items-start gap-4 pb-6 border-b border-border/50">
         <Link href="/catalog" className="mt-1.5 text-muted-foreground hover:text-foreground transition-colors" data-testid="link-back">
           <ArrowLeft size={20} />
@@ -298,6 +300,7 @@ export default function CatalogItemDetail() {
                     Add to Cart
                   </Button>
                   {productQuery.isError && <p className="mt-2 text-sm text-destructive">Product options could not be loaded.</p>}
+                  {specialComponentSummary(selectedOption?.components) && <p className="mt-3 text-sm text-muted-foreground">{specialComponentSummary(selectedOption?.components)}</p>}
                   {selectedOption && !selectedOption.orderable && <p className="mt-2 text-sm text-destructive">
                     {!selectedOption.isAvailable ? "This option is not currently available for ordering."
                       : selectedOption.inventoryStatus !== "ready" ? "Inventory availability can't be confirmed, so this option can't be ordered."

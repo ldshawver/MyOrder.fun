@@ -1009,7 +1009,7 @@ export default function AdminSettingsPage() {
                 }}>{paypalSaving ? "Saving…" : "Save PayPal Settings"}</Button>
                 {paypalMessage && <p role="status">{paypalMessage}</p>}
                 <p><strong>PayPal Wallet:</strong> determined by the official PayPal SDK for the current merchant, buyer, and session.</p>
-                <p><strong>Credit/Debit Cards:</strong> not exposed until this merchant's PayPal Advanced Cards capability and v6 hosted-fields integration are verified. <strong>Vault/Saved Payments:</strong> {paypalStatus?.vault === "unknown" ? "not configured/verified" : paypalStatus?.vault ?? "not configured/verified"}.</p>
+                <p><strong>Checkout:</strong> customers choose cash or pay digitally. Digital checkout shows Venmo, debit, credit, Apple Pay, and Google Pay. PayPal decides which of those can take a payment in the buyer's browser. Cash App is not a PayPal payment method. Card numbers stay inside PayPal's form. <strong>Vault/Saved Payments:</strong> {paypalStatus?.vault === "unknown" ? "not configured/verified" : paypalStatus?.vault ?? "not configured/verified"}.</p>
                 <Button type="button" variant="outline" size="sm" disabled={paypalTesting} onClick={async () => {
                   setPayPalTesting(true);
                   try {

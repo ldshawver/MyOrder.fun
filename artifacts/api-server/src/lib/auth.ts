@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { db, usersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { fetchAndProvisionClerkUser, ensureProvisioningSchema, normalizeEmail } from "./userProvisioning";
+import { fetchAndProvisionClerkUser, ensureProvisioningSchema, normalizeEmail, preservedMembershipStatus } from "./userProvisioning";
 import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
 import { normalizeRole, hasRoleValue, type NormalizedRole } from "./roles";
@@ -55,15 +55,7 @@ export function evaluateAccountApproval(req: Request, user: {
   return { allowed: true, reason: "valid_provenance" };
 }
 
-/**
- * Read-only catalogue access has a deliberately narrower compatibility path
- * than the application-wide approval gate. Historical approved customer rows
- * predate approval provenance, but remain server-side tenant memberships.
- * They may read only their own tenant's customer-safe catalogue after their
- * Clerk identity has been verified and provisioning completed. Privileged and
- * mutating routes continue to use requireApproved/requireRole.
- */
-export function evaluateCatalogReadAccess(req: Request, user: {
+type ClerkMemberSurfaceUser = {
   clerkId?: string | null;
   tenantId?: number | null;
   role?: string | null;
@@ -73,49 +65,61 @@ export function evaluateCatalogReadAccess(req: Request, user: {
   provisioningStatus?: string | null;
   approvedByClerkId?: string | null;
   approvedAt?: Date | string | null;
-} | null | undefined): CatalogReadAccessDecision {
+};
+
+/** A real Clerk subject. Placeholder rows use a pending sentinel and are not signed-in accounts. */
+function isSignedInClerkAccount(user: { clerkId?: string | null } | null | undefined): boolean {
+  const clerkId = typeof user?.clerkId === "string" ? user.clerkId.trim() : "";
+  return clerkId.length > 0 && !clerkId.startsWith("pending");
+}
+
+/**
+ * Catalogue reads, own-account credit balance, and order submission.
+ * Every approved, active Clerk account on a server-side tenant may use these
+ * surfaces without historical approver metadata. The admin approved those
+ * Clerk users; the database row often has no approved_by or approved_at.
+ * Pending, rejected, inactive, unassigned, and placeholder rows stay denied.
+ * This does not stamp provenance. Staff mutations, credit assignment, and
+ * other privileged routes stay on requireApproved.
+ */
+function evaluateClerkMemberSurface(req: Request, user: ClerkMemberSurfaceUser | null | undefined): CustomerCheckoutAccessDecision {
   const approval = evaluateAccountApproval(req, user);
   if (approval.allowed) return { allowed: true, reason: "approved_account" };
   if (approval.reason !== "missing_provenance") return approval;
-  // Never let the compatibility path turn a privileged database role into a
-  // cross-tenant reader. Staff and administrators retain the full provenance
-  // gate, including for catalogue reads.
-  if (normalizeRole(user?.role) !== "user") return approval;
+  if (!isSignedInClerkAccount(user)) return approval;
   if (!Number.isSafeInteger(user?.tenantId) || Number(user?.tenantId) <= 0) {
     return { allowed: false, reason: "missing_tenant_membership" };
-  }
-  if (user?.identityStatus !== "verified" || user.provisioningStatus !== "active") {
-    return { allowed: false, reason: "unverified_identity" };
   }
   return { allowed: true, reason: "verified_legacy_tenant_member" };
 }
 
-/**
- * Customer checkout uses the same tightly bounded legacy-account exception as
- * customer catalogue reads. Some approved customer rows predate approval
- * provenance, but their verified application identity and tenant assignment
- * are still authoritative. The exception is deliberately limited to the
- * non-privileged customer role; staff and administrative accounts continue to
- * require complete approval provenance.
- */
+export function evaluateCatalogReadAccess(req: Request, user: ClerkMemberSurfaceUser | null | undefined): CatalogReadAccessDecision {
+  return evaluateClerkMemberSurface(req, user);
+}
+
 export function evaluateCustomerCheckoutAccess(req: Request, user: Parameters<typeof evaluateCatalogReadAccess>[1]): CustomerCheckoutAccessDecision {
-  return evaluateCatalogReadAccess(req, user);
+  return evaluateClerkMemberSurface(req, user);
+}
+
+export function evaluateCustomerSelfServiceAccess(req: Request, user: Parameters<typeof evaluateCatalogReadAccess>[1]): CustomerCheckoutAccessDecision {
+  return evaluateClerkMemberSurface(req, user);
 }
 
 let usersSchemaVerified = false;
 
 /**
- * Authentication must never mutate schema during a request. Check the legacy
- * auth columns read-only; deployments with an incomplete users schema must
- * apply the reviewed migration before serving authenticated traffic.
+ * Confirm the users columns authentication reads. The current-employee flag is
+ * added when missing so a request can select it before a migration container runs.
+ * Existing rows stay false. No approval metadata is written here.
  */
 async function verifyUsersAuthSchema(): Promise<void> {
   if (usersSchemaVerified) return;
 
+  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_current_employee" boolean NOT NULL DEFAULT false`);
   await db.execute(sql`
     SELECT mfa_enabled, mfa_secret, mfa_backup_codes, first_name, last_name,
       contact_phone, avatar_url, status, is_active, is_default_tech,
-      created_at, updated_at
+      is_current_employee, created_at, updated_at
     FROM users LIMIT 0
   `);
   usersSchemaVerified = true;
@@ -189,10 +193,11 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
       .limit(1);
     if (byEmail) {
       // Claim this row — swap the sentinel/stale clerkId for the real one.
-      logger.info({ clerkId, userId: byEmail.id, role: byEmail.role, status: byEmail.status }, "Claiming pre-approved user row by email match");
+      const linkedStatus = preservedMembershipStatus(byEmail);
+      logger.info({ clerkId, userId: byEmail.id, role: byEmail.role, status: linkedStatus }, "Claiming invited user row by email match");
       const [updated] = await db
         .update(usersTable)
-        .set({ clerkId, normalizedEmail: normalizeEmail(email), identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() })
+        .set({ clerkId, normalizedEmail: normalizeEmail(email), status: linkedStatus, ...(linkedStatus === "approved" ? {} : { approvedByClerkId: null, approvedAt: null }), identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() })
         .where(eq(usersTable.id, byEmail.id))
         .returning();
       return updated ?? byEmail;
@@ -224,9 +229,10 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
         .where(sql`${usersTable.normalizedEmail} = ${normalizeEmail(email)} AND (${usersTable.clerkId} LIKE 'pending:%' OR ${usersTable.clerkId} LIKE 'pending\_%' OR ${usersTable.clerkId} = ${clerkId})`)
         .limit(1);
       if (byEmail) {
+        const linkedStatus = preservedMembershipStatus(byEmail);
         const [updated] = await db
           .update(usersTable)
-          .set({ clerkId, normalizedEmail: normalizeEmail(email), identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() })
+          .set({ clerkId, normalizedEmail: normalizeEmail(email), status: linkedStatus, ...(linkedStatus === "approved" ? {} : { approvedByClerkId: null, approvedAt: null }), identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() })
           .where(eq(usersTable.id, byEmail.id))
           .returning();
         return updated ?? byEmail;
@@ -328,6 +334,23 @@ export function requireCatalogReadAccess(req: Request, res: Response, next: Next
 
 export function requireCustomerCheckoutAccess(req: Request, res: Response, next: NextFunction): void {
   const decision = evaluateCustomerCheckoutAccess(req, req.dbUser);
+  if (decision.allowed) {
+    next();
+    return;
+  }
+  if (decision.reason === "missing_tenant_membership") {
+    res.status(403).json({ error: "Tenant assignment required", code: "TENANT_ASSIGNMENT_REQUIRED" });
+    return;
+  }
+  if (decision.reason === "unverified_identity") {
+    res.status(403).json({ error: "Verified account provisioning required", code: "ACCOUNT_IDENTITY_REQUIRED" });
+    return;
+  }
+  requireApproved(req, res, next);
+}
+
+export function requireCustomerSelfServiceAccess(req: Request, res: Response, next: NextFunction): void {
+  const decision = evaluateCustomerSelfServiceAccess(req, req.dbUser);
   if (decision.allowed) {
     next();
     return;

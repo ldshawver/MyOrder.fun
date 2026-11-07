@@ -15,4 +15,5 @@ export interface OrderItem {
   unitPrice: number;
   totalPrice: number;
   inventoryDeductions?: OrderItemInventoryDeductionsItem[];
+  specialComponents?: Array<{ name: string; quantity: string }>;
 }

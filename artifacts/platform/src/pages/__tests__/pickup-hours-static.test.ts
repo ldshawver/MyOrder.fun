@@ -12,14 +12,18 @@ describe("location pickup-hours UI wiring", () => {
     expect(checkout).toContain('fetch("/api/orders/pickup-availability"');
     expect(checkout).toContain("selectedPickupLocation.immediateAvailable");
     expect(checkout).toContain("selectedPickupLocation.slots.map");
-    expect(checkout).toContain("Times shown in");
     expect(checkout).toContain("No upcoming pickup times are available.");
-    expect(checkout).toContain("<ClosedStoreNotice");
+    expect(checkout).toContain("Choose a pickup time");
     expect(checkout).toContain("pickup-time-required");
-    expect(checkout).toContain("You cannot pay until you choose a pickup time during business hours.");
+    expect(checkout).toContain("Choose a pickup time to place this order.");
+    expect(checkout).toContain("formatPickupSlotLabel");
+    expect(checkout).toContain("Choose a pickup time before getting a delivery price.");
+    expect(checkout).not.toContain("!shippingAddress.trim() || !conversionPreview");
     expect(catalog).toContain("<CatalogClosedStoreNotice");
+    expect(catalog).toContain('id="catalogue"');
     expect(notice).toContain('data-testid="closed-store-notice"');
-    expect(notice).toContain("you cannot place the order");
+    expect(notice).toContain("You can still order");
+    expect(notice).toContain("Browse the catalogue");
   });
 
   it("submits the selected location and server-issued slot with quote and order requests", () => {
@@ -45,7 +49,10 @@ describe("location pickup-hours UI wiring", () => {
     expect(settings).toContain("Uber external store ID");
     expect(settings).toContain("Pickup window (minutes)");
     expect(settings).toContain("Delivery window after pickup (minutes)");
-    expect(checkout).toContain('deliveryMethod === "pickup" || deliveryMethod === "uber_direct"');
-    expect(checkout).toContain("Courier pickup time");
+    expect(checkout).toContain('deliveryMethod === "pickup" || deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery"');
+    expect(checkout).toContain("Handoff time");
+    expect(checkout).toContain('data-testid={`delivery-method-${option.id}`}');
+    expect(checkout).toContain('{ id: "pickup", label: "Pickup" }');
+    expect(checkout).toContain('{ id: "delivery", label: "Delivery" }');
   });
 });

@@ -30,6 +30,18 @@ export function normalizeEmail(email: string | null | undefined): string | null 
   return trimmed || null;
 }
 
+/**
+ * Status kept when a placeholder row is linked to a real Clerk account.
+ * Approval survives only when an owner already stamped it. A placeholder that
+ * is merely marked approved is pending. This never grants approval.
+ */
+export function preservedMembershipStatus(row: { status?: string | null; approvedByClerkId?: string | null; approvedAt?: Date | string | null } | null | undefined): "pending" | "approved" | "rejected" | "deactivated" {
+  if (row?.status === "rejected") return "rejected";
+  if (row?.status === "deactivated") return "deactivated";
+  if (row?.status === "approved" && row.approvedByClerkId && row.approvedAt) return "approved";
+  return "pending";
+}
+
 export function getPrimaryVerifiedEmail(user: ClerkProvisioningUser): { email: string | null; normalizedEmail: string | null; verified: boolean } {
   const addresses = user.emailAddresses ?? (user as unknown as { email_addresses?: ClerkProvisioningUser["emailAddresses"] }).email_addresses ?? [];
   const primaryId = user.primaryEmailAddressId ?? user.primary_email_address_id ?? null;
@@ -80,7 +92,8 @@ export async function provisionVerifiedClerkUser(input: { clerkUser: ClerkProvis
         logger.warn({ correlationId, clerkId, userId: byEmail.id }, "Provisioning blocked by normalized email collision");
         return { user: byEmail, status: "failed", correlationId, error: "normalized_email_collision" };
       }
-      const [linked] = await db.update(usersTable).set({ clerkId, email, normalizedEmail, firstName: firstName ?? byEmail.firstName, lastName: lastName ?? byEmail.lastName, contactPhone: contactPhone ?? byEmail.contactPhone, tenantId: byEmail.tenantId ?? tenantId, role: normalizeRole(byEmail.role), status: byEmail.status, isActive: byEmail.isActive, identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() }).where(eq(usersTable.id, byEmail.id)).returning();
+      const linkedStatus = preservedMembershipStatus(byEmail);
+      const [linked] = await db.update(usersTable).set({ clerkId, email, normalizedEmail, firstName: firstName ?? byEmail.firstName, lastName: lastName ?? byEmail.lastName, contactPhone: contactPhone ?? byEmail.contactPhone, tenantId: byEmail.tenantId ?? tenantId, role: normalizeRole(byEmail.role), status: linkedStatus, ...(linkedStatus === "approved" ? {} : { approvedByClerkId: null, approvedAt: null }), isActive: byEmail.isActive, identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() }).where(eq(usersTable.id, byEmail.id)).returning();
       await auditProvisioning(linked ?? byEmail, "USER_RECONCILED_LINKED", correlationId, input.source);
       return { user: linked ?? byEmail, status: "linked", correlationId };
     }

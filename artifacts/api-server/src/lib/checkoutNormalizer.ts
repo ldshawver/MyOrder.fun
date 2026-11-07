@@ -4,6 +4,7 @@ import { isCatalogItemForSale, isCatalogItemLifecycleEligible } from "./catalogE
 import { and, eq, gte, isNull, lte, or } from "drizzle-orm";
 import { logger } from "./logger";
 import { dollarsToCents } from "./tenderTax";
+import { resolveEmployeeUnitPrice } from "./employeePricing";
 
 // ─── Strict input contract ─────────────────────────────────────────────────────
 // Lines coming in over the wire MUST contain only catalogItemId + quantity.
@@ -170,6 +171,7 @@ export async function normalizeCheckoutCart(
   _strictMode = true,
   tenantId?: number,
   requireCompleteSafeFields = false,
+  employeePricing?: { isCurrentEmployee?: boolean },
 ): Promise<NormalizedCartLine[]> {
   if (tenantId == null || !Number.isSafeInteger(tenantId) || tenantId <= 0) throw new Error("Explicit tenant context is required");
   const parsed = CartInputSchema.safeParse(rawLines);
@@ -233,13 +235,7 @@ export async function normalizeCheckoutCart(
     const catalog_display_name = ci.alavontName ?? ci.name;
     const customerSafeName = firstNonEmpty(ci.customerSafeName);
     const customerSafeDescription = firstNonEmpty(ci.customerSafeDescription);
-    const branded_name = firstNonEmpty(
-      customerSafeName,
-      ci.luciferCruzName,
-      ci.merchantName,
-      ci.alavontName,
-      ci.name,
-    );
+    const branded_name = customerSafeName;
     if (!branded_name) {
       throw new CheckoutMappingError(
         line.catalogItemId,
@@ -253,8 +249,8 @@ export async function normalizeCheckoutCart(
     const receipt_lucifer_name = branded_name;
     const merchant_image_url =
       source_type === "woo"
-        ? (ci.luciferCruzImageUrl ?? ci.imageUrl ?? null)
-        : (ci.luciferCruzImageUrl ?? null);
+        ? (ci.merchantImage ?? ci.imageUrl ?? null)
+        : (ci.merchantImage ?? null);
     // Never expose an Alavont-shaped SKU to merchant/provider payloads. When
     // the persisted Alavont row has a missing or Alavont-shaped merchant SKU,
     // synthesize a safe merchant SKU from the server-side catalog id.
@@ -272,22 +268,12 @@ export async function normalizeCheckoutCart(
     const marketing_copy = firstNonEmpty(
       ci.marketingCopy,
       ci.upsellCopy,
-      ci.luciferCruzDescription,
       "Converted into a customer-ready branded checkout presentation.",
     ) ?? "Converted into a customer-ready branded checkout presentation.";
     const customer_safe_name = branded_name;
-    const customer_safe_description = firstNonEmpty(
-      customerSafeDescription,
-      ci.luciferCruzDescription,
-      ci.merchantDescription,
-      ci.description,
-    );
-    const customer_safe_category = firstNonEmpty(
-      ci.luciferCruzCategory,
-      ci.merchantCategory,
-      ci.category,
-    );
-    const customer_safe_image = firstNonEmpty(ci.luciferCruzImageUrl, ci.merchantImage, ci.displayImage, ci.imageUrl);
+    const customer_safe_description = customerSafeDescription;
+    const customer_safe_category = firstNonEmpty(ci.merchantCategory);
+    const customer_safe_image = firstNonEmpty(ci.merchantImage);
     if (requireCompleteSafeFields) {
       const missingSafeFields = missingSafeFieldNames({
         customer_safe_name: customerSafeName,
@@ -303,7 +289,7 @@ export async function normalizeCheckoutCart(
         );
       }
     }
-    const unit_price = parseFloat(ci.price as string);
+    const unit_price = resolveEmployeeUnitPrice(ci.price as string, ci.homiePrice as string | null, employeePricing?.isCurrentEmployee === true);
     const line_subtotal = parseFloat((unit_price * line.quantity).toFixed(2));
 
     const normalizedLine: NormalizedCartLine = {

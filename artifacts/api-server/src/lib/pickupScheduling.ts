@@ -101,7 +101,14 @@ function intervalInstants(schedule: PickupScheduleInput, date: string, interval:
 }
 
 function localLabel(instant: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(instant);
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(instant);
 }
 
 export type PickupAvailability = {
@@ -143,7 +150,7 @@ export function calculatePickupAvailability(schedule: PickupScheduleInput, now =
     immediateAvailable: openNow,
     slots: resultSlots,
     nextOpenAt: nextOpen?.toISOString() ?? null,
-    message: openNow ? "Open now for immediate pickup." : resultSlots.length ? "The store is closed. This order has to wait for pickup during business hours. Choose an open pickup time to place the order." : "The store is closed and no pickup times are available in the scheduling window.",
+    message: openNow ? "Open now. Pickup can be immediate." : resultSlots.length ? "Closed. You can still order. Choose a pickup time." : "Closed. No pickup times are open in this schedule.",
     regularHours: [0, 1, 2, 3, 4, 5, 6].map(dayOfWeek => {
       const intervals = schedule.weeklyHours.find(row => row.dayOfWeek === dayOfWeek)?.intervals ?? [];
       return { dayOfWeek, day: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dayOfWeek], hours: intervals.length ? intervals.map(interval => `${interval.open}–${interval.close}${interval.close <= interval.open ? " next day" : ""}`).join(", ") : "Closed" };
@@ -154,7 +161,7 @@ export function calculatePickupAvailability(schedule: PickupScheduleInput, now =
 export function pickupSelectionErrorMessage(code: string): string | null {
   switch (code) {
     case "PICKUP_TIME_REQUIRED":
-      return "The store is closed. Choose a pickup time during business hours to place this order. Without that time, the order cannot be placed.";
+      return "Choose a pickup time to place this order.";
     case "PICKUP_TIME_UNAVAILABLE":
       return "That pickup time is outside store hours. Choose a time while the store is open.";
     case "PICKUP_TIME_INVALID":

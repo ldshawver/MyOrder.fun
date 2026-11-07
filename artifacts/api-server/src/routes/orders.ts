@@ -2,6 +2,9 @@ import { Router, type IRouter, type NextFunction, type Request, type Response } 
 import { eq, and, desc, lt, gt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import { isFinanciallyClosedForFulfillment } from "../lib/orderCloseEligibility";
+import { resolveCustomerFulfillment, shiftDeliveryMode } from "../lib/shiftDeliveryMode";
+import { customerVisibleNote, orderStageView } from "../lib/orderStage";
+import { deliveryUpdateLabel } from "../lib/deliveryUpdate";
 import { canAdminStartDefaultQueueOrder } from "../lib/adminQueueStart";
 import {
   db,
@@ -82,6 +85,7 @@ import { allocateOrderLineRefundTax } from "../lib/refundAccounting";
 import { createCheckoutTaxQuoteToken, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError, verifyCheckoutTaxQuoteToken } from "../lib/checkoutConversionGate";
 import { requireOrderCatalogForSale, OrderCatalogUnavailableError } from "../lib/orderCatalogEligibility";
 import { CartItemUnavailableError, requireCartLinesAvailable, WooAvailabilityProviderError } from "../lib/cartAvailability";
+import { groupSpecialReservationDemands, loadCheckoutSpecialComponents, specialComponentSnapshot, syncCatalogStockForInventoryItem } from "../lib/specialComponents";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import { buildOrderResponse } from "../lib/orderResponse";
 import {
@@ -444,6 +448,7 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
         originalInternalName: line.catalog_display_name,
         originalInternalDescription: line.display_description,
         originalInternalCategory: line.display_category,
+        originalDisplayImage: line.display_image,
         customerSafeCategory: line.customer_safe_category,
         customerSafeImage: line.customer_safe_image,
         displayCategory: line.customer_safe_category,
@@ -502,6 +507,17 @@ const CheckoutQuoteBody = z.object({
   pickupAt: z.string().datetime().optional(),
 }).strict();
 
+async function activeShiftDeliveryMode(tenantId: number) {
+  const [activeShift] = await db.select({
+    csrDeliveryOptIn: labTechShiftsTable.csrDeliveryOptIn,
+    setupJson: labTechShiftsTable.setupJson,
+  }).from(labTechShiftsTable)
+    .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active")))
+    .orderBy(desc(labTechShiftsTable.clockedInAt))
+    .limit(1);
+  return activeShift ? shiftDeliveryMode(activeShift) : null;
+}
+
 function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[] {
   buildSafeMerchantPayloadLines(lines);
   return lines.map(line => ({
@@ -556,7 +572,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
 
   let normalizedLines: NormalizedCartLine[];
   try {
-    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false, req.authorizedTenantId!, true);
+    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false, req.authorizedTenantId!, true, { isCurrentEmployee: actor.isCurrentEmployee === true });
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
       await writeAuditLog({
@@ -606,7 +622,7 @@ router.post("/cart/availability", async (req, res): Promise<void> => {
   const parsed = CartLineInput.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid cart item", details: parsed.error.issues }); return; }
   try {
-    const lines = await normalizeCheckoutCart([parsed.data], undefined, true, req.authorizedTenantId!, false);
+    const lines = await normalizeCheckoutCart([parsed.data], undefined, true, req.authorizedTenantId!, false, { isCurrentEmployee: req.dbUser?.isCurrentEmployee === true });
     await requireCartLinesAvailable(lines, req.authorizedTenantId!);
     res.json({ available: true });
   } catch (error) {
@@ -633,7 +649,7 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
   }
   const tenantId = req.authorizedTenantId!;
   try {
-    const normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, tenantId, true);
+    const normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, tenantId, true, { isCurrentEmployee: actor.isCurrentEmployee === true });
     // Local items keep their established checkout reservation gate; only Woo
     // needs a provider recheck during conversion because it has no local row.
     await requireCartLinesAvailable(normalizedLines, tenantId, { includeLocal: false });
@@ -678,7 +694,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
   const tenantId = req.authorizedTenantId!;
   const actor = req.dbUser!;
   try {
-    const lines = await normalizeCheckoutCart(parsed.data.items, undefined, true, tenantId, true);
+    const lines = await normalizeCheckoutCart(parsed.data.items, undefined, true, tenantId, true, { isCurrentEmployee: actor.isCurrentEmployee === true });
     const totals = computeBaseCheckoutTotals(lines);
     const [settings] = await db.select({
       cashDiscountEnabled: adminSettingsTable.cashDiscountEnabled,
@@ -692,10 +708,13 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       res.status(422).json({ error: "PAYMENT_METHOD_UNAVAILABLE" }); return;
     }
     if (processor === "paypal" && !(await loadTenantPaymentConfig(tenantId)).enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
+    const deliveryResolution = resolveCustomerFulfillment(parsed.data.deliveryMethod, await activeShiftDeliveryMode(tenantId));
+    if ("error" in deliveryResolution) { res.status(422).json({ error: deliveryResolution.error }); return; }
+    const deliveryMethod = deliveryResolution.method;
     const { targetLocationId } = await resolveCheckoutRouting(tenantId);
     let pickup: { locationId: number; pickupAt: string; mode: "immediate" | "scheduled"; timeZone: string } | null = null;
     let checkoutLocationId = targetLocationId;
-    if (parsed.data.deliveryMethod === "pickup" || parsed.data.deliveryMethod === "uber_direct") {
+    if (deliveryMethod === "pickup" || deliveryMethod === "uber_direct") {
       const location = await resolvePickupLocation(tenantId, parsed.data.pickupLocationId);
       const schedule = await loadPickupSchedule(tenantId, location.id);
       const selection = validatePickupSelection(schedule, parsed.data.pickupAt);
@@ -710,7 +729,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const merchandiseCents = dollarsToCents(financial.taxableSubtotal) + dollarsToCents(financial.nonTaxableSubtotal);
     let deliveryFeeCents = 0;
     let deliveryEta: string | null = null;
-    if (parsed.data.deliveryMethod === "csr_delivery" || parsed.data.deliveryMethod === "uber_direct") {
+    if (deliveryMethod === "csr_delivery" || deliveryMethod === "uber_direct") {
       const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(
         eq(uberDeliveryQuotesTable.id, parsed.data.deliveryQuoteId ?? ""),
         eq(uberDeliveryQuotesTable.tenantId, tenantId),
@@ -718,9 +737,9 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
         eq(uberDeliveryQuotesTable.status, "quoted"),
         gt(uberDeliveryQuotesTable.expiresAt, new Date()),
       )).limit(1);
-      if (!quote || quote.cartFingerprint !== checkoutFingerprint(lines)
-        || quote.pickupLocationId !== parsed.data.pickupLocationId
-        || (parsed.data.pickupAt != null && quote.pickupAt?.toISOString() !== new Date(parsed.data.pickupAt).toISOString())) { res.status(422).json({ error: "DELIVERY_QUOTE_UNAVAILABLE" }); return; }
+      const pickupMatches = deliveryMethod !== "uber_direct" || (quote?.pickupLocationId === parsed.data.pickupLocationId
+        && (parsed.data.pickupAt == null || quote.pickupAt?.toISOString() === new Date(parsed.data.pickupAt).toISOString()));
+      if (!quote || quote.cartFingerprint !== checkoutFingerprint(lines) || !pickupMatches) { res.status(422).json({ error: "DELIVERY_QUOTE_UNAVAILABLE" }); return; }
       if (!quote.dropoffEta) { res.status(409).json({ error: "Delivery quote is missing provider ETA; request a fresh quote" }); return; }
       deliveryFeeCents = quote.feeCents;
       deliveryEta = quote.dropoffEta.toISOString();
@@ -778,7 +797,7 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
   let normalizedLines: NormalizedCartLine[];
   try {
     const confirmation = body.data.checkoutConfirmation ?? (conversionCheck.snapshot as { confirmation?: { acceptedAllSalesFinal?: boolean; confirmedAt?: string } } | undefined)?.confirmation;
-    const verified = await requireVerifiedCheckoutConversion({ tenantId, userId: actor.id, checkoutConversionToken: body.data.checkoutConversionToken, requestedItems: body.data.items, legalDisclaimerAccepted: confirmation?.acceptedAllSalesFinal, finalConfirmationAt: confirmation?.confirmedAt, snapshot: body.data.checkoutConversionSnapshot ?? conversionCheck.snapshot });
+    const verified = await requireVerifiedCheckoutConversion({ tenantId, userId: actor.id, checkoutConversionToken: body.data.checkoutConversionToken, requestedItems: body.data.items, legalDisclaimerAccepted: confirmation?.acceptedAllSalesFinal, finalConfirmationAt: confirmation?.confirmedAt, snapshot: body.data.checkoutConversionSnapshot ?? conversionCheck.snapshot, isCurrentEmployee: actor.isCurrentEmployee === true });
     normalizedLines = verified.lines;
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
@@ -996,7 +1015,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   let conversionExpiresAt: Date;
   let trustedTotals: ReturnType<typeof computeCheckoutTotals>;
   try {
-    const verified = await requireVerifiedCheckoutConversion({ tenantId: houseTenantId, userId: actor.id, checkoutConversionToken: conversionToken, requestedItems: strictItems.data, legalDisclaimerAccepted: body.data.checkoutConfirmation?.acceptedAllSalesFinal, finalConfirmationAt: body.data.checkoutConfirmation?.confirmedAt, snapshot: conversionSnapshot });
+    const verified = await requireVerifiedCheckoutConversion({ tenantId: houseTenantId, userId: actor.id, checkoutConversionToken: conversionToken, requestedItems: strictItems.data, legalDisclaimerAccepted: body.data.checkoutConfirmation?.acceptedAllSalesFinal, finalConfirmationAt: body.data.checkoutConfirmation?.confirmedAt, snapshot: conversionSnapshot, isCurrentEmployee: actor.isCurrentEmployee === true });
     normalizedLines = verified.lines;
     conversionExpiresAt = verified.conversionExpiresAt;
     trustedTotals = verified.totals;
@@ -1052,7 +1071,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
   const requestedCreditAmount = (body.data.checkoutConfirmation as { customerCreditAmount?: number } | undefined)?.customerCreditAmount;
   const { routing, targetLocationId } = await resolveCheckoutRouting(houseTenantId);
-  const requestedDeliveryMethod = body.data.deliveryMethod ?? "pickup";
+  const deliveryResolution = resolveCustomerFulfillment(body.data.deliveryMethod ?? "pickup", await activeShiftDeliveryMode(houseTenantId));
+  if ("error" in deliveryResolution) {
+    res.status(422).json({ error: deliveryResolution.error });
+    return;
+  }
+  const requestedDeliveryMethod = deliveryResolution.method;
   let checkoutLocationId = targetLocationId;
   let pickupLocation: { id: number; name: string } | null = null;
   let pickupSchedule: Awaited<ReturnType<typeof loadPickupSchedule>> | null = null;
@@ -1079,7 +1103,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: "PICKUP_ADDRESS_NOT_ALLOWED" });
     return;
   }
-  if (requestedDeliveryMethod === "manual_delivery" && !body.data.shippingAddress?.trim()) {
+  if (requestedDeliveryMethod !== "pickup" && !body.data.shippingAddress?.trim()) {
     res.status(422).json({ error: "DELIVERY_ADDRESS_REQUIRED" });
     return;
   }
@@ -1114,7 +1138,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const { taxSnapshot, cashDiscountSnapshot, nonTaxableSubtotal } = financial;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
   const clientDeliveryQuote = body.data.deliveryQuote ?? null;
-  const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
+  const explicitDeliveryMethod = requestedDeliveryMethod;
   const isCsrDelivery = explicitDeliveryMethod === "csr_delivery";
   const orderType = resolveOrderType(body.data.orderType, isCsrDelivery);
 
@@ -1423,6 +1447,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       }
 
       const inventoryDeductionAuditEntries: InventoryDeductionAuditEntry[] = [];
+      const specialsByCatalog = await loadCheckoutSpecialComponents(tx, houseTenantId, normalizedLines.map(line => line.catalog_item_id));
       // Keep staging variant/compliance checks while attaching immutable tax allocations.
       for (const [lineIndex, line] of normalizedLines.entries()) {
         const option = queryRows<{ optionId: number; productName: string; label: string; optionValues: Record<string, string>; sku: string | null; barcode: string | null; wooProductId: string | null; wooVariationId: string | null; inventoryItemId: number; inventoryCatalogItemId: number; consumptionQuantity: string; locationEvaluation: string }>(await tx.execute(sql`
@@ -1452,8 +1477,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         // held/unavailable after cart normalization; legacy catalogItemId carts
         // must not bypass the variant and compliance checks.
         if (!option) throw new OptionSelectionError("Item is no longer available");
+        const special = specialsByCatalog.get(line.catalog_item_id);
+        if (special?.incomplete) throw new OptionSelectionError("A special component is no longer available");
+        if (special && special.components.length > 0 && line.source_type === "woo") {
+          throw new OptionSelectionError("A special cannot be sold through WooCommerce");
+        }
+        const isSpecial = (special?.components.length ?? 0) > 0;
         const inventoryCatalogItemId = option?.inventoryCatalogItemId ?? line.catalog_item_id;
-        const physicalQuantity = quantityText(quantityUnits(option?.consumptionQuantity ?? "1") * BigInt(line.quantity));
+        // A special charges this line's sale price. Its own stock is not the inventory that moves.
+        const physicalQuantity = isSpecial
+          ? quantityText(BigInt(line.quantity) * 1_000_000n)
+          : quantityText(quantityUnits(option?.consumptionQuantity ?? "1") * BigInt(line.quantity));
         const [orderItem] = await tx.insert(orderItemsTable).values({
           orderId: createdOrder.id,
           catalogItemId: line.catalog_item_id,
@@ -1462,7 +1496,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           optionLabelSnapshot: option?.label ?? null,
           variantSnapshot: option ? { variantId: option.optionId, sku: option.sku, barcode: option.barcode,
             label: option.label, optionValues: option.optionValues ?? {}, wooProductId: option.wooProductId,
-            wooVariationId: option.wooVariationId } : null,
+            wooVariationId: option.wooVariationId,
+            ...(isSpecial && special ? { specialComponents: specialComponentSnapshot(special.components) } : {}) } : null,
           skuSnapshot: option?.sku ?? line.merchant_sku,
           inventoryItemId: option?.inventoryItemId ?? null,
           inventoryQuantitySnapshot: physicalQuantity,
@@ -1482,7 +1517,35 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         }).returning({ id: orderItemsTable.id });
         lineTaxAllocations[lineIndex] = { ...lineTaxAllocations[lineIndex]!, orderItemId: orderItem.id };
 
-        if (shouldReserveInventory && line.source_type !== "woo") {
+        if (shouldReserveInventory && line.source_type !== "woo" && isSpecial && special) {
+          const demands = groupSpecialReservationDemands(special.components, line.quantity);
+          const collected: Array<Record<string, unknown>> = [];
+          for (const demand of demands) {
+            const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,
+              demand.inventoryCatalogItemId, demand.physicalQuantity, orderType, orderItem.id,
+              demand.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");
+            if (!reservations) {
+              const availability = await inspectCheckoutInventoryAvailability(tx, houseTenantId, demand.inventoryCatalogItemId);
+              throw new InsufficientInventoryError(
+                line.catalog_item_id,
+                null,
+                availability.available,
+                0,
+                0,
+                availability.hasInventoryRows,
+              );
+            }
+            collected.push(...reservations.map(reservation => ({
+              ...reservation,
+              componentName: demand.name,
+              componentCatalogItemId: demand.catalogItemId,
+            })));
+          }
+          await tx.update(orderItemsTable)
+            .set({ inventoryDeductions: collected })
+            .where(eq(orderItemsTable.id, orderItem.id));
+          for (const demand of demands) await syncCatalogStockForInventoryItem(tx, houseTenantId, demand.inventoryCatalogItemId);
+        } else if (shouldReserveInventory && line.source_type !== "woo") {
           const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,
             inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,
             option?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");
@@ -1564,7 +1627,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         grossSales: String(trustedTotals.subtotal.toFixed(2)),
         taxRate: String(checkoutTaxSettings?.taxRate ?? trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
-        taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: null,
+        taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: financial.taxSnapshot.exemptionReason,
         snapshotJson: {
           tax: finalizedTaxSnapshot,
           cashDiscount: cashDiscountSnapshot,
@@ -2451,6 +2514,68 @@ router.post("/admin/orders/:id/courier/reconcile", requireRole("admin", "global_
   catch { res.status(503).json({ error: "Provider reconciliation is unavailable" }); }
 });
 
+// GET /api/orders/:id/stage — customer-safe facts for the live order hourglass.
+router.get("/orders/:id/stage", async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const orderId = Number(raw);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  if (normalizeRole(actor.role) === "user" && order.customerId !== actor.id) { res.status(404).json({ error: "Not found" }); return; }
+  let preparerFirstName: string | null = null;
+  let preparerLastName: string | null = null;
+  if (order.assignedCsrUserId) {
+    const [preparer] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
+      .from(usersTable)
+      .where(and(eq(usersTable.id, order.assignedCsrUserId), eq(usersTable.tenantId, tenantId)))
+      .limit(1);
+    preparerFirstName = preparer?.firstName ?? null;
+    preparerLastName = preparer?.lastName ?? null;
+  }
+  let pickupNote: unknown = null;
+  if (order.assignedShiftId) {
+    const [shift] = await db.select({ setupJson: labTechShiftsTable.setupJson })
+      .from(labTechShiftsTable)
+      .where(and(eq(labTechShiftsTable.id, order.assignedShiftId), eq(labTechShiftsTable.tenantId, tenantId)))
+      .limit(1);
+    pickupNote = (shift?.setupJson as { pickupNote?: unknown } | null)?.pickupNote ?? null;
+  }
+  let courierStatus: string | null = null;
+  let courierState: string | null = null;
+  if (order.deliveryMethod === "uber_direct") {
+    const [delivery] = await db.select({
+      requestState: uberDeliveryFulfillmentsTable.requestState,
+      providerStatus: uberDeliveryFulfillmentsTable.providerStatus,
+    }).from(uberDeliveryFulfillmentsTable)
+      .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId)))
+      .limit(1);
+    courierState = delivery?.requestState ?? null;
+    courierStatus = delivery?.providerStatus ?? null;
+  }
+  res.json(orderStageView({
+    preparerFirstName,
+    preparerLastName,
+    pickupNote,
+    notes: order.notes,
+    acceptedAt: order.acceptedAt,
+    estimatedReadyAt: order.estimatedReadyAt,
+    promisedMinutes: order.promisedMinutes,
+    readyAt: order.readyAt,
+    pickupAt: order.pickupAt,
+    deliveryMethod: order.deliveryMethod,
+    departedAt: order.handoffCompletedAt,
+    deliveryLabel: deliveryUpdateLabel({
+      deliveryMethod: order.deliveryMethod,
+      fulfillmentStatus: order.fulfillmentStatus,
+      departedAt: order.handoffCompletedAt,
+      courierStatus,
+      courierState,
+    }),
+  }));
+});
+
 // GET /api/orders/:id
 router.get("/orders/:id", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
@@ -2798,8 +2923,11 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
   let notes = await db.select().from(orderNotesTable).where(eq(orderNotesTable.orderId, params.data.id)).orderBy(desc(orderNotesTable.createdAt));
   if (normalizeRole(actor.role) === "user" && order.customerId !== actor.id) { res.status(404).json({ error: "Order not found" }); return; }
   // Customers cannot see internal notes
-  if (actor.role === "user") {
-    notes = notes.filter(n => n.isInternal !== "true");
+  if (normalizeRole(actor.role) === "user") {
+    notes = notes.flatMap(note => {
+      const content = note.isInternal === "true" ? null : customerVisibleNote(note.content);
+      return content ? [{ ...note, content }] : [];
+    });
   }
 
   const authorIds = [...new Set(notes.map(n => n.authorId))];

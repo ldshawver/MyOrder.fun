@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { parseVariantAxes, generateVariantCombinations } from "@/lib/variantCombinations";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 
-type Option = { id: number; catalogItemId: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; price: string; compareAtPrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number | null; baseUnit: string | null; consumptionQuantity: string; complianceHold: boolean; complianceReason: string | null; inventoryStatus: "ready" | "missing_identity" | "missing_balance"; balanceRowCount: number; stockOnHand: string | null; reservedQuantity: string | null; availableQuantity: string | null; orderable: boolean };
+type SpecialComponentRow = { catalogItemId: number; productName: string; label: string; quantity: string };
+type Option = { id: number; catalogItemId: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; price: string; compareAtPrice?: string | null; employeePrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number | null; baseUnit: string | null; consumptionQuantity: string; complianceHold: boolean; complianceReason: string | null; inventoryStatus: "ready" | "missing_identity" | "missing_balance"; balanceRowCount: number; stockOnHand: string | null; reservedQuantity: string | null; availableQuantity: string | null; orderable: boolean; components?: SpecialComponentRow[]; specialOrderable?: boolean; specialAvailableQuantity?: string | null };
 type Product = { id: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; options: Option[] };
 type Location = { locationId: number; name: string; quantityOnHand: string; par: string; reorderPoint: string; preferredReorderQuantity: string; moq: string };
 type Recommendation = { inventoryItemId: number; productName: string; baseUnit: string; recommendations: Array<{ locationId: number; locationName: string; internalTransfers: Array<{ fromLocationId: number; quantity: string }>; externalPurchaseQuantity: string }> };
@@ -34,8 +35,8 @@ type ProductForm = { name: string; category: string; price: string; sku: string;
 const defaultProduct: ProductForm = { name: "", category: "", price: "0.00", sku: "", firstOptionLabel: "Standard",
   inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION",
   baseUnit: "each", consumptionQuantity: "1.000000" };
-const defaultOption = { label: "", optionValuesText: "", sku: "", barcode: "", price: "0.00", compareAtPrice: "", consumptionQuantity: "1.000000" };
-const defaultCreationVariant = { label: "Standard", optionValuesText: "", sku: "", barcode: "", price: "0.00", compareAtPrice: "", consumptionQuantity: "1.000000", isAvailable: true };
+const defaultOption = { label: "", optionValuesText: "", sku: "", barcode: "", price: "0.00", compareAtPrice: "", employeePrice: "", consumptionQuantity: "1.000000" };
+const defaultCreationVariant = { label: "Standard", optionValuesText: "", sku: "", barcode: "", price: "0.00", compareAtPrice: "", employeePrice: "", consumptionQuantity: "1.000000", isAvailable: true };
 
 function parseOptionValues(text: string): Record<string, string> {
   if (!text.trim()) return {};
@@ -53,29 +54,75 @@ function parseOptionValues(text: string): Record<string, string> {
 }
 
 function OptionEditor({ option, save, selectItem }: { option: Option; save: (value: Record<string, unknown>) => void; selectItem: (id: number) => void }) {
-  const [value, setValue] = useState({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable });
-  useEffect(() => { setValue({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable }); }, [option]);
-  return <div className="grid gap-2 border-b py-3 md:grid-cols-4 text-sm">
+  const [value, setValue] = useState({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", employeePrice: option.employeePrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable });
+  useEffect(() => { setValue({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", employeePrice: option.employeePrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable }); }, [option]);
+  return <div className="grid gap-2 md:grid-cols-4 text-sm">
     <label>Option<Input value={value.label} onChange={event => setValue({ ...value, label: event.target.value })} /></label>
     <label>Options<Input placeholder="Color=Red; Size=Medium" value={value.optionValuesText} onChange={event => setValue({ ...value, optionValuesText: event.target.value })} /></label>
     <label>SKU<Input value={value.sku} onChange={event => setValue({ ...value, sku: event.target.value })} /></label>
     <label>Barcode<Input value={value.barcode} onChange={event => setValue({ ...value, barcode: event.target.value })} /></label>
     <label>Price<Input value={value.price} onChange={event => setValue({ ...value, price: event.target.value })} /></label>
     <label>Compare-at price<Input value={value.compareAtPrice} onChange={event => setValue({ ...value, compareAtPrice: event.target.value })} /></label>
+    <label>Employee price ($)<Input value={value.employeePrice} onChange={event => setValue({ ...value, employeePrice: event.target.value })} />
+      <span className="block text-xs text-muted-foreground">Current employees pay this amount instead of 20% off. Leave blank for the 20% employee discount.</span></label>
     <label>Consumption ({option.baseUnit ?? "unit not configured"})<Input value={value.consumptionQuantity} onChange={event => setValue({ ...value, consumptionQuantity: event.target.value })} /></label>
     <label className="flex items-center gap-2"><input type="checkbox" checked={value.isAvailable} onChange={event => setValue({ ...value, isAvailable: event.target.checked })} /> Sellable</label>
-    <div className="flex flex-col gap-1 justify-end"><Button size="sm" onClick={() => save({ ...value, compareAtPrice: value.compareAtPrice || null, optionValues: parseOptionValues(value.optionValuesText), active: option.active })}>Save option</Button>
+    <div className="flex flex-col gap-1 justify-end"><Button size="sm" onClick={() => save({ ...value, compareAtPrice: value.compareAtPrice || null, employeePrice: value.employeePrice || null, optionValues: parseOptionValues(value.optionValuesText), active: option.active })}>Save option</Button>
       <Button size="sm" variant="outline" onClick={() => save({ active: !option.active })}>
         {option.active ? "Remove variant (keep history)" : "Enable variant"}
       </Button>
       {option.inventoryItemId == null
         ? <span className="text-destructive">Missing inventory identity — ordering blocked</span>
         : <button type="button" className="underline" onClick={() => selectItem(option.inventoryItemId!)}>Inventory item #{option.inventoryItemId}</button>}
-      <span className={option.inventoryStatus === "ready" ? "text-muted-foreground" : "text-destructive"}>
-        {option.inventoryStatus === "missing_balance" ? "No active sellable balance — ordering blocked"
+      <span className={option.components?.length ? "text-muted-foreground" : option.inventoryStatus === "ready" ? "text-muted-foreground" : "text-destructive"}>
+        {option.components?.length
+          ? "Special: the sale price is this option. Stock comes from the component list."
+          : option.inventoryStatus === "missing_balance" ? "No active sellable balance — ordering blocked"
           : option.inventoryStatus === "missing_identity" ? "Inventory setup incomplete"
             : `On hand ${option.stockOnHand}; reserved ${option.reservedQuantity}; available ${option.availableQuantity}`}
       </span></div>
+  </div>;
+}
+
+function SpecialComponentEditor({ option, choices, save }: {
+  option: Option;
+  choices: Array<{ catalogItemId: number; name: string; label: string }>;
+  save: (components: Array<{ catalogItemId: number; quantity: string }>) => void;
+}) {
+  const [rows, setRows] = useState<Array<{ catalogItemId: number; quantity: string }>>((option.components ?? []).map(component => ({ catalogItemId: component.catalogItemId, quantity: component.quantity })));
+  const [catalogItemId, setCatalogItemId] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  useEffect(() => { setRows((option.components ?? []).map(component => ({ catalogItemId: component.catalogItemId, quantity: component.quantity }))); }, [option]);
+  const used = new Set(rows.map(row => row.catalogItemId));
+  const available = choices.filter(choice => choice.catalogItemId !== option.catalogItemId && !used.has(choice.catalogItemId));
+  const labelFor = (id: number) => {
+    const saved = option.components?.find(component => component.catalogItemId === id);
+    const choice = choices.find(candidate => candidate.catalogItemId === id);
+    if (choice) return `${choice.name}${choice.label === "Standard" ? "" : ` — ${choice.label}`}`;
+    if (saved) return `${saved.productName}${saved.label === "Standard" ? "" : ` — ${saved.label}`}`;
+    return `Catalog item #${id}`;
+  };
+  return <div className="rounded border p-3 space-y-2" aria-label={`Special components for option ${option.id}`}>
+    <strong className="text-sm">Special components</strong>
+    <p className="text-xs text-muted-foreground">The customer pays this option's price once. Each listed product is deducted from its own inventory. This special is not sold from its own stock count. Save an empty list to sell the option by itself again.</p>
+    {rows.length === 0 && <p className="text-xs">No components. This option sells from its own inventory.</p>}
+    {rows.map(row => <div key={row.catalogItemId} className="flex flex-wrap items-end gap-2">
+      <span className="min-w-40 flex-1 text-sm">{labelFor(row.catalogItemId)}</span>
+      <label className="w-28 text-xs">Quantity<Input value={row.quantity} onChange={event => setRows(current => current.map(candidate => candidate.catalogItemId === row.catalogItemId ? { ...candidate, quantity: event.target.value } : candidate))} /></label>
+      <Button type="button" size="sm" variant="outline" onClick={() => setRows(current => current.filter(candidate => candidate.catalogItemId !== row.catalogItemId))}>Remove</Button>
+    </div>)}
+    <div className="flex flex-wrap items-end gap-2">
+      <label className="min-w-48 flex-1 text-xs">Add product
+        <select className="block w-full rounded border bg-background p-2 text-sm" value={catalogItemId} onChange={event => setCatalogItemId(event.target.value)} aria-label={`Add component to option ${option.id}`}>
+          <option value="">Select a product</option>
+          {available.map(choice => <option key={choice.catalogItemId} value={choice.catalogItemId}>{choice.name}{choice.label === "Standard" ? "" : ` — ${choice.label}`}</option>)}
+        </select>
+      </label>
+      <label className="w-28 text-xs">Quantity<Input value={quantity} onChange={event => setQuantity(event.target.value)} /></label>
+      <Button type="button" size="sm" disabled={!catalogItemId} onClick={() => { setRows(current => [...current, { catalogItemId: Number(catalogItemId), quantity: quantity.trim() || "1" }]); setCatalogItemId(""); setQuantity("1"); }}>Add</Button>
+    </div>
+    <Button type="button" size="sm" onClick={() => save(rows)}>Save component list</Button>
+    {option.components?.length ? <p className="text-xs text-muted-foreground">{option.specialOrderable ? `Can sell ${option.specialAvailableQuantity ?? "0"} from component stock.` : "A component is short or unavailable, so this special cannot be sold."}</p> : null}
   </div>;
 }
 
@@ -297,7 +344,7 @@ export default function AdminCatalogueProducts() {
 
   return <div className="space-y-6 max-w-6xl mx-auto p-4" data-testid="catalogue-products-admin">
     <header><h1 className="text-2xl font-bold">Products, options and reorder</h1>
-      <p className="text-sm text-muted-foreground">Set physical quantities by location. Replenishment suggestions do not place purchases.</p></header>
+      <p className="text-sm text-muted-foreground">Set physical quantities by location. Replenishment suggestions do not place purchases. Lucifer Cruz website listings and WooCommerce items are not listed here and are not counted as their own stock.</p></header>
     {message && <div role="status" className="rounded-lg border p-3 text-sm">{message}</div>}
     <section className="rounded-xl border p-4 space-y-3">
       <h2 className="font-semibold">Create product</h2>
@@ -321,6 +368,7 @@ export default function AdminCatalogueProducts() {
           <label>Barcode<Input value={variant.barcode} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,barcode:event.target.value}:v))} /></label>
           <label>Price<Input value={variant.price} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,price:event.target.value}:v))} /></label>
           <label>Compare-at price<Input value={variant.compareAtPrice} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,compareAtPrice:event.target.value}:v))} /></label>
+          <label>Employee price ($)<Input value={variant.employeePrice} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,employeePrice:event.target.value}:v))} /></label>
           <label>Consumption ({create.baseUnit})<Input value={variant.consumptionQuantity} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,consumptionQuantity:event.target.value}:v))} /></label>
           <label className="flex items-center gap-2 self-end"><input type="checkbox" checked={variant.isAvailable} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,isAvailable:event.target.checked}:v))} />Sellable</label>
           {creationVariants.length > 1 && <Button type="button" variant="outline" className="self-end" onClick={() => setCreationVariants(current => current.filter((_,i)=>i!==index))}>Remove variant</Button>}
@@ -329,7 +377,7 @@ export default function AdminCatalogueProducts() {
       <Button disabled={busy} onClick={() => void perform(async () => {
         const variants = creationVariants.map(variant => ({ label: variant.label, optionValues: parseOptionValues(variant.optionValuesText),
           sku: variant.sku || null, barcode: variant.barcode || null, price: variant.price,
-          compareAtPrice: variant.compareAtPrice || null, consumptionQuantity: variant.consumptionQuantity, isAvailable: variant.isAvailable }));
+          compareAtPrice: variant.compareAtPrice || null, employeePrice: variant.employeePrice || null, consumptionQuantity: variant.consumptionQuantity, isAvailable: variant.isAvailable }));
         const result = await request("/api/admin/catalogue/products", { method: "POST", body: JSON.stringify({
           name: create.name, category: create.category || undefined, inventoryModel: create.inventoryModel,
           locationEvaluation: create.locationEvaluation, baseUnit: create.baseUnit, variants,
@@ -438,11 +486,17 @@ export default function AdminCatalogueProducts() {
         </section>
         <section className="rounded-xl border p-4 space-y-3"><h2 className="font-semibold">Options / variants</h2>
           {selected.options.length === 0 && <p className="text-sm text-destructive">No variants or inventory identity are configured. Ordering is blocked until setup is repaired.</p>}
-          {selected.options.map(option => <OptionEditor key={option.id} option={option} selectItem={setSelectedItemId}
-            save={value => void perform(async () => {
-              const patch = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "optionValuesText"));
-              await request(`/api/admin/catalogue/options/${option.id}`, { method: "PATCH", body: JSON.stringify(patch) });
-            })} />)}
+          {selected.options.map(option => <div key={option.id} className="space-y-2 border-b py-3">
+            <OptionEditor option={option} selectItem={setSelectedItemId}
+              save={value => void perform(async () => {
+                const patch = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "optionValuesText"));
+                await request(`/api/admin/catalogue/options/${option.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+              })} />
+            <SpecialComponentEditor option={option} choices={products.flatMap(product => product.options.filter(candidate => candidate.active).map(candidate => ({ catalogItemId: candidate.catalogItemId, name: product.name, label: candidate.label })))}
+              save={components => void perform(async () => {
+                await request(`/api/admin/catalogue/options/${option.id}/components`, { method: "PUT", body: JSON.stringify({ components }) });
+              }, "Special components saved.")} />
+          </div>)}
           <div className="grid gap-2 rounded border p-3 md:grid-cols-[1fr_auto]">
             <label>Generate option combinations<Input placeholder="Color=Red,Blue; Size=S,M" value={combinationText} onChange={event => setCombinationText(event.target.value)} /></label>
             <Button className="self-end" disabled={busy || !combinationText.trim()} onClick={() => void perform(async () => {
@@ -451,7 +505,7 @@ export default function AdminCatalogueProducts() {
                 const label = Object.entries(optionValues).map(([key, value]) => `${key}: ${value}`).join(" / ");
                 await request(`/api/admin/catalogue/products/${selected.id}/options`, { method: "POST", body: JSON.stringify({
                   label, optionValues, sku: null, barcode: null, price: newOption.price,
-                  compareAtPrice: newOption.compareAtPrice || null, consumptionQuantity: newOption.consumptionQuantity,
+                  compareAtPrice: newOption.compareAtPrice || null, employeePrice: newOption.employeePrice || null, consumptionQuantity: newOption.consumptionQuantity,
                 }) });
               }
               setCombinationText("");
@@ -465,11 +519,12 @@ export default function AdminCatalogueProducts() {
             <label>Barcode<Input value={newOption.barcode} onChange={event => setNewOption({ ...newOption, barcode: event.target.value })} /></label>
             <label>Price<Input value={newOption.price} onChange={event => setNewOption({ ...newOption, price: event.target.value })} /></label>
             <label>Compare-at price<Input value={newOption.compareAtPrice} onChange={event => setNewOption({ ...newOption, compareAtPrice: event.target.value })} /></label>
+            <label>Employee price ($)<Input value={newOption.employeePrice} onChange={event => setNewOption({ ...newOption, employeePrice: event.target.value })} /></label>
             <label>Consumption ({selected.options[0]?.baseUnit ?? "unit"})<Input value={newOption.consumptionQuantity} onChange={event => setNewOption({ ...newOption, consumptionQuantity: event.target.value })} /></label>
           </div>
           <Button disabled={busy} onClick={() => void perform(async () => {
-            const { optionValuesText, compareAtPrice, ...variant } = newOption;
-            await request(`/api/admin/catalogue/products/${selected.id}/options`, { method: "POST", body: JSON.stringify({ ...variant, optionValues: parseOptionValues(optionValuesText), compareAtPrice: compareAtPrice || null }) });
+            const { optionValuesText, compareAtPrice, employeePrice, ...variant } = newOption;
+            await request(`/api/admin/catalogue/products/${selected.id}/options`, { method: "POST", body: JSON.stringify({ ...variant, optionValues: parseOptionValues(optionValuesText), compareAtPrice: compareAtPrice || null, employeePrice: employeePrice || null }) });
             setNewOption(defaultOption);
           })}>Add option</Button>
         </section>

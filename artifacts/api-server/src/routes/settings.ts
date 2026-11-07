@@ -12,6 +12,7 @@ import { requireTenantContext } from "../lib/tenantContext";
 import { z } from "zod";
 import { assertWooHttpsOrigin } from "../lib/wooSafeHttp";
 import { loadPickupSchedule, pickupOperatingWindow, pickupScheduleInputSchema, validatePickupSelection } from "../lib/pickupScheduling";
+import { pushRaspberryPiWifi } from "../lib/raspberryPiWifi";
 
 const router: IRouter = Router();
 // The customer disclaimer must be accepted before an order can be created, so
@@ -912,6 +913,49 @@ router.get("/admin/csr-settings", requirePermission("shift_settings.view"), asyn
   });
 });
 
+function storedWifiPassword(existing: AdminSettingsWithCsr, cfg: Record<string, unknown>): string {
+  if (typeof cfg.password === "string" && cfg.password.trim()) return cfg.password;
+  const stored = parseStoredPrinterNetworkConfig(existing.printerNetworkConfig);
+  return typeof stored.password === "string" ? stored.password : "";
+}
+
+function wifiConfigJson(existing: AdminSettingsWithCsr, cfg: Record<string, unknown>): string {
+  const approvedSsids = Array.isArray(cfg.approvedSsids)
+    ? (cfg.approvedSsids as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 10)
+    : (typeof cfg.ssid === "string" && cfg.ssid.trim() ? [cfg.ssid.trim()] : []);
+  return JSON.stringify({
+    onsiteMode: String(cfg.onsiteMode || "auto"),
+    ssid: String(cfg.ssid || ""),
+    approvedSsids,
+    password: storedWifiPassword(existing, cfg),
+    raspberryPiBluetooth: cfg.raspberryPiBluetooth !== false,
+  });
+}
+
+router.put("/admin/csr-settings/wifi", requireRole("csr", "supervisor", "admin"), async (req, res): Promise<void> => {
+  const cfg = req.body?.printerNetworkConfig;
+  if (!cfg || typeof cfg !== "object") {
+    res.status(400).json({ error: "Wi-Fi settings are missing." });
+    return;
+  }
+  const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! }) as AdminSettingsWithCsr;
+  const password = storedWifiPassword(existing, cfg as Record<string, unknown>);
+  const ssid = String((cfg as Record<string, unknown>).ssid || "").trim();
+  const [updated] = await db.update(adminSettingsTable)
+    .set({ printerNetworkConfig: wifiConfigJson(existing, cfg as Record<string, unknown>) })
+    .where(eq(adminSettingsTable.id, existing.id))
+    .returning() as AdminSettingsWithCsr[];
+  const raspberryPi = !ssid
+    ? { ok: false, error: "Enter the Wi-Fi name the Raspberry Pi should join." }
+    : !password
+      ? { ok: false, error: "Enter the Wi-Fi password so the Raspberry Pi can join." }
+      : await pushRaspberryPiWifi(req.authorizedTenantId!, ssid, password);
+  res.json({
+    printerNetworkConfig: parsePrinterNetworkConfig(updated.printerNetworkConfig),
+    raspberryPi,
+  });
+});
+
 router.put("/admin/csr-settings", requirePermission("shift_settings.manage"), async (req, res): Promise<void> => {
   const pickupInstructionOptions = req.body?.pickupInstructionOptions;
   const shiftLocationOptions = req.body?.shiftLocationOptions;
@@ -963,18 +1007,7 @@ router.put("/admin/csr-settings", requirePermission("shift_settings.manage"), as
   }
 
   if (printerNetworkConfig !== undefined) {
-    const cfg = printerNetworkConfig as Record<string, unknown>;
-    const storedCfg = parseStoredPrinterNetworkConfig(existing.printerNetworkConfig);
-    const approvedSsids = Array.isArray(cfg.approvedSsids)
-      ? (cfg.approvedSsids as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 10)
-      : (typeof cfg.ssid === "string" && cfg.ssid.trim() ? [cfg.ssid.trim()] : []);
-    update.printerNetworkConfig = JSON.stringify({
-      onsiteMode: String(cfg.onsiteMode || "auto"),
-      ssid: String(cfg.ssid || ""),
-      approvedSsids,
-      password: typeof cfg.password === "string" ? cfg.password : String(storedCfg.password || ""),
-      raspberryPiBluetooth: cfg.raspberryPiBluetooth !== false,
-    });
+    update.printerNetworkConfig = wifiConfigJson(existing, printerNetworkConfig as Record<string, unknown>);
   }
 
   if (Object.keys(update).length === 0) {

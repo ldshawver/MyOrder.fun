@@ -33,6 +33,7 @@ const UpdateCurrentUserBody = z.object({
     .nullish(),
   avatarUrl: z.string().trim().regex(/^\/api\/profile-images\/[0-9a-f-]{36}$/i, "Choose a validated profile image upload.").nullish(),
   profileImageUploadId: z.string().uuid().optional(),
+  email: z.string().trim().email().max(200).optional(),
   notificationPreferences: notificationPreferencesSchema.nullish(),
 }).strict();
 
@@ -70,6 +71,7 @@ const UpdateMemberProfileBody = z.object({
   lastName: z.string().trim().max(100).nullish(),
   contactPhone: z.string().trim().refine((v) => v === "" || PHONE_REGEX.test(v)).nullish(),
   profileImageUploadId: z.string().uuid().optional(),
+  isCurrentEmployee: z.boolean().optional(),
 }).strict();
 
 function roleRank(role: ValidRole): number {
@@ -123,6 +125,7 @@ async function ensureUsersListSchema(): Promise<void> {
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'pending'`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_active" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_default_tech" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_current_employee" boolean NOT NULL DEFAULT false`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now() NOT NULL`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
   ];
@@ -133,8 +136,8 @@ async function ensureUsersListSchema(): Promise<void> {
   usersListSchemaEnsured = true;
 }
 
-function onboardingStatusToUserStatus(status: string | null | undefined): "pending" | "approved" | "rejected" {
-  if (status === "approved") return "approved";
+/** An onboarding decision never approves a member account. */
+function onboardingStatusToUserStatus(status: string | null | undefined): "pending" | "rejected" {
   if (status === "rejected") return "rejected";
   return "pending";
 }
@@ -213,11 +216,16 @@ router.use((req, res, next) => {
   return requireApproved(req, res, next);
 });
 
+function profileCompletionRequired(user: typeof usersTable.$inferSelect): boolean {
+  const phone = user.contactPhone?.trim() ?? "";
+  return !user.firstName?.trim() || !user.lastName?.trim() || !user.email?.trim() || !phone || !PHONE_REGEX.test(phone) || !user.avatarUrl?.trim();
+}
+
 function serializeUser(user: typeof usersTable.$inferSelect) {
-  return GetCurrentUserResponse.parse({
+  const parsed = GetCurrentUserResponse.parse({
     id: user.id,
     clerkId: user.clerkId,
-    email: user.email ?? undefined,
+    email: user.email ?? "",
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
@@ -230,6 +238,7 @@ function serializeUser(user: typeof usersTable.$inferSelect) {
     isConfiguredOwner: isConfiguredAccountOwner(user),
     createdAt: user.createdAt,
   });
+  return { ...parsed, isCurrentEmployee: user.isCurrentEmployee === true, profileCompletionRequired: profileCompletionRequired(user) };
 }
 
 // GET /api/users/me
@@ -257,6 +266,7 @@ router.patch("/admin/users/:id/profile", requireRole("global_admin", "admin", "s
   if ("firstName" in body.data) updates.firstName = body.data.firstName || null;
   if ("lastName" in body.data) updates.lastName = body.data.lastName || null;
   if ("contactPhone" in body.data) updates.contactPhone = body.data.contactPhone || null;
+  if ("isCurrentEmployee" in body.data) updates.isCurrentEmployee = body.data.isCurrentEmployee === true;
   if (profileImageUrl) updates.avatarUrl = profileImageUrl;
   if (!Object.keys(updates).length) { res.json(serializeUser(target)); return; }
   const updated = await db.transaction(async (tx) => {
@@ -303,8 +313,9 @@ router.patch("/users/me", async (req, res): Promise<void> => {
   }
   const avatarUploadId = body.data.profileImageUploadId ?? avatarUrlUploadId;
   const profileImageUrl = avatarUploadId ? `/api/profile-images/${avatarUploadId}` : null;
+  const imageEmail = (body.data.email?.trim() || user.email || "").trim();
   if (avatarUploadId && user.avatarUrl !== profileImageUrl) {
-    try { await assertTemporaryProfileImage(avatarUploadId, user.email ?? ""); }
+    try { await assertTemporaryProfileImage(avatarUploadId, imageEmail); }
     catch (err) { res.status(400).json({ error: err instanceof Error ? err.message : "Please upload the image again." }); return; }
   }
 
@@ -326,6 +337,18 @@ router.patch("/users/me", async (req, res): Promise<void> => {
   }
   if ("avatarUrl" in body.data && body.data.avatarUrl === null) updates.avatarUrl = null;
   if (avatarUploadId) updates.avatarUrl = profileImageUrl;
+  if (body.data.email) {
+    const nextEmail = body.data.email.trim();
+    const currentEmail = user.email?.trim() ?? "";
+    if (currentEmail && currentEmail.toLowerCase() !== nextEmail.toLowerCase()) {
+      res.status(400).json({ error: "Email is already set on this account." });
+      return;
+    }
+    if (!currentEmail) {
+      updates.email = nextEmail;
+      updates.normalizedEmail = normalizeEmail(nextEmail);
+    }
+  }
   if ("notificationPreferences" in body.data && body.data.notificationPreferences) {
     updates.notificationPreferences = body.data.notificationPreferences;
   }
@@ -418,6 +441,7 @@ router.get("/users", requireRole("global_admin", "admin", "supervisor"), async (
     avatarUrl: u.avatarUrl ?? null,
     createdAt: u.createdAt,
   }));
+  const employeeById = new Map(rows.map(u => [u.id, u.isCurrentEmployee === true]));
 
   const parsed = ListUsersResponse.safeParse({ users: normalized, total: normalized.length });
   if (!parsed.success) {
@@ -425,7 +449,10 @@ router.get("/users", requireRole("global_admin", "admin", "supervisor"), async (
     res.status(500).json({ error: "Failed to serialize user list — contact admin", detail: parsed.error.message });
     return;
   }
-  res.json(parsed.data);
+  res.json({
+    ...parsed.data,
+    users: parsed.data.users.map(user => ({ ...user, isCurrentEmployee: employeeById.get(user.id) === true })),
+  });
 });
 
 // PATCH /api/users/me/phone — user updates their own contact phone number
