@@ -66,6 +66,8 @@ type ConversionPreview = {
       displayDescription: string;
       displayCategory: string;
       displayImage: string | null;
+      originalDisplayImage?: string | null;
+      customerSafeImage?: string | null;
       customerSafeName?: string;
       customerSafeDescription?: string;
       originalInternalName?: string;
@@ -613,7 +615,7 @@ export default function NewOrder() {
                   return (
                   <div key={item.id} className="border-b border-dashed border-border/40 pb-3 last:border-0" data-testid={`cart-item-${item.id}`}>
                     <div className="flex items-start justify-between gap-3">
-                    {converted?.displayImage && <img src={converted.displayImage} alt="" className="h-12 w-12 rounded-sm object-cover border border-border/50" />}
+                    {converted?.customerSafeImage && <img src={converted.customerSafeImage} alt="" className="h-12 w-12 rounded-sm object-cover border border-border/50" />}
                     <div className="flex-1 min-w-0">
                         <div className="font-semibold text-sm leading-tight pr-4">{converted?.customerSafeName ?? converted?.displayName ?? item.name}</div>
                       {converted && <div className="text-[10px] uppercase tracking-widest text-primary mt-0.5">{converted.displayCategory}</div>}
@@ -1036,15 +1038,12 @@ export default function NewOrder() {
                 <div className="space-y-3">
                   {conversionPreview.converted.items.map(item => (
                     <div key={item.catalogItemId} className="rounded-sm overflow-hidden border border-primary/20 bg-background shadow-sm" data-testid={`converted-item-${item.catalogItemId}`}>
-                      {item.displayImage && (
-                        <div className="h-24 bg-muted/30 overflow-hidden">
-                          <img src={item.displayImage} alt={item.displayName} className="h-full w-full object-cover" />
-                        </div>
-                      )}
                       <div className="p-3 space-y-2">
                         <div className="grid gap-3 md:grid-cols-[1fr_auto_1.15fr] md:items-stretch">
                           <div className="rounded-sm border border-amber-500/20 bg-amber-500/5 p-3">
                             <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-amber-700 dark:text-amber-300">Before</div>
+                            {item.originalDisplayImage && <img src={item.originalDisplayImage} alt={item.originalInternalName ?? item.displayName} className="mb-3 h-24 w-full rounded-sm border border-border/50 object-cover" />}
+                            {item.originalInternalCategory && <div className="text-[10px] uppercase tracking-widest text-amber-700 dark:text-amber-300">{item.originalInternalCategory}</div>}
                             <div className="font-semibold text-sm leading-tight text-muted-foreground">{item.originalInternalName ?? item.displayName}</div>
                             <div className="mt-1 text-xs font-mono text-muted-foreground">${item.unitPrice.toFixed(2)}</div>
                             {item.originalInternalDescription && (
@@ -1054,6 +1053,7 @@ export default function NewOrder() {
                           <div className="hidden items-center text-primary md:flex" aria-hidden="true">→</div>
                           <div className="rounded-sm border border-emerald-500/25 bg-emerald-500/5 p-3">
                             <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-300">After</div>
+                            {item.customerSafeImage && <img src={item.customerSafeImage} alt={item.customerSafeName ?? item.displayName} className="mb-3 h-24 w-full rounded-sm border border-border/50 object-cover" />}
                             <div className="text-[10px] uppercase tracking-widest text-primary">{item.displayCategory}</div>
                             <div className="font-semibold text-sm leading-tight">{item.customerSafeName ?? item.displayName}</div>
                             <p className="mt-2 text-xs text-muted-foreground leading-relaxed">{item.customerSafeDescription ?? item.displayDescription}</p>
