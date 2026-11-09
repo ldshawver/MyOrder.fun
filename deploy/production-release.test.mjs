@@ -1055,12 +1055,12 @@ test("missing production authorization is rejected by the executable entrypoint"
 });
 
 test("production rollback baseline matches the verified current production images", () => {
-  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:db33bc237f28b89b3c1af3cbc60c2dab3ba556502ade97c3d5a3d649116e04d1");
-  assert.equal(PRODUCTION_BASELINE.apiRevision, "bf618373c49c73334060e50cca751400e331036f");
-  assert.equal(PRODUCTION_BASELINE.apiReference, "ghcr.io/ldshawver/myorder-api@sha256:db33bc237f28b89b3c1af3cbc60c2dab3ba556502ade97c3d5a3d649116e04d1");
-  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:59a10be3fe6a5486fc9e4b6e95b26fac49b4c43cfa3efde43ede2eb86567a1e5");
-  assert.equal(PRODUCTION_BASELINE.platformRevision, "bf618373c49c73334060e50cca751400e331036f");
-  assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:59a10be3fe6a5486fc9e4b6e95b26fac49b4c43cfa3efde43ede2eb86567a1e5");
+  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:42c4f22f20759a1409666cc1b7c509782f9367130ca890ef5fa8d11d023ca80a");
+  assert.equal(PRODUCTION_BASELINE.apiRevision, "844c2ef0110fad28fd006f5891c7b00d5f85cce1");
+  assert.equal(PRODUCTION_BASELINE.apiReference, "ghcr.io/ldshawver/myorder-api@sha256:42c4f22f20759a1409666cc1b7c509782f9367130ca890ef5fa8d11d023ca80a");
+  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:b030e7ddea466bc8499c6f1e5fb793a239b62e074c969b1ef9e9bc85453fb578");
+  assert.equal(PRODUCTION_BASELINE.platformRevision, "844c2ef0110fad28fd006f5891c7b00d5f85cce1");
+  assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:b030e7ddea466bc8499c6f1e5fb793a239b62e074c969b1ef9e9bc85453fb578");
   assert.notEqual(PRODUCTION_BASELINE.apiImage, APPROVED_RELEASE.manifests.api);
   assert.notEqual(PRODUCTION_BASELINE.apiRevision, APPROVED_RELEASE.revisions.api);
   assert.notEqual(PRODUCTION_BASELINE.platformImage, APPROVED_RELEASE.manifests.platform);
