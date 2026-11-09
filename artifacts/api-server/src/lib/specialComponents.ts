@@ -156,7 +156,7 @@ export async function loadSpecialComponentRows(executor: SqlExecutor, tenantId: 
   await ensureSpecialComponentsTable();
   if (specialCatalogItemIds && specialCatalogItemIds.length === 0) return [];
   const filter = specialCatalogItemIds
-    ? sql`AND sc.special_catalog_item_id = ANY(${specialCatalogItemIds}::int[])`
+    ? sql`AND sc.special_catalog_item_id = ANY(ARRAY[${sql.join(specialCatalogItemIds.map(id => sql`${id}`), sql`, `)}]::int[])`
     : sql``;
   return rowsOf<Record<string, unknown>>(await executor.execute(sql`
     WITH reserved_by_location AS (
