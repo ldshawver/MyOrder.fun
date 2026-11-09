@@ -27,6 +27,11 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
     // only the current API runtime schema needed for these disposable tests,
     // from the corresponding Drizzle models and tenant-scoped constraints.
     await pool.query(`
+      ALTER TABLE public.users
+        ADD COLUMN IF NOT EXISTS is_current_employee boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS identity_status text NOT NULL DEFAULT 'verification_pending',
+        ADD COLUMN IF NOT EXISTS provisioning_status text NOT NULL DEFAULT 'pending',
+        ADD COLUMN IF NOT EXISTS provisioning_error text;
       ALTER TABLE public.catalog_items
         ADD COLUMN IF NOT EXISTS sku text,
         ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'test',
