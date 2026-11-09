@@ -14,17 +14,17 @@ jobs:
     timeout-minutes: 60
     environment: production
     env:
-      SOURCE_SHA: 394b394142368da6812e01904c1da195a09144d9
-      SOURCE_TREE: 8635c9aae241c855cb0ef5a85d8440b8b4372bea
+      SOURCE_SHA: 3eead37a27530436c7b8e2b18c9590cdbc711a83
+      SOURCE_TREE: 65d9f082d17c6887e70891fd64f3ebe32355d5c4
       CLERK_PROXY_URL: https://myorder.fun/api/__clerk
-      API_IMAGE_TAG: ghcr.io/ldshawver/myorder-api:production-394b394142368da6812e01904c1da195a09144d9-${{ github.run_id }}-${{ github.run_attempt }}
-      MIGRATE_IMAGE_TAG: ghcr.io/ldshawver/myorder-migrate:production-394b394142368da6812e01904c1da195a09144d9-${{ github.run_id }}-${{ github.run_attempt }}
-      PLATFORM_IMAGE_TAG: ghcr.io/ldshawver/myorder-platform:production-394b394142368da6812e01904c1da195a09144d9-${{ github.run_id }}-${{ github.run_attempt }}
+      API_IMAGE_TAG: ghcr.io/ldshawver/myorder-api:production-3eead37a27530436c7b8e2b18c9590cdbc711a83-${{ github.run_id }}-${{ github.run_attempt }}
+      MIGRATE_IMAGE_TAG: ghcr.io/ldshawver/myorder-migrate:production-3eead37a27530436c7b8e2b18c9590cdbc711a83-${{ github.run_id }}-${{ github.run_attempt }}
+      PLATFORM_IMAGE_TAG: ghcr.io/ldshawver/myorder-platform:production-3eead37a27530436c7b8e2b18c9590cdbc711a83-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout frozen candidate source
         uses: actions/checkout@v4
         with:
-          ref: 394b394142368da6812e01904c1da195a09144d9
+          ref: 3eead37a27530436c7b8e2b18c9590cdbc711a83
           fetch-depth: 1
 
       - name: Verify frozen source identity and production key
