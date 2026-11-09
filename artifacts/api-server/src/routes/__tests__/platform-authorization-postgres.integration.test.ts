@@ -52,6 +52,49 @@ pgSuite("platform authorization boundaries against disposable PostgreSQL 16", ()
       ALTER TABLE public.order_items ADD COLUMN IF NOT EXISTS unit_price numeric(10,2) DEFAULT 1;
       ALTER TABLE public.order_items ADD COLUMN IF NOT EXISTS total_price numeric(10,2) DEFAULT 1;
       ALTER TABLE public.order_items ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
+      CREATE TABLE IF NOT EXISTS public.catalogue_products (
+        id serial PRIMARY KEY, tenant_id integer NOT NULL REFERENCES public.tenants(id), name text NOT NULL,
+        inventory_model text NOT NULL DEFAULT 'SEPARATE_VARIANTS', location_evaluation text NOT NULL DEFAULT 'PER_LOCATION',
+        active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (tenant_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS public.inventory_items (
+        id serial PRIMARY KEY, tenant_id integer NOT NULL REFERENCES public.tenants(id), catalog_item_id integer NOT NULL,
+        base_unit text NOT NULL DEFAULT 'each', created_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (tenant_id, id), UNIQUE (tenant_id, catalog_item_id),
+        FOREIGN KEY (tenant_id, catalog_item_id) REFERENCES public.catalog_items(tenant_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS public.catalogue_options (
+        id serial PRIMARY KEY, tenant_id integer NOT NULL REFERENCES public.tenants(id), product_id integer NOT NULL,
+        catalog_item_id integer NOT NULL, inventory_item_id integer NOT NULL, label text NOT NULL DEFAULT 'Standard',
+        consumption_quantity numeric(20,6) NOT NULL DEFAULT 1, sort_order integer NOT NULL DEFAULT 0,
+        active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (tenant_id, id), UNIQUE (tenant_id, catalog_item_id),
+        FOREIGN KEY (tenant_id, product_id) REFERENCES public.catalogue_products(tenant_id, id),
+        FOREIGN KEY (tenant_id, catalog_item_id) REFERENCES public.catalog_items(tenant_id, id),
+        FOREIGN KEY (tenant_id, inventory_item_id) REFERENCES public.inventory_items(tenant_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS public.inventory_reorder_policies (
+        id serial PRIMARY KEY, tenant_id integer NOT NULL REFERENCES public.tenants(id), inventory_item_id integer NOT NULL,
+        location_id integer NOT NULL REFERENCES public.inventory_locations(id), par numeric(20,6) NOT NULL DEFAULT 0,
+        reorder_point numeric(20,6) NOT NULL DEFAULT 0, preferred_reorder_quantity numeric(20,6) NOT NULL DEFAULT 0,
+        moq numeric(20,6) NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (tenant_id, inventory_item_id, location_id)
+      );
+      CREATE TABLE IF NOT EXISTS public.inventory_reservations (
+        id serial PRIMARY KEY, order_id integer NOT NULL REFERENCES public.orders(id),
+        catalog_item_id integer NOT NULL REFERENCES public.catalog_items(id), location_id integer NOT NULL REFERENCES public.inventory_locations(id),
+        quantity numeric(20,6) NOT NULL, status text NOT NULL DEFAULT 'reserved', idempotency_key text,
+        expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS public.payment_attempts (
+        id serial PRIMARY KEY, tenant_id integer NOT NULL REFERENCES public.tenants(id), order_id integer NOT NULL,
+        provider text NOT NULL DEFAULT 'paypal', provider_environment text NOT NULL DEFAULT 'sandbox',
+        idempotency_key text NOT NULL, requested_amount numeric(12,2) NOT NULL DEFAULT 1,
+        requested_currency text NOT NULL DEFAULT 'USD', state text NOT NULL DEFAULT 'creating',
+        reconciliation_state text NOT NULL DEFAULT 'not_required', created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
       CREATE TABLE IF NOT EXISTS public.order_notes (id serial PRIMARY KEY, order_id integer NOT NULL, author_id integer NOT NULL, content text NOT NULL, is_encrypted text NOT NULL DEFAULT 'false', is_internal text NOT NULL DEFAULT 'false', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
       CREATE TABLE IF NOT EXISTS public.onboarding_requests (id serial PRIMARY KEY, company_name text NOT NULL, contact_name text NOT NULL, contact_email text NOT NULL, contact_phone text, business_output text NOT NULL, website text, description text, expected_order_volume text, status text NOT NULL DEFAULT 'submitted', review_notes text, reviewed_by integer, tenant_id integer, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
     `);

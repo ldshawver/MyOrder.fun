@@ -155,8 +155,11 @@ async function createSpecialComponentsTable(): Promise<void> {
 export async function loadSpecialComponentRows(executor: SqlExecutor, tenantId: number, specialCatalogItemIds?: number[]): Promise<ComponentStock[]> {
   await ensureSpecialComponentsTable();
   if (specialCatalogItemIds && specialCatalogItemIds.length === 0) return [];
+  if (specialCatalogItemIds?.some(id => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new Error("Special catalogue item IDs must be positive integers");
+  }
   const filter = specialCatalogItemIds
-    ? sql`AND sc.special_catalog_item_id = ANY(${specialCatalogItemIds}::int[])`
+    ? sql`AND sc.special_catalog_item_id = ANY(${sql.raw(`ARRAY[${specialCatalogItemIds.join(",")}]::int[]`)})`
     : sql``;
   return rowsOf<Record<string, unknown>>(await executor.execute(sql`
     WITH reserved_by_location AS (
