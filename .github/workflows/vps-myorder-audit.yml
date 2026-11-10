@@ -33,6 +33,21 @@ jobs:
           printf '%s\n' "${VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/vps_audit_key ~/.ssh/known_hosts
 
+      - name: Verify Tailscale route to production SSH
+        shell: bash
+        env:
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            if nc -z -w 5 100.85.15.43 "${VPS_PORT}"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Production SSH route did not become reachable" >&2
+          exit 1
+
       - name: Inspect immutable production identities
         shell: bash
         env:
