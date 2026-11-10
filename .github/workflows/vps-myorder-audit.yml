@@ -9,6 +9,7 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: read
 
