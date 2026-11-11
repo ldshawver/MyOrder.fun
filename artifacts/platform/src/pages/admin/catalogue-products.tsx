@@ -13,23 +13,13 @@ type Recommendation = { inventoryItemId: number; productName: string; baseUnit: 
 type InventoryPreview = { product: { id: number; name: string; inventoryModel: string; locationEvaluation: string }; target: { inventoryItemId?: number; create?: { name: string; baseUnit: string } }; targetUnit: string;
   variants: Array<{ optionId: number; label: string; optionValues: Record<string,string>; inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number; baseUnit: string; consumptionQuantity: string; sourceUnitQuantityInTargetUnit: string; proposedConsumption: string; price: string; sku: string | null; barcode: string | null }>;
   reservations: Array<{ reservationId: number; catalogItemId: number; locationId: number; locationName: string; status: string; quantity: string; expiresAt: string; orderId: number; orderStatus: string }>;
+  historyBridges: Array<{ inventoryItemId: number; locationId: number; locationName: string; ledgerQuantity: string; physicalQuantity: string; bridgeQuantityDelta: string }>;
   costs: Array<{ inventoryItemId: number; catalogItemId: number; baseUnit: string; onHand: string; costStatus: string; averageUnitCost: string | null; inventoryValue: string | null; reliable: boolean; convertedUnitCost: string | null }>;
   legacyHistory: Array<{ catalogItemId: number; locationId: number | null; transactionCount: number; netQuantityChange: string }>;
   locations: Array<{ locationId: number; locationName: string; sourceBalances: Array<{ catalogItemId: number; locationId: number; quantity: string; ledgerQuantity: string; movementCount: number; balancePresent: boolean;
     optionId: number | null; label: string | null; inventoryItemId: number | null; baseUnit: string | null; sourceUnitQuantityInTargetUnit: string; proposedSharedQuantity: string }>; proposedSharedBalance: string }>;
   orderHistory: Array<{ optionId: number; orderLineCount: number }>; committed: Array<{ optionId: number; label: string; orderId: number; status: string; committedConsumption: string; orderLineCount: number }>;
   issues: string[]; costRequired: boolean; fingerprint: string };
-type HistoryDiscrepancy = { inventoryItemId: number; catalogItemId: number; itemName: string; baseUnit: string; locationId: number; locationName: string;
-  storedPhysicalQuantity: string; ledgerQuantity: string; bridgeQuantityDelta: string; costStatus: string };
-type HistoryEvidence = { inventoryItemId: number; locationId: number; verifiedPhysicalQuantity: string; documentedUnitCost: string | null; physicalCountNote: string; costBasisNote: string };
-type HistoryCorrection = HistoryEvidence & { catalogItemId: number; locationName: string; ledgerQuantity: string; bridgeQuantityDelta: string };
-type HistoryRepairPreview = { blockers: string[]; blockingReservations: Array<{ reservationId: number; orderId: number; inventoryItemId: number; locationId: number; locationName: string; status: string; quantity: string; orderStatus: string }>; blockingOrders: Array<{ orderId: number; orderItemId: number; inventoryItemId: number; status: string; quantity: string }>; corrections: HistoryCorrection[]; unresolvedCosts: Array<{ inventoryItemId: number; catalogItemId: number; reason: string }>; recordedCostEvidence: Array<{ inventoryItemId: number; catalogItemId: number; status: "reliable_receipts" | "missing" | "conflicting_receipts"; receiptCount: number; referencedReceiptCount: number; recordedUnitCost: string | null; message: string }>; verifiedAt: string; serverChecks: {
-  reservations: { status: "clear" | "blocked"; count: number; message: string };
-  openOrders: { status: "clear" | "blocked"; count: number; message: string };
-  costEvidence: { status: "documented" | "unknown_explained" | "mixed"; documentedCount: number; unresolvedCount: number; message: string };
-  freshness: { status: "current_at_generation"; checkedAt: string; message: string };
-}; fingerprint: string };
-
 type ProductForm = { name: string; category: string; price: string; sku: string; firstOptionLabel: string;
   inventoryModel: Product["inventoryModel"]; locationEvaluation: Product["locationEvaluation"]; baseUnit: string; consumptionQuantity: string };
 const defaultProduct: ProductForm = { name: "", category: "", price: "0.00", sku: "", firstOptionLabel: "Standard",
@@ -124,103 +114,6 @@ function SpecialComponentEditor({ option, choices, save }: {
     <Button type="button" size="sm" onClick={() => save(rows)}>Save component list</Button>
     {option.components?.length ? <p className="text-xs text-muted-foreground">{option.specialOrderable ? `Can sell ${option.specialAvailableQuantity ?? "0"} from component stock.` : "A component is short or unavailable, so this special cannot be sold."}</p> : null}
   </div>;
-}
-
-function GuidedHistoryRepair({ productId, request, onApplied }: { productId: number; request: (path: string, init?: RequestInit) => Promise<unknown>; onApplied: () => Promise<void> }) {
-  const [discrepancies, setDiscrepancies] = useState<HistoryDiscrepancy[]>([]);
-  const [evidence, setEvidence] = useState<Record<string, { quantity: string; unitCost: string; countNote: string; costNote: string }>>({});
-  const [preview, setPreview] = useState<HistoryRepairPreview | null>(null);
-  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
-  const [reason, setReason] = useState("");
-  const [idempotencyKey, setIdempotencyKey] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const key = (row: { inventoryItemId: number; locationId: number }) => `${row.inventoryItemId}:${row.locationId}`;
-  const load = useCallback(async () => {
-    setError(""); setPreview(null); setConfirmed({});
-    try {
-      const result = await request(`/api/admin/catalogue/products/${productId}/inventory-history-repair`) as { discrepancies: HistoryDiscrepancy[] };
-      const found = result.discrepancies ?? [];
-      setDiscrepancies(found);
-      setEvidence(Object.fromEntries(found.map(row => [key(row), { quantity: "", unitCost: "", countNote: "", costNote: "" }])));
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load history discrepancies"); }
-  }, [productId, request]);
-  useEffect(() => { void load(); }, [load]);
-  const payloadEvidence = (): HistoryEvidence[] => discrepancies.map(row => {
-    const value = evidence[key(row)];
-    return { inventoryItemId: row.inventoryItemId, locationId: row.locationId, verifiedPhysicalQuantity: value?.quantity ?? "",
-      documentedUnitCost: value?.unitCost ? value.unitCost : null, physicalCountNote: value?.countNote ?? "", costBasisNote: value?.costNote ?? "" };
-  });
-  const applyDisabledReasons = preview ? [
-    ...preview.blockers.map(blocker => `Server blocker: ${blocker}`),
-    ...(preview.corrections.length === 0 ? ["Server blocker: No append-only history corrections are available."] : []),
-    ...(reason.trim().length < 10 ? [`Review required: Enter a repair reason of at least 10 characters (${Math.max(0, 10 - reason.trim().length)} more).`] : []),
-    ...preview.corrections.filter(row => !confirmed[key(row)]).map(row => `Review required: Confirm inventory #${row.inventoryItemId} at ${row.locationName}.`),
-  ] : [];
-  async function createPreview() {
-    setBusy(true); setError(""); setPreview(null); setConfirmed({});
-    try {
-      const result = await request(`/api/admin/catalogue/products/${productId}/inventory-history-repair/preview`, {
-        method: "POST", body: JSON.stringify({ evidence: payloadEvidence() }),
-      }) as HistoryRepairPreview;
-      setPreview(result); setIdempotencyKey(crypto.randomUUID());
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not preview history repair"); }
-    finally { setBusy(false); }
-  }
-  async function apply() {
-    if (!preview) return;
-    setBusy(true); setError("");
-    try {
-      const confirmedCorrections = preview.corrections.map(row => ({ inventoryItemId: row.inventoryItemId, locationId: row.locationId,
-        verifiedPhysicalQuantity: row.verifiedPhysicalQuantity, bridgeQuantityDelta: row.bridgeQuantityDelta, documentedUnitCost: row.documentedUnitCost }));
-      await request(`/api/admin/catalogue/products/${productId}/inventory-history-repair/apply`, { method: "POST", body: JSON.stringify({
-        evidence: payloadEvidence(), previewFingerprint: preview.fingerprint, confirmedCorrections, idempotencyKey, reason,
-      }) });
-      await load(); await onApplied();
-    } catch (cause) {
-      setPreview(null); setConfirmed({});
-      setError(`${cause instanceof Error ? cause.message : "History repair was not saved"} Refresh the preview after the blocking conditions are resolved.`);
-    }
-    finally { setBusy(false); }
-  }
-  if (!discrepancies.length && !error) return <section className="rounded border border-emerald-500/30 p-3"><h3 className="font-semibold">Inventory history</h3><p className="text-sm text-muted-foreground">Every active variant balance reconciles with its append-only ledger.</p></section>;
-  return <section className="rounded border border-amber-500/40 p-3 space-y-3" aria-label="Guided inventory history repair">
-    <div><h3 className="font-semibold">Guided inventory-history repair</h3><p className="text-sm text-muted-foreground">This appends an audited history bridge so ledger history reaches an independently verified physical balance. It never changes the physical balance or edits prior ledger entries. If the physical count differs from the stored balance, use the normal audited inventory adjustment first. Physically count each location; do not copy the stored quantity unless the count independently verifies it.</p></div>
-    {error && <div role="alert" className="rounded border border-red-500 p-2 text-sm">{error}</div>}
-    {discrepancies.map(row => { const value = evidence[key(row)] ?? { quantity: "", unitCost: "", countNote: "", costNote: "" }; return <div key={key(row)} className="rounded border p-3 space-y-2">
-      <p className="font-medium">{row.itemName} · inventory #{row.inventoryItemId} · {row.locationName}</p>
-      <p className="text-xs">Stored balance {row.storedPhysicalQuantity} {row.baseUnit}; ledger {row.ledgerQuantity}; proposed bridge after verification {row.bridgeQuantityDelta}.</p>
-      <p className="text-xs font-medium text-amber-600">Required physical count to use this repair: {row.storedPhysicalQuantity}. If the actual count differs, use the normal audited adjustment flow first and refresh.</p>
-      <div className="grid gap-2 md:grid-cols-2"><label>Verified physical count<Input aria-label={`Verified count ${key(row)}`} value={value.quantity} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, quantity: event.target.value } })); }} /></label>
-        <label>Physical-count evidence<Input aria-label={`Count evidence ${key(row)}`} value={value.countNote} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, countNote: event.target.value } })); }} placeholder="Count sheet, witness, date, or reference" /></label>
-        <label>Documented unit cost (optional)<Input aria-label={`Documented cost ${key(row)}`} value={value.unitCost} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, unitCost: event.target.value } })); }} /></label>
-        <label>Cost evidence or why unknown<Input aria-label={`Cost evidence ${key(row)}`} value={value.costNote} onChange={event => { setPreview(null); setConfirmed({}); setEvidence(current => ({ ...current, [key(row)]: { ...value, costNote: event.target.value } })); }} placeholder="Invoice/reference, or explain why cost remains unknown" /></label></div>
-    </div>; })}
-    <Button disabled={busy || !discrepancies.length} onClick={() => void createPreview()}>{busy ? "Working…" : preview ? "Refresh server checks and preview" : "Preview exact ledger entries"}</Button>
-    {preview && <div className="space-y-3 rounded bg-muted/30 p-3"><h4 className="font-medium">Reviewed preview</h4>
-      <div className="rounded border p-2 text-sm" aria-label="Server verification checks"><strong>Server verification</strong>
-        <ul>
-          <li>Reservations: {preview.serverChecks.reservations.message}</li>
-          <li>Open orders: {preview.serverChecks.openOrders.message}</li>
-          <li>Cost evidence: {preview.serverChecks.costEvidence.message}</li>
-          <li>Preview freshness: {preview.serverChecks.freshness.message} Checked {new Date(preview.verifiedAt).toLocaleString()}.</li>
-        </ul>
-      </div>
-      {preview.blockers.length > 0 && <div role="alert"><strong>Blocking issues</strong><ul>{preview.blockers.map(item => <li key={item}>{item}</li>)}</ul>
-        {preview.blockingReservations.length > 0 && <div className="mt-2"><strong>Reservations to resolve through the order workflow</strong><ul>{preview.blockingReservations.map(row => <li key={row.reservationId}>Reservation #{row.reservationId}, order #{row.orderId}: {row.status} {row.quantity} at {row.locationName} (location #{row.locationId}); order is {row.orderStatus}. Complete fulfillment or cancel/void the order through its normal workflow so its reservation resolves; do not release it manually.</li>)}</ul></div>}
-        {preview.blockingOrders.length > 0 && <div className="mt-2"><strong>Open committed order lines</strong><ul>{preview.blockingOrders.map(row => <li key={row.orderItemId}>Order #{row.orderId}, line #{row.orderItemId}: {row.status}, inventory item #{row.inventoryItemId}, quantity {row.quantity}. Complete fulfillment or cancel/void the order through its normal workflow.</li>)}</ul></div>}
-      </div>}
-      {preview.corrections.map(row => <label key={key(row)} className="block rounded border p-2 text-sm"><span className="flex items-start gap-2"><input type="checkbox" checked={Boolean(confirmed[key(row)])} onChange={event => setConfirmed(current => ({ ...current, [key(row)]: event.target.checked }))} />
-        <span>Confirm inventory #{row.inventoryItemId}, {row.locationName}: append {row.bridgeQuantityDelta}; ledger {row.ledgerQuantity} → {row.verifiedPhysicalQuantity}; unit cost {row.documentedUnitCost ?? "unknown"}. Evidence: {row.physicalCountNote}; cost source/status: {row.costBasisNote}.</span></span></label>)}
-      {preview.unresolvedCosts.length > 0 && <p className="text-sm font-medium text-amber-600">Quantity history can be repaired, but valuation remains unknown for inventory item(s) {preview.unresolvedCosts.map(row => `#${row.inventoryItemId}`).join(", ")}.</p>}
-      <div className="text-sm"><strong>Item-specific recorded cost evidence</strong><ul>{preview.recordedCostEvidence.map(row => <li key={row.inventoryItemId}>Inventory #{row.inventoryItemId}: {row.message}</li>)}</ul></div>
-      <label>Repair reason<Input aria-label="Inventory history repair reason" value={reason} onChange={event => setReason(event.target.value)} /></label>
-      <div className={`rounded border p-2 text-sm ${applyDisabledReasons.length ? "border-amber-500/60" : "border-emerald-500/50"}`} role="status" aria-label="Apply readiness">
-        {applyDisabledReasons.length ? <><strong>Apply is disabled because:</strong><ul>{applyDisabledReasons.map(reasonText => <li key={reasonText}>{reasonText}</li>)}</ul></> : <><strong>All Apply prerequisites are complete.</strong><p>Apply will still recheck the preview under a database lock and refuse stale data.</p></>}
-      </div>
-      <Button disabled={busy || applyDisabledReasons.length > 0} onClick={() => void apply()}>Apply confirmed append-only repair</Button>
-    </div>}
-  </section>;
 }
 
 export default function AdminCatalogueProducts() {
@@ -392,7 +285,6 @@ export default function AdminCatalogueProducts() {
           {product.name}<span className="block text-xs text-muted-foreground">{product.options.length} option{product.options.length === 1 ? "" : "s"}</span>
         </button>)}</aside>
       {selected && <main className="space-y-5">
-        {selected.inventoryModel === "SEPARATE_VARIANTS" && <GuidedHistoryRepair productId={selected.id} request={request} onApplied={refresh} />}
         <section className="rounded-xl border p-4 space-y-3">
           <h2 className="font-semibold">{selected.name}</h2>
           <div className="flex gap-2"><label className="flex-1">Product name<Input value={editName} onChange={event => setEditName(event.target.value)} /></label>
@@ -413,10 +305,10 @@ export default function AdminCatalogueProducts() {
               onChange={event => void perform(async () => { await request(`/api/admin/catalogue/products/${selected.id}`, { method: "PATCH", body: JSON.stringify({ locationEvaluation: event.target.value }) }); })}>
               <option>PER_LOCATION</option><option>COMBINED_LOCATIONS</option></select></label>
           </div>
-          <p className="text-xs text-muted-foreground">Changing an active inventory model with balances, reservations, orders or movements requires controlled reconciliation.</p>
+          <p className="text-xs text-muted-foreground">Changing an active inventory model uses one audited conversion. Existing on-hand counts are preserved and any old ledger gap is bridged automatically.</p>
           {selected.inventoryModel === "SEPARATE_VARIANTS" && inventoryModelDraft === "SHARED" && <div className="rounded border p-3 space-y-3" aria-label="Inventory reconciliation">
-            <h3 className="font-semibold">Reconcile inventory</h3>
-            <p className="text-sm text-muted-foreground">Selecting Shared does not change stock. Review a server-generated preview and confirm the audited reconciliation before variants are linked.</p>
+            <h3 className="font-semibold">Change to shared inventory</h3>
+            <p className="text-sm text-muted-foreground">Choose the shared unit and each variant's amount. The conversion preserves current stock by location and records any required history bridge automatically.</p>
             <div className="grid gap-2 md:grid-cols-3">
               <label>Shared inventory item<select className="block w-full rounded border bg-background p-2" value={createSharedItem ? "create" : reconcileTarget} onChange={event => {
                 setCreateSharedItem(event.target.value === "create"); if (event.target.value !== "create") setReconcileTarget(event.target.value); setPreview(null);
@@ -458,6 +350,7 @@ export default function AdminCatalogueProducts() {
               <div><strong>Reservations and committed stock</strong>{preview.reservations.length ? <><ul>{preview.reservations.map(r => <li key={r.reservationId}>Reservation #{r.reservationId}: {r.status} {r.quantity} at {r.locationName} (location #{r.locationId}), order #{r.orderId} ({r.orderStatus}). Complete fulfillment or cancel/void the order through the normal order workflow so its reservation resolves; do not release it manually.</li>)}</ul></> : <p>No active reservations.</p>}
                 {preview.committed.length > 0 && <ul>{preview.committed.map((row,index) => <li key={`${row.optionId}:${row.orderId}:${index}`}>{row.status} order #{row.orderId}, {row.label}: {row.committedConsumption} committed consumption</li>)}</ul>}
                 <p>Historical order lines retained: {preview.orderHistory.reduce((sum,row) => sum + row.orderLineCount, 0)}.</p></div>
+              {preview.historyBridges.length > 0 && <div className="rounded border border-amber-500/40 p-2"><strong>Automatic history cleanup</strong><p>{preview.historyBridges.length} old ledger gap{preview.historyBridges.length === 1 ? "" : "s"} will be bridged inside this conversion. Current on-hand quantities will not be changed.</p></div>}
               {preview.issues.length > 0 && <div role="alert" className="rounded border border-red-500 p-2"><strong>Blocking issues</strong><ul>{preview.issues.map(issue => <li key={issue}>{issue}</li>)}</ul></div>}
               <label>Reconciliation reason<Input value={reconcileReason} onChange={event => setReconcileReason(event.target.value)} maxLength={500} /></label>
               {preview.costRequired && <div className="grid gap-2 md:grid-cols-2"><label>Verified positive unit cost · {preview.targetUnit}<Input inputMode="decimal" value={manualUnitCost} onChange={event => setManualUnitCost(event.target.value)} /></label><label>Cost source / documentation note<Input value={costBasisNote} onChange={event => setCostBasisNote(event.target.value)} maxLength={500} /></label></div>}

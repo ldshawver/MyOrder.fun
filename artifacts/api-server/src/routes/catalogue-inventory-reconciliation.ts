@@ -4,7 +4,6 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { auditLogsTable, db } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
-import { requirePermission } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
 import {
@@ -17,12 +16,6 @@ import {
 } from "../lib/catalogueInventoryReconciliation";
 import { ledgerQuantityUnits, quantityText, quantityUnits } from "../lib/exactQuantity";
 import { logger } from "../lib/logger";
-import {
-  applyInventoryHistoryBaselineRepair,
-  InventoryHistoryRepairError,
-  listInventoryHistoryDiscrepancies,
-  previewInventoryHistoryBaselineRepair,
-} from "../lib/inventoryHistoryBaselineRepair";
 
 const router: IRouter = Router();
 // Scope this router's approval gate to its own admin paths. It is mounted at
@@ -53,28 +46,6 @@ const applySchema = z.object({
   reason: z.string().trim().min(10).max(500),
   manualUnitCost: z.string().regex(/^(?:0|[1-9]\d*)(?:\.\d{1,12})?$/).refine(value => !/^0(?:\.0+)?$/.test(value), "Cost must be positive").optional(),
   costBasisNote: z.string().trim().min(8).max(500).optional(),
-}).strict();
-const historyEvidenceSchema = z.object({
-  inventoryItemId: positiveId,
-  locationId: positiveId,
-  verifiedPhysicalQuantity: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,6})?$/, "Use a nonnegative quantity with no more than 6 decimal places"),
-  documentedUnitCost: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,12})?$/, "Use a plain nonnegative number without a currency symbol").nullable(),
-  physicalCountNote: z.string().trim().min(8, "Describe the item-specific count source in at least 8 characters").max(500),
-  costBasisNote: z.string().trim().min(8, "Identify the item-specific cost source or explain why cost is unknown in at least 8 characters").max(500),
-}).strict();
-const historyConfirmationSchema = z.object({
-  inventoryItemId: positiveId,
-  locationId: positiveId,
-  verifiedPhysicalQuantity: z.string(),
-  bridgeQuantityDelta: z.string(),
-  documentedUnitCost: z.string().nullable(),
-}).strict();
-const historyPreviewSchema = z.object({ evidence: z.array(historyEvidenceSchema).min(1).max(200) }).strict();
-const historyApplySchema = historyPreviewSchema.extend({
-  previewFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-  confirmedCorrections: z.array(historyConfirmationSchema).min(1).max(200),
-  idempotencyKey: z.string().uuid(),
-  reason: z.string().trim().min(10).max(500),
 }).strict();
 
 // SQL rows have different projections; the route validates and normalizes each field before use.
@@ -109,47 +80,6 @@ function publicFailure(input: unknown, fallbackCode: string, fallbackMessage: st
   }
   return { status: 409, code: fallbackCode, message: fallbackMessage };
 }
-
-function historyFailure(res: import("express").Response, input: unknown): void {
-  if (input instanceof InventoryHistoryRepairError) {
-    fail(res, input.status, input.status === 403 ? "HISTORY_REPAIR_FORBIDDEN" : input.status === 404 ? "HISTORY_REPAIR_SCOPE_NOT_FOUND" :
-      input.status === 422 ? "HISTORY_REPAIR_EVIDENCE_INVALID" : "HISTORY_REPAIR_STALE", input.message);
-    return;
-  }
-  logger.error({ errorType: input instanceof Error ? input.name : typeof input }, "Guided inventory history repair failed");
-  fail(res, 409, "HISTORY_REPAIR_FAILED", "Inventory history repair failed; no changes were saved. Refresh and review a new preview.");
-}
-
-router.get("/admin/catalogue/products/:productId/inventory-history-repair", requirePermission("inventory.manage"), async (req, res): Promise<void> => {
-  const productId = Number(req.params.productId);
-  if (!Number.isInteger(productId) || productId <= 0) { fail(res, 400, "INVALID_PRODUCT", "Provide a valid product identifier."); return; }
-  try { res.json(await listInventoryHistoryDiscrepancies(req.authorizedTenantId!, productId)); }
-  catch (error) { historyFailure(res, error); }
-});
-
-router.post("/admin/catalogue/products/:productId/inventory-history-repair/preview", requirePermission("inventory.manage"), async (req, res): Promise<void> => {
-  const productId = Number(req.params.productId); const parsed = historyPreviewSchema.safeParse(req.body);
-  if (!Number.isInteger(productId) || productId <= 0) { fail(res, 400, "INVALID_HISTORY_REPAIR_PREVIEW", "Provide a valid product identifier."); return; }
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const rowIndex = typeof issue?.path[1] === "number" ? Number(issue.path[1]) + 1 : null;
-    const field = typeof issue?.path.at(-1) === "string" ? String(issue.path.at(-1)) : "evidence";
-    fail(res, 400, "INVALID_HISTORY_REPAIR_PREVIEW", `${rowIndex ? `Evidence row ${rowIndex}, ` : ""}${field}: ${issue?.message ?? "invalid value"}. No preview was created.`);
-    return;
-  }
-  try { res.json(await previewInventoryHistoryBaselineRepair(req.authorizedTenantId!, productId, parsed.data.evidence)); }
-  catch (error) { historyFailure(res, error); }
-});
-
-router.post("/admin/catalogue/products/:productId/inventory-history-repair/apply", requirePermission("inventory.manage"), async (req, res): Promise<void> => {
-  const productId = Number(req.params.productId); const parsed = historyApplySchema.safeParse(req.body);
-  if (!Number.isInteger(productId) || productId <= 0 || !parsed.success) { fail(res, 400, "INVALID_HISTORY_REPAIR_APPLY", "Provide the reviewed preview and confirm every exact repair."); return; }
-  try {
-    const result = await applyInventoryHistoryBaselineRepair({ tenantId: req.authorizedTenantId!, productId, ...parsed.data,
-      actor: { id: req.dbUser!.id, email: req.dbUser!.email, role: req.dbUser!.role, ipAddress: req.ip } });
-    res.status(result.idempotent ? 200 : 201).json(result);
-  } catch (error) { historyFailure(res, error); }
-});
 
 async function snapshot(executor: ReconciliationExecutor, tenantId: number, productId: number, target: z.infer<typeof targetSchema>,
   variantConversions: z.infer<typeof variantConversionSchema>[] = []) {
@@ -280,8 +210,16 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
   if (committed.length) issues.push("Resolve open orders with committed variant stock before reconciliation.");
   if (foreignUse.length) issues.push("An inventory item is also used by another active product.");
   if (duplicateName.length) issues.push(`An inventory item with that name and base unit already exists (inventory item ${duplicateName[0].inventoryItemId}); choose one of this product's linked inventory items or use another descriptive name.`);
+  const historyBridges: Row[] = [];
   for (const b of balanceRows) {
-    try { if (quantityUnits(String(b.quantity)) !== ledgerQuantityUnits(String(b.ledgerQuantity))) issues.push(`Inventory history does not reconcile for inventory item ${itemByCatalog.get(Number(b.catalogItemId))?.inventoryItemId ?? "?"} at location ${b.locationId}.`); }
+    try {
+      const physical = quantityUnits(String(b.quantity));
+      const ledger = ledgerQuantityUnits(String(b.ledgerQuantity));
+      if (physical !== ledger) historyBridges.push({ catalogItemId: Number(b.catalogItemId),
+        inventoryItemId: Number(itemByCatalog.get(Number(b.catalogItemId))?.inventoryItemId), locationId: Number(b.locationId),
+        locationName: String(b.locationName), ledgerQuantity: quantityText(ledger), physicalQuantity: quantityText(physical),
+        bridgeQuantityDelta: quantityText(physical - ledger) });
+    }
     catch { issues.push(`Inventory history precision is unsupported for item ${itemByCatalog.get(Number(b.catalogItemId))?.inventoryItemId ?? "?"} at location ${b.locationId}.`); }
   }
   for (const v of variants) {
@@ -337,7 +275,7 @@ async function snapshot(executor: ReconciliationExecutor, tenantId: number, prod
     return { locationId, locationName: recordedSources[0]?.locationName ?? `Location ${locationId}`, sourceBalances,
       proposedSharedBalance: conversionValid ? quantityText(proposed) : "Unavailable: unit conversion required" };
   });
-  return { product, variants, balances, reservations, valuation, history, legacyHistory, lineHistory, committed, itemCosts,
+  return { product, variants, balances, reservations, valuation, history, historyBridges, legacyHistory, lineHistory, committed, itemCosts,
     issues: [...new Set(issues)], targetUnit: units, locationBalances: byLocation, fingerprint, fingerprintData, conversionByOption };
 }
 
@@ -368,7 +306,8 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/previ
         proposedConsumption: result.conversionByOption.get(Number(v.optionId))?.targetConsumptionQuantity
           ?? previewConversion(String(v.consumptionQuantity), String(v.baseUnit), result.targetUnit),
         price: v.price, sku: v.sku, barcode: v.barcode })),
-      reservations: result.reservations, costs: recordedCosts, legacyHistory: result.legacyHistory, locations: result.locationBalances,
+      reservations: result.reservations, costs: recordedCosts, historyBridges: result.historyBridges,
+      legacyHistory: result.legacyHistory, locations: result.locationBalances,
       orderHistory: result.lineHistory, committed: result.committed, issues: result.issues,
       costRequired: result.itemCosts.some((c: Row) => quantityUnits(String(c.onHand)) > 0n && !c.reliable)
         || !result.itemCosts.some((c: Row) => quantityUnits(String(c.onHand)) > 0n && c.reliable), fingerprint: result.fingerprint });
@@ -440,7 +379,8 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/apply
       }
       const evidence: Row = { targetInventoryItemId, targetCatalogItemId, targetUnit, reason: body.reason,
         costBasis: manualCostRequired ? { kind: "operator_documented", unitCost: body.manualUnitCost, note: body.costBasisNote } : { kind: "recorded_valuation" },
-        before: { product: pre.product, variants: pre.variants, balances: pre.balances, valuation: pre.valuation }, movements: [] };
+        before: { product: pre.product, variants: pre.variants, balances: pre.balances, valuation: pre.valuation },
+        historyBridges: [], movements: [] };
       // Record exists before the model transition. The enclosing transaction makes
       // this audit event and every inventory/link change atomic.
       await tx.execute(sql`INSERT INTO catalogue_inventory_reconciliation_events
@@ -448,6 +388,22 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/apply
         VALUES (${eventId}::uuid,${tenantId},${productId},${req.dbUser!.id},${body.idempotencyKey},${body.previewFingerprint},${body.reason},${JSON.stringify(evidence)}::jsonb,NULL)`);
       await tx.execute(sql`SELECT set_config('myorder.catalogue_inventory_reconciliation_id',${eventId},true)`);
       let movementIndex = 0;
+      for (const bridge of pre.historyBridges) {
+        const variant = pre.variants.find((candidate: Row) => Number(candidate.inventoryCatalogItemId) === Number(bridge.catalogItemId));
+        if (!variant || !Number.isInteger(Number(bridge.inventoryItemId))) {
+          throw Object.assign(new Error("Inventory identity changed before automatic history repair"), { status: 409, code: "HISTORY_IDENTITY_CHANGED" });
+        }
+        const inserted = rows(await tx.execute(sql`INSERT INTO inventory_movements
+          (tenant_id,inventory_entity_type,catalog_item_id,location_id,movement_type,quantity_delta,unit_of_measure,
+           unit_cost,extended_cost,pre_quantity,post_quantity,pre_average_unit_cost,post_average_unit_cost,
+           source_type,source_id,reason_code,reason_text,idempotency_key,movement_index,correlation_id,actor_user_id)
+          VALUES (${tenantId},'catalog',${bridge.catalogItemId},${bridge.locationId},'correction',${bridge.bridgeQuantityDelta}::numeric,
+            ${variant.baseUnit},NULL,NULL,${bridge.ledgerQuantity}::numeric,${bridge.physicalQuantity}::numeric,NULL,NULL,
+            'catalogue_inventory_reconciliation',${eventId},'automatic_history_bridge',${body.reason},
+            ${body.idempotencyKey},${movementIndex++},${eventId},${req.dbUser!.id}) RETURNING id`))[0];
+        if (!inserted) throw new Error("Could not record the automatic inventory history bridge");
+        evidence.historyBridges.push({ ...bridge, movementId: Number(inserted.id) });
+      }
       for (const item of (manualCostRequired ? pre.itemCosts.filter((c: Row) => quantityUnits(String(c.onHand)) > 0n && !c.reliable) : [])) {
         const variant = pre.variants.find((candidate: Row) => Number(candidate.inventoryCatalogItemId) === Number(item.catalogItemId));
         const explicit = variant ? pre.conversionByOption.get(Number(variant.optionId)) : undefined;
@@ -511,7 +467,8 @@ router.post("/admin/catalogue/products/:productId/inventory-reconciliation/apply
       await tx.insert(auditLogsTable).values({ tenantId, actorId: req.dbUser!.id, actorEmail: req.dbUser!.email ?? "",
         actorRole: req.dbUser!.role, action: "CATALOGUE_INVENTORY_RECONCILED", resourceType: "catalogue_product",
         resourceId: String(productId), metadata: { reconciliationId: eventId, targetInventoryItemId, targetCatalogItemId,
-          movementIds: evidence.movements.flatMap((movement: Row) => movement.movementIds), reason: body.reason } });
+          movementIds: [...evidence.historyBridges.map((bridge: Row) => bridge.movementId),
+            ...evidence.movements.flatMap((movement: Row) => movement.movementIds)], reason: body.reason } });
       return { id: eventId, evidence, idempotent: false };
     }, { isolationLevel: "read committed" });
     res.status(result.idempotent ? 200 : 201).json({ reconciliationId: result.id, idempotent: result.idempotent,
