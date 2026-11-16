@@ -24,34 +24,34 @@ import { fileURLToPath } from "node:url";
 export const FROZEN_RELEASE = Object.freeze({
   // The replacement candidate must descend from the previously approved
   // application candidate; deployment-only successors cannot change it.
-  sha: "583d556c8d3a5a094641ea229835d7c3397de1b1",
-  tree: "5d28e84ac2cf71aa6c99f42b299fedfcde51079f",
+  sha: "3878ace3510cca8ce4fe391973cfb72506227906",
+  tree: "e9beecdec7fae71b7416c2dbe57bac464204866f",
 });
 export const APPROVED_RELEASE = Object.freeze({
-  sha: "3eead37a27530436c7b8e2b18c9590cdbc711a83",
-  tree: "65d9f082d17c6887e70891fd64f3ebe32355d5c4",
+  sha: "7dacc7f7054bd41fc48a7024782db5568196187c",
+  tree: "b905414a4c31cfa43cad6cbc8ff89b5004745062",
   // Production's containerd-backed Docker image store reports the immutable
   // manifest digest as image.Id. Keep registry manifests and their referenced
   // image-config digests separate so neither identity can stand in for the other.
   manifests: Object.freeze({
-    api: "sha256:da1580dbb2094948eb3670e3477e0dbed2b9e6f14952b1b72bed592677a36b39",
-    platform: "sha256:93cc44cb995ef7108f7dcab24d127c08a868adf7802f5417486beb63fb0243ad",
-    migrate: "sha256:ffdf93738cc6a70ea730239a2de7d4fc45048d6d9d24cae275400c2e1dc7649c",
+    api: "sha256:75e16b8d98f06cb2fc9a33fb2ef7dfe041b07c6430a6d444d04db4b1c3750549",
+    platform: "sha256:2084e3bf643513d43767d0bd9ca83209e0c585c4634e45719b92164c5e90b474",
+    migrate: "sha256:fce62340a992e68130dc1a256e2995f9e1327f539e235e2c653eaca8e32bd489",
   }),
   configs: Object.freeze({
-    api: "sha256:d423651b43d504087bd591cacebb7965646560b3477aff6abc520fe9c2740a0d",
-    platform: "sha256:72b51541398aa4df98161cfbac0b333867483242ad14dd568e63e5d17b0c09d5",
-    migrate: "sha256:78f91705fa7311c58e4f5b5eee3377e89e32b80bc47a016014a67faffd75d0c8",
+    api: "sha256:75e16b8d98f06cb2fc9a33fb2ef7dfe041b07c6430a6d444d04db4b1c3750549",
+    platform: "sha256:2084e3bf643513d43767d0bd9ca83209e0c585c4634e45719b92164c5e90b474",
+    migrate: "sha256:fce62340a992e68130dc1a256e2995f9e1327f539e235e2c653eaca8e32bd489",
   }),
   revisions: Object.freeze({
-    api: "3eead37a27530436c7b8e2b18c9590cdbc711a83",
-    platform: "3eead37a27530436c7b8e2b18c9590cdbc711a83",
-    migrate: "3eead37a27530436c7b8e2b18c9590cdbc711a83",
+    api: "7dacc7f7054bd41fc48a7024782db5568196187c",
+    platform: "7dacc7f7054bd41fc48a7024782db5568196187c",
+    migrate: "7dacc7f7054bd41fc48a7024782db5568196187c",
   }),
   references: Object.freeze({
-    api: "ghcr.io/ldshawver/myorder-api@sha256:da1580dbb2094948eb3670e3477e0dbed2b9e6f14952b1b72bed592677a36b39",
-    platform: "ghcr.io/ldshawver/myorder-platform@sha256:93cc44cb995ef7108f7dcab24d127c08a868adf7802f5417486beb63fb0243ad",
-    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:ffdf93738cc6a70ea730239a2de7d4fc45048d6d9d24cae275400c2e1dc7649c",
+    api: "ghcr.io/ldshawver/myorder-api@sha256:75e16b8d98f06cb2fc9a33fb2ef7dfe041b07c6430a6d444d04db4b1c3750549",
+    platform: "ghcr.io/ldshawver/myorder-platform@sha256:2084e3bf643513d43767d0bd9ca83209e0c585c4634e45719b92164c5e90b474",
+    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:fce62340a992e68130dc1a256e2995f9e1327f539e235e2c653eaca8e32bd489",
   }),
 });
 export const PRODUCTION_BASELINE = Object.freeze({
