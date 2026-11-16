@@ -21,8 +21,8 @@ function api(path: string): string {
 
 // Production release authorization is pinned to the reviewed candidate identity.
 const approvedProduction = {
-  sha: "3eead37a27530436c7b8e2b18c9590cdbc711a83",
-  tree: "65d9f082d17c6887e70891fd64f3ebe32355d5c4",
+  sha: "7dacc7f7054bd41fc48a7024782db5568196187c",
+  tree: "b905414a4c31cfa43cad6cbc8ff89b5004745062",
 };
 
 function productionPinGuard(workflow: string): string {
@@ -289,8 +289,8 @@ describe("receipts and deploy workflow", () => {
       "production-release.mjs",
       "release_sha:",
       "release_tree:",
-      "RELEASE_BASE_SHA: 583d556c8d3a5a094641ea229835d7c3397de1b1",
-      "RELEASE_BASE_TREE: 5d28e84ac2cf71aa6c99f42b299fedfcde51079f",
+      "RELEASE_BASE_SHA: 3878ace3510cca8ce4fe391973cfb72506227906",
+      "RELEASE_BASE_TREE: e9beecdec7fae71b7416c2dbe57bac464204866f",
       "RELEASE_SHA: ${{ inputs.release_sha }}",
       "RELEASE_TREE: ${{ inputs.release_tree }}",
       "git merge-base --is-ancestor",
