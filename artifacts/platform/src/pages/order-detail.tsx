@@ -322,6 +322,7 @@ export default function OrderDetail() {
   const [showCashCloseout, setShowCashCloseout] = useState(false);
   const [amountTendered, setAmountTendered] = useState("");
   const [cashInternalNote, setCashInternalNote] = useState("");
+  const [captureConfirmed, setCaptureConfirmed] = useState(false);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
@@ -916,6 +917,13 @@ export default function OrderDetail() {
                 </span>
               </div>
 
+              {(captureConfirmed || order.paymentStatus === OrderPaymentStatus.paid) && (
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200" role="status" data-testid="payment-confirmed-banner">
+                  <div className="flex items-center gap-2 font-semibold"><CheckCircle2 size={16} /> Payment confirmed</div>
+                  <p className="mt-1 text-xs text-emerald-100/80">Your order is in the fulfillment queue. Preparation and tracking updates will appear on this order.</p>
+                </div>
+              )}
+
               {order.paymentStatus === OrderPaymentStatus.unpaid && (
                 <div className="space-y-3">
                   {(creditBalance ?? 0) > 0 && (
@@ -991,7 +999,7 @@ export default function OrderDetail() {
                   {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
 
                   {/* Provider-verified PayPal checkout */}
-                  <PayPalCheckoutButton orderId={order.id} eligibilityAmount={Number(order.remainingTenderAmount ?? order.total)} getToken={getToken} onCaptured={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
+                  <PayPalCheckoutButton orderId={order.id} eligibilityAmount={Number(order.remainingTenderAmount ?? order.total)} getToken={getToken} onCaptured={() => { setCaptureConfirmed(true); void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
 
                 </div>
               )}

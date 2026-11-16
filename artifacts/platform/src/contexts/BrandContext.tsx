@@ -99,6 +99,10 @@ export function BrandProvider({ children }: { children: ReactNode }) {
     document.title = branding.customer.displayName;
     const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
     if (favicon) favicon.href = branding.customer.faviconUrl;
+    const appleTouchIcon = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+    if (appleTouchIcon && branding.customer.displayName.trim().toLowerCase() === "lucifer cruz") {
+      appleTouchIcon.href = "/branding/lucifer-cruz/LC-Order_Icon-iOS-Default-1024@1x.png?v=11ec8ee3";
+    }
   }, [branding]);
 
   const setBranding = useCallback((value: BrandingInput | null) => {
