@@ -307,19 +307,19 @@ jobs:
              api_config=\"\$(docker manifest inspect '${REPLACEMENT_API_REFERENCE}' | node -p 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).config.digest')\"; \
              printf 'Pulled API manifest identity: %s; config identity: %s\\n' \"\$api_id\" \"\$api_config\"; \
              test \"\$api_id\" = 'sha256:75e16b8d98f06cb2fc9a33fb2ef7dfe041b07c6430a6d444d04db4b1c3750549'; \
-             test \"\$api_config\" = 'sha256:75e16b8d98f06cb2fc9a33fb2ef7dfe041b07c6430a6d444d04db4b1c3750549'; \
+             test \"\$api_config\" = 'sha256:1ea2c9947755a6913399d1e495ab804b891e8ba58f1cd700c624ea54c3a089f6'; \
              docker pull '${REPLACEMENT_MIGRATE_REFERENCE}'; \
              migrate_id=\"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_MIGRATE_REFERENCE}')\"; \
              migrate_config=\"\$(docker manifest inspect '${REPLACEMENT_MIGRATE_REFERENCE}' | node -p 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).config.digest')\"; \
              printf 'Pulled migrator manifest identity: %s; config identity: %s\\n' \"\$migrate_id\" \"\$migrate_config\"; \
              test \"\$migrate_id\" = 'sha256:fce62340a992e68130dc1a256e2995f9e1327f539e235e2c653eaca8e32bd489'; \
-             test \"\$migrate_config\" = 'sha256:fce62340a992e68130dc1a256e2995f9e1327f539e235e2c653eaca8e32bd489'; \
+             test \"\$migrate_config\" = 'sha256:762ec6fef25c756d830ecffaeaddbff277489793dc1d6614eade28e79c219121'; \
              docker pull '${REPLACEMENT_PLATFORM_REFERENCE}'; \
              platform_id=\"\$(docker image inspect --format '{{.Id}}' '${REPLACEMENT_PLATFORM_REFERENCE}')\"; \
              platform_config=\"\$(docker manifest inspect '${REPLACEMENT_PLATFORM_REFERENCE}' | node -p 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).config.digest')\"; \
              printf 'Pulled Platform manifest identity: %s; config identity: %s\\n' \"\$platform_id\" \"\$platform_config\"; \
              test \"\$platform_id\" = 'sha256:2084e3bf643513d43767d0bd9ca83209e0c585c4634e45719b92164c5e90b474'; \
-             test \"\$platform_config\" = 'sha256:2084e3bf643513d43767d0bd9ca83209e0c585c4634e45719b92164c5e90b474'; \
+             test \"\$platform_config\" = 'sha256:0288a63c180268eb338062c96496fd76dccb7f290f65fa0cecda1c4b1c003773'; \
              for ref in '${REPLACEMENT_API_REFERENCE}' '${REPLACEMENT_MIGRATE_REFERENCE}' '${REPLACEMENT_PLATFORM_REFERENCE}'; do \
                test \"\$(docker image inspect --format '{{.Os}}/{{.Architecture}}' \"\$ref\")\" = 'linux/amd64'; \
                docker image inspect --format '{{.Config.Labels}}' \"\$ref\" | grep -Fq 'org.opencontainers.image.revision:7dacc7f7054bd41fc48a7024782db5568196187c'; \

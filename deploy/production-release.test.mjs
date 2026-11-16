@@ -1080,9 +1080,9 @@ test("production rollback baseline matches the verified current production image
   assert.equal(APPROVED_RELEASE.manifests.api, "sha256:75e16b8d98f06cb2fc9a33fb2ef7dfe041b07c6430a6d444d04db4b1c3750549");
   assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:fce62340a992e68130dc1a256e2995f9e1327f539e235e2c653eaca8e32bd489");
   assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:2084e3bf643513d43767d0bd9ca83209e0c585c4634e45719b92164c5e90b474");
-  assert.equal(APPROVED_RELEASE.configs.api, "sha256:75e16b8d98f06cb2fc9a33fb2ef7dfe041b07c6430a6d444d04db4b1c3750549");
-  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:fce62340a992e68130dc1a256e2995f9e1327f539e235e2c653eaca8e32bd489");
-  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:2084e3bf643513d43767d0bd9ca83209e0c585c4634e45719b92164c5e90b474");
+  assert.equal(APPROVED_RELEASE.configs.api, "sha256:1ea2c9947755a6913399d1e495ab804b891e8ba58f1cd700c624ea54c3a089f6");
+  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:762ec6fef25c756d830ecffaeaddbff277489793dc1d6614eade28e79c219121");
+  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:0288a63c180268eb338062c96496fd76dccb7f290f65fa0cecda1c4b1c003773");
   assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.platform, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.migrate, APPROVED_RELEASE.sha);
