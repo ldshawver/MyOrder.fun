@@ -1127,15 +1127,16 @@ test("candidate builder is frozen to the exact source selected for immutable ima
     "utf8",
   );
   const candidate = {
-    sha: "3eead37a27530436c7b8e2b18c9590cdbc711a83",
-    tree: "65d9f082d17c6887e70891fd64f3ebe32355d5c4",
+    sha: "7dacc7f7054bd41fc48a7024782db5568196187c",
+    tree: "b905414a4c31cfa43cad6cbc8ff89b5004745062",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));
   assert.match(workflow, new RegExp(`ref: ${candidate.sha}`));
   assert.equal(workflow.match(new RegExp(candidate.sha, "g"))?.length, 5);
-  assert.equal(candidate.sha, APPROVED_RELEASE.sha);
-  assert.equal(candidate.tree, APPROVED_RELEASE.tree);
+  // Building a successor candidate is deliberately separate from approving
+  // its immutable digests for deployment.
+  assert.notEqual(candidate.sha, APPROVED_RELEASE.sha);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
