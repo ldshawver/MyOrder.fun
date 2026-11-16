@@ -154,65 +154,27 @@ export default function Orders() {
             </div>
           )}
 
-          {/* Desktop table */}
-          <div className="hidden sm:block glass-card rounded-2xl overflow-hidden">
-            <div className="grid grid-cols-[80px_1fr_1fr_120px_100px_100px] gap-0 border-b border-border/40 px-5 py-3">
-              {["Order", "Date", "Customer", "Status", "Payment", "Total"].map(h => (
-                <div key={h} className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">{h}</div>
-              ))}
-            </div>
-            <div className="divide-y divide-border/30">
-              {visibleOrders.map(order => (
-                <Link
-                  key={order.id}
-                  href={`/orders/${order.id}`}
-                  className="grid grid-cols-[80px_1fr_1fr_120px_100px_100px] gap-0 px-5 py-4 hover:bg-white/[0.02] transition-colors cursor-pointer group block"
-                  data-testid={`row-order-${order.id}`}
-                >
-                  <div className="text-sm font-semibold font-mono group-hover:text-primary transition-colors" data-testid={`link-order-${order.id}`}>
-                    #{order.id}
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    {new Date(order.createdAt).toLocaleDateString()}
-                  </div>
-                  <div className="text-sm font-medium truncate pr-4">
-                    {order.customerName || "—"}
-                  </div>
-                  <div>
-                    <StatusBadge status={order.status} />
-                  </div>
-                  <div>
-                    <PaymentBadge status={order.paymentStatus} />
-                  </div>
-                  <div className="text-sm font-semibold font-mono text-right pr-1">
-                    ${order.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </div>
-
-          {/* Mobile card list */}
-          <div className="sm:hidden space-y-3">
+          {/* Compact fulfillment cards: one column on phones, two on tablets, three on wide CSR screens. */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3" data-testid="orders-card-grid">
             {visibleOrders.map(order => (
               <Link
                 key={order.id}
                 href={`/orders/${order.id}`}
-                className="glass-card card-hover-glow rounded-2xl p-4 block"
+                className="glass-card card-hover-glow rounded-2xl p-4 block min-w-0 group"
                 data-testid={`row-order-${order.id}`}
               >
                 <div className="flex items-start justify-between gap-3 mb-3">
                   <div>
-                    <div className="text-sm font-bold font-mono text-primary">#{order.id}</div>
+                    <div className="text-sm font-bold font-mono text-primary group-hover:underline" data-testid={`link-order-${order.id}`}>#{order.id}</div>
                     <div className="text-xs text-muted-foreground mt-0.5">
                       {new Date(order.createdAt).toLocaleDateString()}
                     </div>
                   </div>
-                  <div className="text-base font-bold">${order.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                  <div className="text-base font-bold font-mono">${order.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                 </div>
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium text-foreground/80">{order.customerName || "—"}</div>
-                  <div className="flex gap-2">
+                <div className="flex items-end justify-between gap-3">
+                  <div className="text-sm font-medium text-foreground/80 truncate min-w-0">{order.customerName || "—"}</div>
+                  <div className="flex flex-wrap justify-end gap-2 shrink-0">
                     <StatusBadge status={order.status} />
                     <PaymentBadge status={order.paymentStatus} />
                   </div>

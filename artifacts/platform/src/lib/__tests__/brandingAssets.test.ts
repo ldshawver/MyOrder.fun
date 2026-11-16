@@ -18,6 +18,8 @@ const assets: Record<string, string> = {
   "apple-touch-icon.png": "5ff965d28b2c38bc6da6119760b71602a675c13900f0c0988c3f7e4335605988",
   "pwa-icon-192.png": "9602ddc4a9e8556bc14cf362767dc134f65542d6c2925da8d86db690a9d34d06",
   "pwa-icon-512.png": "f8b5d47ddd482c2dc06ecc2efb4d6393e74cfd7d8fb37215cf768ebce019312f",
+  "branding/lucifer-cruz/fav.png": "11a07eddd7933e1dbd64417b9c60709679863ed97c0b1ad994e65b9ce030a257",
+  "branding/lucifer-cruz/LC-Order_Icon-iOS-Default-1024@1x.png": "11ec8ee31831df386a694e5d4fea4a08d44d9ce8c0a1babb374ae539061ee986",
 };
 
 describe("MyOrder.fun branding assets", () => {
@@ -35,11 +37,13 @@ describe("MyOrder.fun branding assets", () => {
     // The unauthenticated shell is merchant-facing; the authenticated app
     // updates document.title from the tenant/platform branding context.
     expect(html).toContain("<title>Lucifer Cruz</title>");
-    expect(html).toContain('/favicon-32.png');
-    expect(html).toContain('/apple-touch-icon.png');
+    expect(html).toContain('/branding/lucifer-cruz/fav.png?v=11a07edd');
+    expect(html).toContain('/branding/lucifer-cruz/LC-Order_Icon-iOS-Default-1024@1x.png?v=11ec8ee3');
     expect(html).toContain('/manifest.webmanifest');
     expect(manifest.name).toBe("MyOrder.fun");
-    expect(manifest.icons.map((icon: { src: string }) => icon.src)).toEqual(["/pwa-icon-192.png", "/pwa-icon-512.png"]);
+    expect(manifest.icons.map((icon: { src: string }) => icon.src)).toEqual([
+      "/branding/lucifer-cruz/LC-Order_Icon-iOS-Default-1024@1x.png?v=11ec8ee3",
+    ]);
   });
 });
 

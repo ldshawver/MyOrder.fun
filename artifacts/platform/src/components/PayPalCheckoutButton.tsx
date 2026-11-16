@@ -234,7 +234,13 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
         { method: "paypal", tag: "paypal-button", label: "Pay with PayPal", create: () => sdk.createPayPalOneTimePaymentSession(options) },
         { method: "paylater", tag: "paypal-pay-later-button", label: "Pay Later", create: () => sdk.createPayLaterOneTimePaymentSession?.(options) },
         { method: "venmo", tag: "venmo-button", label: "Pay with Venmo", create: () => sdk.createVenmoOneTimePaymentSession?.(options) },
-        { method: "card", tag: "paypal-basic-card-button", label: "Pay with card", create: () => sdk.createPayPalGuestOneTimePaymentSession?.({ ...options, onComplete: () => {}, onWarn: () => setMessage("Please complete the card form in PayPal's secure window.") }) },
+        { method: "card", tag: "paypal-basic-card-button", label: "Pay with card", create: () => sdk.createPayPalGuestOneTimePaymentSession?.({
+          ...options,
+          // v6 guest checkout requires completion handling even though only
+          // onApprove is allowed to initiate the server-verified capture.
+          onComplete: () => setMessage("Card approval completed. Verifying the payment and order status…"),
+          onWarn: () => setMessage("Please complete the card form in PayPal's secure window."),
+        }) },
       ];
       const container = walletContainer.current;
       container?.replaceChildren();
