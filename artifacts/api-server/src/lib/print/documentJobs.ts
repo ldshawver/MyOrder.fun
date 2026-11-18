@@ -27,6 +27,8 @@ export interface ThermalText {
   text: string;
   templateId?: number | null;
   templateVersion?: number | null;
+  /** Open an attached cash drawer after this customer receipt prints. */
+  openCashDrawer?: boolean;
 }
 
 export interface QueueDocumentInput {
@@ -55,7 +57,7 @@ export type QueueDocumentResult =
   | { status: "no-route"; reason: string; job: PrintJob | null };
 
 export async function renderForPrinter(render: DocumentRender, printer: PrintPrinter): Promise<{
-  renderFormat: "text" | "pdf"; renderedText: string; pdfBase64?: string; templateId?: number | null; templateVersion?: number | null;
+  renderFormat: "text" | "pdf"; renderedText: string; pdfBase64?: string; templateId?: number | null; templateVersion?: number | null; openCashDrawer?: boolean;
 }> {
   if (render.kind === "report") {
     if (printerClassOf(printer) !== "full_page") throw new Error("Full-page documents cannot print on a thermal printer");
@@ -67,7 +69,13 @@ export async function renderForPrinter(render: DocumentRender, printer: PrintPri
   const columns = thermalColumns(printer.paperWidth);
   if (render.kind === "thermal-text") {
     const thermal = await render.text(printer, columns);
-    return { renderFormat: "text", renderedText: thermal.text, templateId: thermal.templateId, templateVersion: thermal.templateVersion };
+    return {
+      renderFormat: "text",
+      renderedText: thermal.text,
+      templateId: thermal.templateId,
+      templateVersion: thermal.templateVersion,
+      openCashDrawer: thermal.openCashDrawer,
+    };
   }
   const lines = fitReceiptLines(await render.lines(columns), columns);
   return { renderFormat: "text", renderedText: encodeStoredReceiptText(encodeReceiptEscPos(lines)) };
@@ -118,6 +126,7 @@ export async function queueDocumentPrint(input: QueueDocumentInput): Promise<Que
     templateVersion: rendered.templateVersion ?? input.templateVersion ?? null,
     payloadJson: {
       documentType: input.documentType,
+      ...(rendered.openCashDrawer ? { openCashDrawer: true } : {}),
       routeSource: resolution.source,
       routeId: resolution.routeId,
       contextLocationId: input.locationId,

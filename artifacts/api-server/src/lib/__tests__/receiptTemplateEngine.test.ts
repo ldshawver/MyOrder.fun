@@ -98,6 +98,21 @@ describe("receipt data contract", () => {
     expect(JSON.stringify(data)).not.toContain("Catalog Name A");
   });
 
+  it("uses Alavont names when building staff-ticket data", () => {
+    const data = buildReceiptData(snapshot({}, {
+      lineNameMode: "alavont_only",
+      items: [{
+        catalogItemName: "Catalog Name A",
+        receiptName: "Safe Product A",
+        alavontName: "Alavont Product A",
+        quantity: 2,
+        unitPrice: "10.00",
+        totalPrice: "20.00",
+      }],
+    }));
+    expect(data.items[0]?.displayName).toBe("Alavont Product A");
+  });
+
   it("is deeply immutable", () => {
     const data = buildReceiptData(snapshot());
     expect(Object.isFrozen(data)).toBe(true);

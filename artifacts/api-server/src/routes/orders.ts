@@ -1770,6 +1770,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       id: order.id,
       status: order.status,
       paymentStatus: order.paymentStatus,
+      paymentMethod: order.paymentMethod,
       notes: order.notes,
       subtotal: order.subtotal as string,
       tax: order.tax as string,

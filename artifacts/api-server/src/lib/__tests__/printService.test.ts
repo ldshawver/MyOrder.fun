@@ -117,6 +117,30 @@ describe("print job status integrity", () => {
     expect(updateSets.at(-1)).toMatchObject({ status: "printed" });
   });
 
+  it("pulses only an enabled drawer for a cash customer receipt", async () => {
+    let requestBody: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    });
+    await dispatchReceiptJob({ id: 44, tenantId: 1, locationId: null, retryCount: 0, maxRetries: 1, renderedText: "TEST", renderFormat: "text", payloadJson: { openCashDrawer: true } } as never,
+      { id: 1, tenantId: 1, locationId: null, routingScope: "general", isActive: true, connectionType: "bridge", bridgeUrl: "http://mac.test:3100", bridgePrinterName: "Brightek_POS80", supportsCashDrawer: true } as never);
+    expect(requestBody.openCashDrawer).toBe(true);
+    expect(requestBody.text).toContain("\x1bp\x00\x19\x19");
+  });
+
+  it("does not pulse a drawer that has not been explicitly enabled", async () => {
+    let requestBody: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    });
+    await dispatchReceiptJob({ id: 45, tenantId: 1, locationId: null, retryCount: 0, maxRetries: 1, renderedText: "TEST", renderFormat: "text", payloadJson: { openCashDrawer: true } } as never,
+      { id: 1, tenantId: 1, locationId: null, routingScope: "general", isActive: true, connectionType: "bridge", bridgeUrl: "http://mac.test:3100", bridgePrinterName: "Brightek_POS80", supportsCashDrawer: false } as never);
+    expect(requestBody.openCashDrawer).toBe(false);
+    expect(requestBody.text).not.toContain("\x1bp\x00\x19\x19");
+  });
+
   it("fails jobs stranded in sending instead of resending them", async () => {
     claimRows.rows = [{ id: 7 }];
     const now = new Date("2026-09-29T12:00:00.000Z");

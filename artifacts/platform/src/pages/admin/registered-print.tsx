@@ -28,6 +28,7 @@ type RegisteredPrinter = {
   paperWidth: string;
   printerClass: string;
   copies: number;
+  supportsCashDrawer: boolean;
 };
 type Location = { id: number | null; name: string };
 type AutoPrintSettings = {
@@ -50,6 +51,7 @@ const emptyPrinterForm = {
   bridgeProfileId: "",
   bridgePrinterName: "",
   copies: "1",
+  supportsCashDrawer: false,
 };
 
 export function isAutoPrintPaused(settings: AutoPrintSettings | null) {
@@ -103,6 +105,7 @@ export function printerRequestBody(form: typeof emptyPrinterForm) {
     bridgeProfileId: Number(form.bridgeProfileId),
     bridgePrinterName: form.bridgePrinterName.trim(),
     copies: Number(form.copies),
+    supportsCashDrawer: form.supportsCashDrawer,
     isActive: true,
   };
 }
@@ -216,6 +219,18 @@ export default function RegisteredPrintAdmin({ mode }: { mode: "printers" | "bri
       if (result.printer?.isActive !== isActive)
         throw new Error("Server did not confirm the printer state change");
       return `${printer.name} (#${printer.id}) ${isActive ? "activated" : "deactivated"}`;
+    });
+  }
+
+  function setCashDrawer(printer: RegisteredPrinter, supportsCashDrawer: boolean) {
+    return runAction(`drawer-${printer.id}`, async () => {
+      const result = await expect(api<{ printer: RegisteredPrinter }>(`/api/print/printers/${printer.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ supportsCashDrawer }),
+      }), "Cash drawer setting failed");
+      if (result.printer?.supportsCashDrawer !== supportsCashDrawer)
+        throw new Error("Server did not confirm the cash drawer setting");
+      return `${printer.name} cash drawer ${supportsCashDrawer ? "enabled" : "disabled"}`;
     });
   }
 
@@ -364,6 +379,10 @@ export default function RegisteredPrintAdmin({ mode }: { mode: "printers" | "bri
                 </select>
                 <Input aria-label="Bridge queue name" placeholder="CUPS queue, e.g. Brightek_POS80" value={printerForm.bridgePrinterName} onChange={(e) => setPrinterForm({ ...printerForm, bridgePrinterName: e.target.value })} />
                 <Input aria-label="Copies" inputMode="numeric" value={printerForm.copies} onChange={(e) => setPrinterForm({ ...printerForm, copies: e.target.value })} />
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input type="checkbox" checked={printerForm.supportsCashDrawer} onChange={(e) => setPrinterForm({ ...printerForm, supportsCashDrawer: e.target.checked })} />
+                  Open attached cash drawer for cash receipts
+                </label>
                 <div className="md:col-span-2">
                   <Button size="sm" disabled={busy !== null} onClick={() => void createPrinter()}>Register printer</Button>
                 </div>
@@ -390,6 +409,10 @@ export default function RegisteredPrintAdmin({ mode }: { mode: "printers" | "bri
                       <option value="thank_you">Thank You</option>
                       <option value="report">Reports / Inventory Exports</option>
                     </select>
+                  </label>
+                  <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                    <input type="checkbox" checked={printer.supportsCashDrawer} disabled={busy !== null} onChange={event => void setCashDrawer(printer, event.target.checked)} />
+                    Open attached cash drawer for cash receipts
                   </label>
                 </div>
                 <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void setPrinterActive(printer, !printer.isActive)}>
