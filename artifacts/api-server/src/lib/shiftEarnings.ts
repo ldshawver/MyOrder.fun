@@ -29,7 +29,21 @@ export type ShiftEarningLine = {
   metadata: Record<string, unknown>;
 };
 
-export function calculateShiftEarnings(orders: ShiftEarningOrder[], commissionPercent: 15 | 16 | 17 | 18) {
+export type CommissionPercent = 15 | 16 | 17 | 18;
+
+/** The closeout contract intentionally permits only whole supervisor-selected rates. */
+export function requireCommissionPercent(value: unknown): CommissionPercent {
+  if (value === 15 || value === 16 || value === 17 || value === 18) return value;
+  throw new Error("Commission percentage must be one of 15, 16, 17, or 18");
+}
+
+/**
+ * The canonical commission calculation. All inputs are converted to integer
+ * cents and the percentage is rounded once, half-up, for the whole shift.
+ * Order allocations use largest remainder so their sum always matches it.
+ */
+export function calculateShiftEarnings(orders: ShiftEarningOrder[], selectedCommissionPercent: CommissionPercent) {
+  const commissionPercent = requireCommissionPercent(selectedCommissionPercent);
   let commissionBasis = 0n;
   let customerTips = 0n;
   let csrDelivery = 0n;

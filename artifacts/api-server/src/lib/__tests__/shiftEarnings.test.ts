@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculatePostCloseoutCommissionRecovery, calculateShiftEarnings, refundedCommissionBasisAfterCloseout, type ShiftEarningOrder } from "../shiftEarnings";
+import { calculatePostCloseoutCommissionRecovery, calculateShiftEarnings, refundedCommissionBasisAfterCloseout, requireCommissionPercent, type ShiftEarningOrder } from "../shiftEarnings";
 import { ShiftCloseoutSerializationError, withSerializableRetry } from "../shiftCloseoutFinancials";
 
 const order = (patch: Partial<ShiftEarningOrder> = {}): ShiftEarningOrder => ({
@@ -10,6 +10,16 @@ const order = (patch: Partial<ShiftEarningOrder> = {}): ShiftEarningOrder => ({
 describe("shift earnings", () => {
   it("calculates commission from discounted eligible product sales", () => {
     expect(calculateShiftEarnings([order()], 15)).toMatchObject({ commissionBasis: "80.00", commissionAmount: "12.00", customerTips: "0.00" });
+  });
+  it.each([15, 18] as const)("accepts the supervisor-selected %i%% boundary", rate => {
+    expect(calculateShiftEarnings([order({ lines: [{ ...order().lines[0]!, grossAmount: "1000.00", discountAmount: "0.00" }] })], rate).commissionAmount).toBe(rate === 15 ? "150.00" : "180.00");
+  });
+  it.each([14, 19, 15.5, "16", null])("rejects an invalid commission percentage", rate => {
+    expect(() => requireCommissionPercent(rate)).toThrow(/15, 16, 17, or 18/);
+  });
+  it("excludes tax and delivery fees because only eligible product line snapshots form the basis", () => {
+    const result = calculateShiftEarnings([order({ deliveryFee: "50.00", lines: [{ ...order().lines[0]!, grossAmount: "1000.00", discountAmount: "0.00" }] })], 16);
+    expect(result).toMatchObject({ commissionBasis: "1000.00", commissionAmount: "160.00" });
   });
   it("allocates cent rounding per order without changing the established shift total", () => {
     const orders = [order({ orderId: 2, lines: [{ orderItemId: 20, eligibility: "eligible", grossAmount: "0.03", discountAmount: "0.00", refundedAmount: "0.00" }] }),
