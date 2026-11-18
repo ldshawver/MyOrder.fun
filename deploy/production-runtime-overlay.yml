@@ -15,3 +15,9 @@ services:
   migrate:
     image: ${MYORDER_MIGRATE_IMAGE:?approved Migrator image is required}
     pull_policy: never
+  nginx:
+    # The live reverse-proxy configuration is an operational artifact.  Keep
+    # its existing host source outside the immutable application checkout so a
+    # release archive can neither replace nor delete it.
+    volumes:
+      - /opt/alavont/deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro

@@ -6,6 +6,15 @@ The production Compose project is **`deploy`** and its database volume is
 workflow; do not use Compose project `alavont`, whose database volume is a
 different, uninitialized database.
 
+## Release checkout boundary
+
+The immutable release archive is extracted only to
+`/opt/alavont/releases/<full-sha>`. It must not contain production operational
+paths (`control`, `incoming`, `media`, `quarantine`, `releases`, `shared`,
+`deploy/.env`, or `deploy/backups`). Secrets remain in `/opt/alavont/deploy/.env`;
+print assets and the live nginx configuration remain host-mounted operational
+files. Do not copy, move, reset, or clean those paths as part of release work.
+
 ## Backup, restore, and migration rehearsal
 
 Run this only from a clean release candidate and only with an explicitly named

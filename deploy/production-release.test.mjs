@@ -24,6 +24,7 @@ import {
   PRODUCTION_STEPS,
   PRE_RELEASE_SCHEMA_INVARIANTS,
   assertApprovedImageMetadata,
+  assertReleaseArchiveEntries,
   assertSafePrintAssetArchive,
   assertPreReleaseSchemaInvariantDiagnostics,
   migrationsForRestoredLedger,
@@ -268,7 +269,13 @@ const expectedConfig = {
       image: APPROVED_RELEASE.references.migrate,
       environment: { DATABASE_URL: "postgres://app@db:5432/alavont" },
     },
-    nginx: { ports: ["127.0.0.1:8081:80"] },
+    nginx: {
+      ports: ["127.0.0.1:8081:80"],
+      volumes: [{
+        source: "/opt/alavont/deploy/nginx/nginx.conf",
+        target: "/etc/nginx/nginx.conf",
+      }],
+    },
   },
   volumes: { postgres_data: { name: "deploy_postgres_data" } },
   networks: {
@@ -355,6 +362,28 @@ test("accepts only the approved frozen release identity and immutable release pa
       }),
     /approved immutable candidate/,
   );
+});
+
+test("release archives cannot materialize production operational artifacts", () => {
+  assert.equal(assertReleaseArchiveEntries([
+    "artifacts/api-server/dist/index.mjs",
+    "deploy/docker-compose.yml",
+    "MYORDER-RELEASE-IDENTITY.json",
+  ]), true);
+  for (const entry of [
+    "incoming/customer-upload.tar.gz",
+    "media/receipt-logo.png",
+    "shared/print-assets/logo.png",
+    "control/tooling/production-release.mjs",
+    "releases/previous/MYORDER-RELEASE-IDENTITY.json",
+    "quarantine/item",
+    "deploy/.env",
+    "deploy/backups/dump.sql",
+    "ssh-keyscan.err",
+    "udo apt-get update",
+    "../deploy/.env",
+  ])
+    assert.throws(() => assertReleaseArchiveEntries([entry]), /operational artifact|unsafe path/);
 });
 
 test("production preflight is separately authorized and cannot reach mutation steps", () => {
@@ -766,6 +795,9 @@ test("production Compose is pinned to the production database, release images, v
   wrongDb.services.api.environment.DATABASE_URL =
     "postgres://app@db:5432/myorder_staging";
   assert.throws(() => assertProductionConfig(wrongDb), /production database/);
+  const missingRuntimeNginx = structuredClone(expectedConfig);
+  missingRuntimeNginx.services.nginx.volumes = [];
+  assert.throws(() => assertProductionConfig(missingRuntimeNginx), /nginx runtime configuration mount/);
   const wrongVolume = structuredClone(expectedConfig);
   wrongVolume.volumes.postgres_data.name = "myorder-staging_postgres_data";
   assert.throws(() => assertProductionConfig(wrongVolume), /volume/);
@@ -1314,6 +1346,7 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.match(runner, /destination-content-mismatch/);
   assert.doesNotMatch(runner, /rsync|--delete/);
   assert.match(runner, /\/opt\/alavont\/shared\/print-assets/);
+  assert.match(runner, /\/opt\/alavont\/deploy\/nginx\/nginx\.conf/);
   assert.match(workflow, /production-release\.mjs/);
   assert.ok(workflow.includes('git merge-base --is-ancestor "${RELEASE_SHA}" "${TOOLING_SHA}"'));
   assert.ok(workflow.includes('git show "${GITHUB_SHA}:artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts"'));
