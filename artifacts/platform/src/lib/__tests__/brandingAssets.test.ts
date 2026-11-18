@@ -20,6 +20,8 @@ const assets: Record<string, string> = {
   "pwa-icon-512.png": "f8b5d47ddd482c2dc06ecc2efb4d6393e74cfd7d8fb37215cf768ebce019312f",
   "branding/lucifer-cruz/fav.png": "11a07eddd7933e1dbd64417b9c60709679863ed97c0b1ad994e65b9ce030a257",
   "branding/lucifer-cruz/LC-Order_Icon-iOS-Default-1024@1x.png": "11ec8ee31831df386a694e5d4fea4a08d44d9ce8c0a1babb374ae539061ee986",
+  "branding/lucifer-cruz/lc-order-192.png": "c598afe009df849b13dbd85dd705fdf9f8fcd309885b75e8e7e920182341ffd4",
+  "branding/lucifer-cruz/lc-order-512.png": "f867e1614c7490b32ec4b9b0f8a8452003d1c99d6a618c2f9f08ff3df2eb64f2",
 };
 
 describe("MyOrder.fun branding assets", () => {
@@ -39,7 +41,7 @@ describe("MyOrder.fun branding assets", () => {
     expect(html).toContain("<title>Lucifer Cruz</title>");
     expect(html).toContain('/branding/lucifer-cruz/fav.png?v=11a07edd');
     expect(html).toContain('/branding/lucifer-cruz/LC-Order_Icon-iOS-Default-1024@1x.png?v=11ec8ee3');
-    expect(html).toContain('/manifest.webmanifest');
+    expect(html).toContain('/api/public/manifest.webmanifest?v=2');
     expect(manifest.name).toBe("MyOrder.fun");
     expect(manifest.icons.map((icon: { src: string }) => icon.src)).toEqual([
       "/branding/lucifer-cruz/LC-Order_Icon-iOS-Default-1024@1x.png?v=11ec8ee3",

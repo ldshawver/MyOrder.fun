@@ -16,6 +16,8 @@ import { resolveDocumentPrinter, type RouteSource } from "./printRouting";
 import { fitReceiptLines, type ReceiptLine } from "./receiptTemplateRenderer";
 import { encodeReceiptEscPos } from "./receiptEncoders";
 import { renderReportPdf, type ReportDocument } from "./pdfReport";
+import { composeLuciferReceiptPdf, receiptPaperWidth } from "./receiptLogo";
+import { isBrightekPos80 } from "../printFallback";
 
 export type DocumentRender =
   | { kind: "thermal"; lines: (columns: number) => ReceiptLine[] | Promise<ReceiptLine[]> }
@@ -25,6 +27,7 @@ export type DocumentRender =
 
 export interface ThermalText {
   text: string;
+  plainText?: string;
   templateId?: number | null;
   templateVersion?: number | null;
   /** Open an attached cash drawer after this customer receipt prints. */
@@ -45,6 +48,8 @@ export interface QueueDocumentInput {
   /** Non-sensitive metadata kept on the job (never document contents). */
   metadata?: Record<string, unknown>;
   legacyFallback?: () => Promise<PrintPrinter | null>;
+  /** Set only after resolving the order tenant's Lucifer Cruz branding. */
+  withLogo?: boolean;
   /** Record a failed job when nothing is routed (automatic prints), default true. */
   recordNoRoute?: boolean;
   templateId?: number | null;
@@ -57,7 +62,7 @@ export type QueueDocumentResult =
   | { status: "no-route"; reason: string; job: PrintJob | null };
 
 export async function renderForPrinter(render: DocumentRender, printer: PrintPrinter): Promise<{
-  renderFormat: "text" | "pdf"; renderedText: string; pdfBase64?: string; templateId?: number | null; templateVersion?: number | null; openCashDrawer?: boolean;
+  renderFormat: "text" | "pdf"; renderedText: string; plainText?: string; pdfBase64?: string; templateId?: number | null; templateVersion?: number | null; openCashDrawer?: boolean;
 }> {
   if (render.kind === "report") {
     if (printerClassOf(printer) !== "full_page") throw new Error("Full-page documents cannot print on a thermal printer");
@@ -72,6 +77,7 @@ export async function renderForPrinter(render: DocumentRender, printer: PrintPri
     return {
       renderFormat: "text",
       renderedText: thermal.text,
+      plainText: thermal.plainText,
       templateId: thermal.templateId,
       templateVersion: thermal.templateVersion,
       openCashDrawer: thermal.openCashDrawer,
@@ -110,7 +116,13 @@ export async function queueDocumentPrint(input: QueueDocumentInput): Promise<Que
     return { status: "no-route", reason: resolution.reason, job: job ?? null };
   }
 
-  const rendered = await renderForPrinter(input.render, resolution.printer);
+  let rendered = await renderForPrinter(input.render, resolution.printer);
+  if (input.withLogo === true && input.documentType === "ORDER_RECEIPT" &&
+    rendered.renderFormat === "text" && rendered.plainText &&
+    resolution.printer.connectionType !== "ethernet_direct" && isBrightekPos80(resolution.printer)) {
+    const pdf = await composeLuciferReceiptPdf(rendered.plainText, receiptPaperWidth(thermalColumns(resolution.printer.paperWidth)));
+    rendered = { ...rendered, renderFormat: "pdf", pdfBase64: Buffer.from(pdf).toString("base64") };
+  }
   // The job's scope is the printer's scope, so the dispatch guard
   // (printerMatchesJobScope) keeps holding on every attempt and retry; the
   // routing location is kept as metadata.

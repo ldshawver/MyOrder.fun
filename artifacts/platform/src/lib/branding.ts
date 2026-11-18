@@ -3,7 +3,7 @@ export const PLATFORM_BRAND = {
   legalName: "MyOrder.fun",
   logoUrl: "/myorder-logo-header.webp",
   mobileLogoUrl: "/myorder-logo-mobile.png",
-  faviconUrl: "/branding/lucifer-cruz/fav.png?v=11a07edd",
+  faviconUrl: "/favicon-32.png",
   primaryColor: "#0878f9",
   secondaryColor: "#062d73",
 } as const;
@@ -41,6 +41,7 @@ export type ResolvedBranding = {
 };
 
 export type BrandingInput = {
+  installedApp?: { name: string; shortName: string; iconUrl: string };
   customer?: Partial<CustomerBranding> | null;
   supplier?: Partial<SupplierBranding> | null;
 };
