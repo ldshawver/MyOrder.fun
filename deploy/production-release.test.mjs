@@ -640,6 +640,44 @@ test("print asset preservation enforces source hashes and immutable destination 
   }
 });
 
+test("print asset preservation accepts only validated profile images and staging pairs", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "myorder-profile-print-assets-"));
+  try {
+    const source = path.join(root, "source");
+    const destination = path.join(root, "destination");
+    const id = "123e4567-e89b-12d3-a456-426614174000";
+    mkdirSync(path.join(source, "profile-images", ".staging"), { recursive: true });
+    mkdirSync(destination);
+    const webp = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x04, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20]);
+    writeFileSync(path.join(source, "profile-images", `${id}.webp`), webp);
+    writeFileSync(path.join(source, "profile-images", ".staging", `${id}.webp`), webp);
+    writeFileSync(
+      path.join(source, "profile-images", ".staging", `${id}.meta`),
+      JSON.stringify({ emailDigest: "a".repeat(64), expiresAt: 1 }),
+    );
+    assert.deepEqual(preservePrintAssetTree(source, destination), { fileCount: 3 });
+    writeFileSync(path.join(source, "profile-images", "not-a-profile.webp"), webp);
+    assert.throws(
+      () => preservePrintAssetTree(source, destination),
+      /Print asset preservation check failed: source-file-path/,
+    );
+    rmSync(path.join(source, "profile-images", "not-a-profile.webp"));
+    writeFileSync(path.join(source, "profile-images", `${id}.webp`), "not-webp");
+    assert.throws(
+      () => preservePrintAssetTree(source, destination),
+      /Print asset preservation check failed: profile-webp-content/,
+    );
+    writeFileSync(path.join(source, "profile-images", `${id}.webp`), webp);
+    writeFileSync(path.join(source, "profile-images", ".staging", `${id}.meta`), "{}");
+    assert.throws(
+      () => preservePrintAssetTree(source, destination),
+      /Print asset preservation check failed: profile-staging-metadata/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("isolated restore accepts each exact 0077-0081 predecessor, including production's 56-row baseline", () => {
   for (const ledgerRows of [51, 52, 53, 54, 55, 56]) {
     const passing = PRE_RELEASE_SCHEMA_INVARIANTS.map(({ id, expected }) => ({
@@ -1142,15 +1180,15 @@ test("production rollback baseline matches the verified current production image
   assert.equal(MIGRATION_0083.timestamp, "1793408400000");
   assert.equal(MIGRATION_0083.sha256, "57ea3f4656f845d903ff698c4f9143ac2f14ffef1f96d737fb6c66557abd50a4");
   assert.equal(
-    mayRestoreRollbackApi({ apiStopAttempted: true, migrationStarted: false }),
+    mayRestoreRollbackApi({ apiStopAttempted: true, migrationExecutionStarted: false }),
     true,
   );
   assert.equal(
-    mayRestoreRollbackApi({ apiStopAttempted: true, migrationStarted: true }),
+    mayRestoreRollbackApi({ apiStopAttempted: true, migrationExecutionStarted: true }),
     false,
   );
   assert.equal(
-    mayRestoreRollbackApi({ apiStopAttempted: false, migrationStarted: false }),
+    mayRestoreRollbackApi({ apiStopAttempted: false, migrationExecutionStarted: false }),
     false,
   );
 });

@@ -587,8 +587,8 @@ export async function executeProductionSequence(actions) {
   }
 }
 
-export function mayRestoreRollbackApi({ apiStopAttempted, migrationStarted }) {
-  return apiStopAttempted === true && migrationStarted === false;
+export function mayRestoreRollbackApi({ apiStopAttempted, migrationExecutionStarted }) {
+  return apiStopAttempted === true && migrationExecutionStarted === false;
 }
 
 export function decryptProductionPayPalSettings(ciphertext, rawKey) {
@@ -1262,6 +1262,40 @@ export function inspectAndExtractPrintAssetArchive(archive, destination) {
 }
 
 export function preservePrintAssetTree(source, destination) {
+  const maxProfileImageBytes = 3 * 1024 * 1024;
+  const profileImage = /^profile-images\/([0-9a-f-]{36})\.webp$/i;
+  const profileStaging = /^profile-images\/\.staging\/([0-9a-f-]{36})\.(webp|meta)$/i;
+  const isWebp = (bytes) =>
+    bytes.length >= 12 &&
+    bytes.subarray(0, 4).equals(Buffer.from("RIFF")) &&
+    bytes.subarray(8, 12).equals(Buffer.from("WEBP"));
+  const assertProfileAsset = (relative, bytes) => {
+    const profile = profileImage.exec(relative);
+    const staging = profileStaging.exec(relative);
+    if (!profile && !staging) return false;
+    if (bytes.length > maxProfileImageBytes)
+      throw printAssetPreservationFailure("profile-file-size");
+    const extension = staging?.[2] ?? "webp";
+    if (extension === "webp") {
+      if (!isWebp(bytes))
+        throw printAssetPreservationFailure("profile-webp-content");
+      return true;
+    }
+    if (bytes.length > 4096)
+      throw printAssetPreservationFailure("profile-staging-metadata-size");
+    let metadata;
+    try { metadata = JSON.parse(bytes.toString("utf8")); }
+    catch { throw printAssetPreservationFailure("profile-staging-metadata"); }
+    if (
+      !metadata ||
+      Object.keys(metadata).length !== 2 ||
+      !/^[a-f0-9]{64}$/i.test(metadata.emailDigest ?? "") ||
+      !Number.isSafeInteger(metadata.expiresAt) ||
+      metadata.expiresAt <= 0
+    )
+      throw printAssetPreservationFailure("profile-staging-metadata");
+    return true;
+  };
   let fileCount = 0;
   const walk = (directory) => {
     let entries;
@@ -1286,16 +1320,19 @@ export function preservePrintAssetTree(source, destination) {
       }
       const relative = path.relative(source, sourcePath).split(path.sep).join("/");
       const match = /^(\d+)\/([a-f0-9]{64})\.(png|jpg|webp)$/.exec(relative);
-      if (!match)
-        throw printAssetPreservationFailure("source-file-path");
       let bytes;
       try {
         bytes = readFileSync(sourcePath);
       } catch {
         throw printAssetPreservationFailure("source-file-readable");
       }
-      if (createHash("sha256").update(bytes).digest("hex") !== match[2])
-        throw printAssetPreservationFailure("source-content-hash");
+      const isProfileAsset = assertProfileAsset(relative, bytes);
+      if (!isProfileAsset) {
+        if (!match)
+          throw printAssetPreservationFailure("source-file-path");
+        if (createHash("sha256").update(bytes).digest("hex") !== match[2])
+          throw printAssetPreservationFailure("source-content-hash");
+      }
       const target = path.resolve(destination, relative);
       if (!target.startsWith(`${path.resolve(destination)}${path.sep}`))
         throw printAssetPreservationFailure("destination-path");
@@ -2313,7 +2350,9 @@ async function main() {
   let containerBaseline;
   let migrationState = "unknown";
   let apiStopAttempted = false;
-  let migrationStarted = false;
+  // Only actual migration-container execution disables pre-start rollback.
+  // An already-applied lineage is a no-op and remains safely rollbackable.
+  let migrationExecutionStarted = false;
   const actions = {
     "verify-release-images": async () => verifyApprovedReleaseImages(),
     validate: async () => {
@@ -2333,7 +2372,6 @@ async function main() {
       });
       if (runtimeAlreadyAdvanced && migrationState !== "applied")
         throw new Error("Approved runtime image cannot be resumed before the exact 58-row migration lineage is applied");
-      if (migrationState === "applied") migrationStarted = true;
     },
     "verify-writer-inventory": async () => {
       const current = verifyWriterSet(compose);
@@ -2391,7 +2429,7 @@ async function main() {
         console.log("production resume: exact 58-row migration lineage is already applied");
         return;
       }
-      migrationStarted = true;
+      migrationExecutionStarted = true;
       run("docker", [...compose.args, "run", "--pull", "never", "--rm", "--no-deps", "migrate"], {
         env: releaseComposeEnvironment(),
       });
@@ -2569,7 +2607,7 @@ async function main() {
     await executeProductionSequence(actions);
   } catch (error) {
     if (
-      mayRestoreRollbackApi({ apiStopAttempted, migrationStarted }) &&
+      mayRestoreRollbackApi({ apiStopAttempted, migrationExecutionStarted }) &&
       containerBaseline?.get("api")?.id
     ) {
       const priorApiId = containerBaseline.get("api").id;
