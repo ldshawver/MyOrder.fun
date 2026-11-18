@@ -747,7 +747,9 @@ export async function enqueueOrderPrintJobs(order: {
   if (controls.autoPrintOrders) {
     const { loadReceiptData } = await import("./print/receiptPipeline");
     const { buildExpoTicket, buildWorkTicket } = await import("./print/documents");
-    const ticketData = await loadReceiptData(tenantId, order.id);
+    // Customer receipts use the configured safe-name mode. Staff tickets must
+    // always show the Alavont product identity needed for fulfillment.
+    const ticketData = await loadReceiptData(tenantId, order.id, "alavont_only");
     const expoFallback = routeContext.locationId && routeContext.shiftId
       ? () => resolveExpoPrinter({ tenantId, locationId: routeContext.locationId!, shiftId: routeContext.shiftId! })
       : undefined;
