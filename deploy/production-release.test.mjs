@@ -1087,12 +1087,14 @@ test("missing production authorization is rejected by the executable entrypoint"
 });
 
 test("production rollback baseline matches the verified current production images", () => {
-  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:42c4f22f20759a1409666cc1b7c509782f9367130ca890ef5fa8d11d023ca80a");
-  assert.equal(PRODUCTION_BASELINE.apiRevision, "844c2ef0110fad28fd006f5891c7b00d5f85cce1");
-  assert.equal(PRODUCTION_BASELINE.apiReference, "ghcr.io/ldshawver/myorder-api@sha256:42c4f22f20759a1409666cc1b7c509782f9367130ca890ef5fa8d11d023ca80a");
-  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:b030e7ddea466bc8499c6f1e5fb793a239b62e074c969b1ef9e9bc85453fb578");
-  assert.equal(PRODUCTION_BASELINE.platformRevision, "844c2ef0110fad28fd006f5891c7b00d5f85cce1");
-  assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:b030e7ddea466bc8499c6f1e5fb793a239b62e074c969b1ef9e9bc85453fb578");
+  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:98d3ad0bb355fa69ff431ba7be41ba764fb975c2332d99f5e7a5df95e9a40554");
+  assert.equal(PRODUCTION_BASELINE.apiRevision, "profile-photo-20261116");
+  assert.equal(PRODUCTION_BASELINE.apiReference, "myorder-api:profile-photo-20261116");
+  assert.equal(PRODUCTION_BASELINE.apiProvenance, "local-image-id-and-runtime-label-verified; registry-and-source-sha-unavailable");
+  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:6c46c4781715efcf5804a0a74cff60b2de4c599e9240e6ea5b2429a5127ad8e2");
+  assert.equal(PRODUCTION_BASELINE.platformRevision, "profile-photo-20261116");
+  assert.equal(PRODUCTION_BASELINE.platformReference, "myorder-platform:profile-photo-20261116");
+  assert.equal(PRODUCTION_BASELINE.platformProvenance, "local-image-id-and-runtime-label-verified; registry-and-source-sha-unavailable");
   assert.notEqual(PRODUCTION_BASELINE.apiImage, APPROVED_RELEASE.manifests.api);
   assert.notEqual(PRODUCTION_BASELINE.apiRevision, APPROVED_RELEASE.revisions.api);
   assert.notEqual(PRODUCTION_BASELINE.platformImage, APPROVED_RELEASE.manifests.platform);
