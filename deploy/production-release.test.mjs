@@ -44,6 +44,7 @@ import {
   mayRestoreRollbackApi,
   preReleaseSchemaDiagnosticSql,
   preservePrintAssetTree,
+  hasExactPersistentPrintAssetMount,
   requestLoopbackJsonWithHost,
   readSmokeComposeServiceInventory,
   readSmokeRecentServiceLogs,
@@ -685,6 +686,24 @@ test("profile-image preservation rejects unknown paths, malformed content and un
       assert.throws(() => preservePrintAssetTree(source, destination), new RegExp(error));
     } finally { rmSync(root, { recursive: true, force: true }); }
   }
+});
+
+test("persistent print-asset mount identity is exact, writable and unambiguous", () => {
+  const destination = "/opt/alavont/shared/print-assets";
+  const exact = {
+    Mounts: [{
+      Type: "bind",
+      Source: destination,
+      Destination: "/var/lib/myorder/print-assets",
+      RW: true,
+    }],
+  };
+  assert.equal(hasExactPersistentPrintAssetMount(exact, destination), true);
+  assert.equal(hasExactPersistentPrintAssetMount({ Mounts: [] }, destination), false);
+  assert.equal(hasExactPersistentPrintAssetMount({ Mounts: [{ ...exact.Mounts[0], RW: false }] }, destination), false);
+  assert.equal(hasExactPersistentPrintAssetMount({ Mounts: [{ ...exact.Mounts[0], Source: "/tmp/print-assets" }] }, destination), false);
+  assert.equal(hasExactPersistentPrintAssetMount({ Mounts: [{ ...exact.Mounts[0], Destination: "/tmp/print-assets" }] }, destination), false);
+  assert.equal(hasExactPersistentPrintAssetMount({ Mounts: [exact.Mounts[0], exact.Mounts[0]] }, destination), false);
 });
 
 test("already-applied lineage does not disable recovery before a replacement or migration starts", async () => {

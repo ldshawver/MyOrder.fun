@@ -1349,6 +1349,18 @@ export function preservePrintAssetTree(source, destination) {
   return Object.freeze({ fileCount });
 }
 
+export function hasExactPersistentPrintAssetMount(inspectedApi, destination) {
+  const expectedSource = path.resolve(destination);
+  const matches = (inspectedApi?.Mounts ?? []).filter(
+    (mount) =>
+      mount?.Type === "bind" &&
+      mount?.Destination === "/var/lib/myorder/print-assets" &&
+      path.resolve(String(mount.Source ?? "")) === expectedSource &&
+      mount?.RW === true,
+  );
+  return matches.length === 1;
+}
+
 function safePrintAssetsCopy(apiId, sharedRoot) {
   if (!apiId)
     throw new Error(
@@ -1359,12 +1371,18 @@ function safePrintAssetsCopy(apiId, sharedRoot) {
     assertRealFilesystemPath(destination, "directory");
   mkdirSync(destination, { recursive: true, mode: 0o750 });
   const temp = path.join(sharedRoot, `.print-assets-import-${process.pid}`);
+  const validation = path.join(sharedRoot, `.print-assets-validation-${process.pid}`);
   const archive = path.join(sharedRoot, `.print-assets-import-${process.pid}.tar`);
   if (existsSync(temp))
     throw new Error("Print-asset import temporary path already exists");
+  if (existsSync(validation))
+    throw new Error("Print-asset validation temporary path already exists");
   if (existsSync(archive))
     throw new Error("Print-asset import archive already exists");
   mkdirSync(temp, { mode: 0o700 });
+  const inspectedApi = JSON.parse(run("docker", ["inspect", apiId]))[0];
+  const alreadyPersistent = hasExactPersistentPrintAssetMount(inspectedApi, destination);
+  if (alreadyPersistent) mkdirSync(validation, { mode: 0o700 });
   const archiveFd = openSync(archive, "wx", 0o600);
   try {
     const copied = spawnSync(
@@ -1383,10 +1401,14 @@ function safePrintAssetsCopy(apiId, sharedRoot) {
       throw printAssetPreservationFailure("container-copy");
     }
     inspectAndExtractPrintAssetArchive(archive, temp);
-    preservePrintAssetTree(temp, destination);
+    // An exact verified bind mount means the container copy came from the
+    // destination itself. Validate it through a private copy without trying
+    // to rewrite app-owned profile directories on the host.
+    preservePrintAssetTree(temp, alreadyPersistent ? validation : destination);
   } finally {
     try { closeSync(archiveFd); } catch {}
     rmSync(temp, { recursive: true, force: true });
+    rmSync(validation, { recursive: true, force: true });
     rmSync(archive, { force: true });
   }
 }
