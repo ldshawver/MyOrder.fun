@@ -587,8 +587,8 @@ export async function executeProductionSequence(actions) {
   }
 }
 
-export function mayRestoreRollbackApi({ apiStopAttempted, migrationStarted }) {
-  return apiStopAttempted === true && migrationStarted === false;
+export function mayRestoreRollbackApi({ apiStopAttempted, migrationStarted, replacementStarted = false }) {
+  return apiStopAttempted === true && migrationStarted === false && replacementStarted === false;
 }
 
 export function decryptProductionPayPalSettings(ciphertext, rawKey) {
@@ -1286,7 +1286,10 @@ export function preservePrintAssetTree(source, destination) {
       }
       const relative = path.relative(source, sourcePath).split(path.sep).join("/");
       const match = /^(\d+)\/([a-f0-9]{64})\.(png|jpg|webp)$/.exec(relative);
-      if (!match)
+      // Profile uploads share PRINT_ASSET_DIR but use server-generated UUIDs,
+      // rather than content-addressed print-asset filenames.
+      const profile = /^profile-images\/(\.staging\/)?[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.(webp|meta)$/.exec(relative);
+      if (!match && (!profile || (profile[2] === "meta" && !profile[1])))
         throw printAssetPreservationFailure("source-file-path");
       let bytes;
       try {
@@ -1294,8 +1297,24 @@ export function preservePrintAssetTree(source, destination) {
       } catch {
         throw printAssetPreservationFailure("source-file-readable");
       }
-      if (createHash("sha256").update(bytes).digest("hex") !== match[2])
+      if (match && createHash("sha256").update(bytes).digest("hex") !== match[2])
         throw printAssetPreservationFailure("source-content-hash");
+      if (profile?.[2] === "webp" && (
+        bytes.length < 12 || bytes.length > 3 * 1024 * 1024 ||
+        bytes.toString("ascii", 0, 4) !== "RIFF" ||
+        bytes.toString("ascii", 8, 12) !== "WEBP" ||
+        bytes.readUInt32LE(4) !== bytes.length - 8
+      )) throw printAssetPreservationFailure("source-profile-content");
+      if (profile?.[2] === "meta") {
+        let metadata;
+        try { metadata = bytes.length <= 1024 ? JSON.parse(bytes.toString("utf8")) : null; }
+        catch { throw printAssetPreservationFailure("source-profile-metadata"); }
+        if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) ||
+          Object.keys(metadata).sort().join(",") !== "emailDigest,expiresAt" ||
+          !/^[a-f0-9]{64}$/.test(metadata.emailDigest) ||
+          !Number.isSafeInteger(metadata.expiresAt) || metadata.expiresAt <= 0)
+          throw printAssetPreservationFailure("source-profile-metadata");
+      }
       const target = path.resolve(destination, relative);
       if (!target.startsWith(`${path.resolve(destination)}${path.sep}`))
         throw printAssetPreservationFailure("destination-path");
@@ -1306,9 +1325,9 @@ export function preservePrintAssetTree(source, destination) {
           if (parentStat.isSymbolicLink() || !parentStat.isDirectory())
             throw printAssetPreservationFailure("destination-entry-type");
         } else {
-          mkdirSync(parent, { recursive: true, mode: 0o750 });
-          assertRealFilesystemPath(parent, "directory");
+          mkdirSync(parent, { recursive: true, mode: profile ? 0o700 : 0o750 });
         }
+        assertRealFilesystemPath(parent, "directory");
         if (existsSync(target)) {
           const targetStat = lstatSync(target);
           if (targetStat.isSymbolicLink() || !targetStat.isFile())
@@ -1316,7 +1335,7 @@ export function preservePrintAssetTree(source, destination) {
           if (!readFileSync(target).equals(bytes))
             throw printAssetPreservationFailure("destination-content-mismatch");
         } else {
-          writeFileSync(target, bytes, { flag: "wx", mode: 0o640 });
+          writeFileSync(target, bytes, { flag: "wx", mode: profile ? 0o600 : 0o640 });
         }
       } catch (error) {
         if (error instanceof Error && error.message.startsWith("Print asset preservation check failed:"))
@@ -2314,6 +2333,7 @@ async function main() {
   let migrationState = "unknown";
   let apiStopAttempted = false;
   let migrationStarted = false;
+  let replacementStarted = false;
   const actions = {
     "verify-release-images": async () => verifyApprovedReleaseImages(),
     validate: async () => {
@@ -2333,7 +2353,6 @@ async function main() {
       });
       if (runtimeAlreadyAdvanced && migrationState !== "applied")
         throw new Error("Approved runtime image cannot be resumed before the exact 58-row migration lineage is applied");
-      if (migrationState === "applied") migrationStarted = true;
     },
     "verify-writer-inventory": async () => {
       const current = verifyWriterSet(compose);
@@ -2397,10 +2416,12 @@ async function main() {
       });
     },
     "verify-migration": async () => verifyMigration(compose),
-    "start-api": async () =>
-      run("docker", [...compose.args, "up", "--pull", "never", "--no-build", "-d", "--no-deps", "api"], {
+    "start-api": async () => {
+      replacementStarted = true;
+      return run("docker", [...compose.args, "up", "--pull", "never", "--no-build", "-d", "--no-deps", "api"], {
         env: releaseComposeEnvironment(),
-      }),
+      });
+    },
     "verify-api": async () => waitForApiContainer(compose, sha),
     "start-platform-proxy": async () =>
       run(
@@ -2569,7 +2590,7 @@ async function main() {
     await executeProductionSequence(actions);
   } catch (error) {
     if (
-      mayRestoreRollbackApi({ apiStopAttempted, migrationStarted }) &&
+      mayRestoreRollbackApi({ apiStopAttempted, migrationStarted, replacementStarted }) &&
       containerBaseline?.get("api")?.id
     ) {
       const priorApiId = containerBaseline.get("api").id;

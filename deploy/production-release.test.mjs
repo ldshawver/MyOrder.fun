@@ -640,6 +640,69 @@ test("print asset preservation enforces source hashes and immutable destination 
   }
 });
 
+test("profile-image preservation keeps UUID WebP uploads and validated temporary metadata", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "myorder-profile-assets-"));
+  try {
+    const source = path.join(root, "source");
+    const destination = path.join(root, "destination");
+    const id = "9baf49fb-bbc9-47a4-8a60-27ecf8c56592";
+    mkdirSync(path.join(source, "profile-images", ".staging"), { recursive: true });
+    mkdirSync(destination);
+    const webp = Buffer.from("RIFF\x04\x00\x00\x00WEBP", "binary");
+    const final = path.join("profile-images", `${id}.webp`);
+    const temporary = path.join("profile-images", ".staging", `${id}.webp`);
+    const metadata = path.join("profile-images", ".staging", `${id}.meta`);
+    writeFileSync(path.join(source, final), webp);
+    writeFileSync(path.join(source, temporary), webp);
+    writeFileSync(path.join(source, metadata), JSON.stringify({ emailDigest: "a".repeat(64), expiresAt: 1795000000000 }));
+    assert.deepEqual(preservePrintAssetTree(source, destination), { fileCount: 3 });
+    assert.deepEqual(preservePrintAssetTree(source, destination), { fileCount: 3 });
+    for (const file of [final, temporary, metadata])
+      assert.deepEqual(readFileSync(path.join(destination, file)), readFileSync(path.join(source, file)));
+    assert.equal(statSync(path.join(destination, metadata)).mode & 0o777, 0o600);
+    writeFileSync(path.join(destination, final), "changed");
+    assert.throws(() => preservePrintAssetTree(source, destination), /destination-content-mismatch/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("profile-image preservation rejects unknown paths, malformed content and unsafe metadata", () => {
+  const id = "9baf49fb-bbc9-47a4-8a60-27ecf8c56592";
+  for (const [relative, bytes, error] of [
+    ["profile-images/not-a-uuid.webp", "RIFF", "source-file-path"],
+    [`profile-images/${id}.meta`, "{}", "source-file-path"],
+    [`profile-images/${id}.webp`, "not-webp", "source-profile-content"],
+    [`profile-images/.staging/${id}.meta`, "not-json", "source-profile-metadata"],
+    [`profile-images/.staging/${id}.meta`, JSON.stringify({ emailDigest: "email@example.test", expiresAt: 100 }), "source-profile-metadata"],
+    [`profile-images/.staging/${id}.meta`, JSON.stringify({ emailDigest: "a".repeat(64), expiresAt: 100, extra: true }), "source-profile-metadata"],
+  ]) {
+    const root = mkdtempSync(path.join(tmpdir(), "myorder-profile-unsafe-"));
+    try {
+      const source = path.join(root, "source");
+      const destination = path.join(root, "destination");
+      mkdirSync(path.dirname(path.join(source, relative)), { recursive: true });
+      mkdirSync(destination);
+      writeFileSync(path.join(source, relative), bytes);
+      assert.throws(() => preservePrintAssetTree(source, destination), new RegExp(error));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test("already-applied lineage does not disable recovery before a replacement or migration starts", async () => {
+  const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
+  const lineage = controller.slice(controller.indexOf('"validate-lineage": async'), controller.indexOf('"verify-writer-inventory": async'));
+  assert.doesNotMatch(lineage, /migrationStarted\s*=\s*true/);
+  let apiStopAttempted = false;
+  const actions = Object.fromEntries(PRODUCTION_STEPS.map(step => [step, async () => {
+    if (step === "stop-writers") apiStopAttempted = true;
+    if (step === "verify-writers-stopped") throw new Error("asset validation failed");
+  }]));
+  await assert.rejects(executeProductionSequence(actions), /asset validation failed/);
+  assert.equal(mayRestoreRollbackApi({ apiStopAttempted, migrationStarted: false, replacementStarted: false }), true);
+  assert.equal(mayRestoreRollbackApi({ apiStopAttempted, migrationStarted: false, replacementStarted: true }), false);
+  assert.equal(mayRestoreRollbackApi({ apiStopAttempted, migrationStarted: true, replacementStarted: false }), false);
+  assert.match(controller, /replacementStarted = true;\s*return run\("docker"/);
+});
+
 test("isolated restore accepts each exact 0077-0081 predecessor, including production's 56-row baseline", () => {
   for (const ledgerRows of [51, 52, 53, 54, 55, 56]) {
     const passing = PRE_RELEASE_SCHEMA_INVARIANTS.map(({ id, expected }) => ({
