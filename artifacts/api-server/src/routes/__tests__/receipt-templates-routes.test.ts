@@ -366,6 +366,7 @@ describe("automatic and reprint receipts share one path (source contract)", () =
     const receiptBranch = printService.slice(printService.indexOf("// ── Receipt, expo and work tickets"), printService.indexOf("// ── Label ──"));
     expect(receiptBranch).toContain("renderAutomaticReceipt(tenantId, order.id, printOrder, columns)");
     expect(receiptBranch).toContain('documentType: "ORDER_RECEIPT"');
+    expect(receiptBranch).toContain('loadReceiptData(tenantId, order.id, "alavont_only")');
     expect(receiptBranch).not.toContain("renderCustomerReceipt(printOrder)");
   });
 

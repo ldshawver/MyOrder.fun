@@ -42,6 +42,7 @@ export async function autoReceiptPrint(orderId: number): Promise<void> {
       id: order.id,
       status: order.status,
       paymentStatus: order.paymentStatus,
+      paymentMethod: order.paymentMethod,
       notes: order.notes,
       subtotal: String(order.subtotal),
       tax: String(order.tax),

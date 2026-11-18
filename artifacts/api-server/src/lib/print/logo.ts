@@ -1,7 +1,6 @@
 import { centerText } from "./formatter";
 
 const PRIMARY = "MYORDER.FUN";
-const TAGLINE = "SECURE COMMERCE";
 
 /**
  * Returns a clean centered text logo for thermal receipt printers.
@@ -12,10 +11,9 @@ const TAGLINE = "SECURE COMMERCE";
  * both 58mm and 80mm printers.
  */
 export function getLogo(width: number, primary = PRIMARY): string[] {
-  return [
-    centerText(primary, width),
-    centerText(TAGLINE, width),
-  ];
+  // Keep the receipt header to a single line. The previous two-line mark
+  // consumed enough vertical space to be clipped by some thermal printers.
+  return [centerText(primary, width)];
 }
 
 /** Returns the primary brand name for fallback text usage. */

@@ -354,6 +354,7 @@ router.get("/print/printers", adminOnly, async (req, res): Promise<void> => {
       paperWidth: printPrintersTable.paperWidth,
       printerClass: printPrintersTable.printerClass,
       copies: printPrintersTable.copies,
+      supportsCashDrawer: printPrintersTable.supportsCashDrawer,
     })
     .from(printPrintersTable)
     .where(eq(printPrintersTable.tenantId, requestTenantId(req)))
@@ -743,6 +744,10 @@ router.patch(
     if (b.timeoutMs !== undefined) updates.timeoutMs = Number(b.timeoutMs);
     if (b.copies !== undefined)
       updates.copies = Math.min(5, Math.max(1, Number(b.copies)));
+    if (b.supportsCashDrawer !== undefined) {
+      if (typeof b.supportsCashDrawer !== "boolean") { res.status(400).json({ error: "supportsCashDrawer must be boolean" }); return; }
+      updates.supportsCashDrawer = b.supportsCashDrawer;
+    }
     if (b.printerClass !== undefined || b.paperWidth !== undefined) {
       const [current] = await db.select({ printerClass: printPrintersTable.printerClass, paperWidth: printPrintersTable.paperWidth })
         .from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, id))).limit(1);

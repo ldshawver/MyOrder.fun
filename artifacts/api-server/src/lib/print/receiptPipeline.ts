@@ -113,7 +113,11 @@ export async function loadLegacyReceiptPresentation(tenantId: number): Promise<L
  * order-line names and prices, and the order's financial/tax snapshot.
  * Returns null when the order does not belong to the tenant.
  */
-export async function loadReceiptData(tenantId: number, orderId: number): Promise<ReceiptData | null> {
+export async function loadReceiptData(
+  tenantId: number,
+  orderId: number,
+  lineNameModeOverride?: ReceiptLineNameMode,
+): Promise<ReceiptData | null> {
   const [order] = await db.select().from(ordersTable)
     .where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
   if (!order) return null;
@@ -144,7 +148,7 @@ export async function loadReceiptData(tenantId: number, orderId: number): Promis
     providerCaptureId = capture?.providerCaptureId ?? null;
   }
 
-  const mode = adminSettings?.mode;
+  const mode = lineNameModeOverride ?? adminSettings?.mode;
   return buildReceiptData({
     business: {
       name: tenant?.business.publicBusinessName ?? null,

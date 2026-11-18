@@ -123,7 +123,10 @@ async function dispatchEthernet(
   const port = printer.directPort ?? 9100;
   const timeoutMs = printer.timeoutMs ?? 5000;
   const text = decodeStoredReceiptText(job.renderedText ?? "");
-  const fullText = text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)));
+  const openCashDrawer = printer.supportsCashDrawer === true && (job.payloadJson as Record<string, unknown> | null)?.openCashDrawer === true;
+  // ESC p m t1 t2: pin 2, 50 ms on and 50 ms off. This is deliberately sent
+  // only for an explicitly drawer-capable printer and a cash customer receipt.
+  const fullText = `${text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)))}${openCashDrawer ? "\x1bp\x00\x19\x19" : ""}`;
 
   return new Promise(resolve => {
     const socket = new net.Socket();
@@ -179,7 +182,8 @@ async function dispatchBridge(
   const apiKey = await resolvePrinterBridgeKey(printer);
   const timeoutMs = printer.timeoutMs ?? 8000;
   const text = decodeStoredReceiptText(job.renderedText ?? "");
-  const fullText = text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)));
+  const openCashDrawer = printer.supportsCashDrawer === true && (job.payloadJson as Record<string, unknown> | null)?.openCashDrawer === true;
+  const fullText = `${text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)))}${openCashDrawer ? "\x1bp\x00\x19\x19" : ""}`;
 
   if (!printer.bridgeUrl) {
     return { success: false, error: "Bridge URL not configured — set it in Admin → Print → Printers" };
@@ -243,6 +247,7 @@ async function dispatchBridge(
       text: documentBase64 ? "" : fullText,
       copies: 1,
       role: job.jobType,
+      openCashDrawer,
     };
     if (documentBase64) {
       bridgeBody.documentBase64 = documentBase64;
@@ -624,6 +629,7 @@ export async function enqueueOrderPrintJobs(order: {
   id: number;
   status: string;
   paymentStatus: string;
+  paymentMethod?: string | null;
   notes: string | null;
   subtotal: string;
   tax: string;
@@ -705,6 +711,7 @@ export async function enqueueOrderPrintJobs(order: {
     tax: parseFloat(order.tax as string),
     total: parseFloat(order.total as string),
     paymentStatus: order.paymentStatus,
+    paymentMethod: order.paymentMethod ?? undefined,
     createdAt: order.createdAt,
   };
 
@@ -737,7 +744,10 @@ export async function enqueueOrderPrintJobs(order: {
       documentType: "ORDER_RECEIPT",
       jobType: "customer_receipt",
       idempotencyKey: `order_receipt:${tenantId}:${order.id}`,
-      render: { kind: "thermal-text", text: (_printer, columns) => renderAutomaticReceipt(tenantId, order.id, printOrder, columns) },
+      render: { kind: "thermal-text", text: async (_printer, columns) => {
+        const receipt = await renderAutomaticReceipt(tenantId, order.id, printOrder, columns);
+        return { ...receipt, openCashDrawer: order.paymentMethod === "cash" };
+      } },
       legacyFallback: async () => (await resolveReceiptPrinters(profile, routeContext)).primary,
     });
     if (result.status === "queued") pendingDispatches.push(() => dispatchReceiptJob(result.job, result.printer));
@@ -747,7 +757,9 @@ export async function enqueueOrderPrintJobs(order: {
   if (controls.autoPrintOrders) {
     const { loadReceiptData } = await import("./print/receiptPipeline");
     const { buildExpoTicket, buildWorkTicket } = await import("./print/documents");
-    const ticketData = await loadReceiptData(tenantId, order.id);
+    // Customer receipts use the configured safe-name mode. Staff tickets must
+    // always show the Alavont product identity needed for fulfillment.
+    const ticketData = await loadReceiptData(tenantId, order.id, "alavont_only");
     const expoFallback = routeContext.locationId && routeContext.shiftId
       ? () => resolveExpoPrinter({ tenantId, locationId: routeContext.locationId!, shiftId: routeContext.shiftId! })
       : undefined;

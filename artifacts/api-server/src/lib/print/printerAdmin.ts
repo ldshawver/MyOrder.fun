@@ -131,6 +131,7 @@ export async function createRegisteredPrinter(tenantId: number, actor: PrintAdmi
     apiKey: null,
     timeoutMs: b.timeoutMs ? Number(b.timeoutMs) : 8000,
     copies: b.copies ? Math.min(5, Math.max(1, Number(b.copies))) : 1,
+    supportsCashDrawer: b.supportsCashDrawer === true,
     printerClass: paper.printerClass,
     paperWidth: paper.paperWidth,
     isActive: b.isActive !== undefined ? Boolean(b.isActive) : true,
