@@ -138,7 +138,7 @@ function logAndSendShiftDatabaseError(
  */
 async function printShiftDocuments(
   args: { tenantId: number | null; shiftId: number; operatorUserId: number },
-  event: { kind: "clock_in" } | { kind: "clock_out"; figures: import("../lib/print/shiftDocuments").ClockOutFigures },
+  event: { kind: "clock_in" } | { kind: "clock_out"; figures: import("../lib/print/shiftDocuments").ClockOutFigures } | { kind: "supervisor_checkout"; figures: import("../lib/print/shiftDocuments").FinalizedDepositFigures },
 ): Promise<void> {
   if (!args.tenantId) return;
   const tenantId = args.tenantId;
@@ -154,7 +154,8 @@ async function printShiftDocuments(
       await getOperatorProfile(tenantId, args.operatorUserId), { tenantId, shiftId: args.shiftId },
     )).primary;
     if (event.kind === "clock_in") await shiftDocs.printClockInDocuments(ctx, legacyFallback);
-    else await shiftDocs.printClockOutDocuments(ctx, event.figures, legacyFallback);
+    else if (event.kind === "clock_out") await shiftDocs.printClockOutDocuments(ctx, event.figures, legacyFallback);
+    else await shiftDocs.printFinalizedDepositSlip(ctx, event.figures, legacyFallback);
   } catch {
     // Printing must never block shift start/end.
   }
@@ -2583,6 +2584,16 @@ router.post(
       throw error;
     }
     if ("conflict" in outcome) { res.status(409).json({ error: outcome.conflict, details: outcome.details }); return; }
+    if (!outcome.replayed) {
+      const checkout = outcome.checkout as { commissionBasis: string; commissionPercent: number; commissionAmount: string; paymentTotals: Record<string, unknown>; cashReconciliation: { openingBank: string; accountableCash: string; expectedCash: string; countedCash: string; variance: string } };
+      await printShiftDocuments(
+        { tenantId: outcome.shift?.tenantId ?? null, shiftId, operatorUserId: supervisor.id },
+        { kind: "supervisor_checkout", figures: {
+          eligibleSales: checkout.commissionBasis, commissionPercent: checkout.commissionPercent, commissionAmount: checkout.commissionAmount,
+          paymentTotals: checkout.paymentTotals, ...checkout.cashReconciliation,
+        } },
+      );
+    }
     res.json(outcome);
   }
 );

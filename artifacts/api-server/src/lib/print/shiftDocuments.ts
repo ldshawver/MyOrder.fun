@@ -205,6 +205,39 @@ export interface ClockOutFigures {
   variance: number | null;
 }
 
+/** Immutable supervisor-closeout values used for the final deposit record. */
+export interface FinalizedDepositFigures {
+  readonly eligibleSales: string;
+  readonly commissionPercent: number;
+  readonly commissionAmount: string;
+  readonly openingBank: string;
+  readonly accountableCash: string;
+  readonly expectedCash: string;
+  readonly countedCash: string;
+  readonly variance: string;
+  readonly paymentTotals: Record<string, unknown>;
+}
+
+/** The supervisor-finalized deposit slip never recalculates commission or cash. */
+export async function printFinalizedDepositSlip(ctx: ShiftDocumentContext, figures: FinalizedDepositFigures, legacyFallback?: () => Promise<PrintPrinter | null>) {
+  const clockedOutAt = ctx.clockedOutAt ?? new Date().toISOString();
+  const paymentTotals = Object.entries(figures.paymentTotals).map(([method, amount]) => ({
+    label: PAYMENT_LABELS[method] ?? method,
+    cents: toCents(amount),
+  })).filter(total => total.cents !== 0);
+  return printForShift(ctx, [{
+    documentType: "DEPOSIT", jobType: "shift_deposit",
+    render: { kind: "thermal", lines: () => buildDepositSlip({
+      businessName: ctx.businessName, locationName: ctx.locationName, employeeName: ctx.employeeName, shiftRef: String(ctx.shiftId),
+      timezone: ctx.timezone, clockedInAt: ctx.clockedInAt, clockedOutAt,
+      cashBankStartCents: toCents(figures.openingBank), cashSalesCents: toCents(figures.accountableCash),
+      expectedCashCents: toCents(figures.expectedCash), countedCashCents: toCents(figures.countedCash), varianceCents: toCents(figures.variance),
+      eligibleSalesCents: toCents(figures.eligibleSales), commissionPercent: figures.commissionPercent,
+      commissionCents: toCents(figures.commissionAmount), paymentTotals,
+    }) },
+  }], { suffix: ":final", legacyFallback });
+}
+
 /** Clock-out: CLOCK_OUT slip, deposit, sales report, ending inventory and restock list. */
 export async function printClockOutDocuments(ctx: ShiftDocumentContext, figures: ClockOutFigures, legacyFallback?: () => Promise<PrintPrinter | null>) {
   const rows = await loadShiftInventoryRows(ctx.shiftId);
@@ -216,18 +249,6 @@ export async function printClockOutDocuments(ctx: ShiftDocumentContext, figures:
     {
       documentType: "CLOCK_OUT", jobType: "shift_clock_out",
       render: { kind: "thermal", lines: () => buildClockSlip({ event: "out", businessName: ctx.businessName, locationName: ctx.locationName, employeeName: ctx.employeeName, at: clockedOutAt, timezone: ctx.timezone, shiftRef: String(ctx.shiftId) }) },
-    },
-    {
-      documentType: "DEPOSIT", jobType: "shift_deposit",
-      render: { kind: "thermal", lines: () => buildDepositSlip({
-        businessName: ctx.businessName, locationName: ctx.locationName, employeeName: ctx.employeeName, shiftRef: String(ctx.shiftId),
-        timezone: ctx.timezone, clockedInAt: ctx.clockedInAt, clockedOutAt,
-        cashBankStartCents: ctx.cashBankStartCents, cashSalesCents,
-        expectedCashCents: figures.expectedCash === null ? ctx.cashBankStartCents + cashSalesCents : toCents(figures.expectedCash),
-        countedCashCents: figures.countedCash === null ? null : toCents(figures.countedCash),
-        varianceCents: figures.variance === null ? null : toCents(figures.variance),
-        paymentTotals: sales.paymentTotals.filter((total) => total.cents !== 0),
-      }) },
     },
     { documentType: "REPORT", jobType: "shift_sales", render: { kind: "report", report: () => buildShiftSalesReport(report, sales) } },
     { documentType: "INVENTORY_STOCK_LIST", jobType: "shift_ending_inventory", render: { kind: "report", report: () => buildShiftInventoryReport(report, "ending", rows) } },

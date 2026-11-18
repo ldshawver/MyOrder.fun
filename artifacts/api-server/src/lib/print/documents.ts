@@ -80,6 +80,10 @@ export interface DepositSlipData {
   /** Cash the employee counted at close-out (their reported count). */
   readonly countedCashCents: number | null;
   readonly varianceCents: number | null;
+  /** Finalized supervisor-closeout facts; never recalculate these at print time. */
+  readonly eligibleSalesCents?: number | null;
+  readonly commissionPercent?: number | null;
+  readonly commissionCents?: number | null;
   readonly paymentTotals: ReadonlyArray<{ readonly label: string; readonly cents: number }>;
 }
 
@@ -100,6 +104,13 @@ export function buildDepositSlip(data: DepositSlipData): ReceiptLine[] {
     pair("Expected cash", formatMoney(data.expectedCashCents), true),
     pair("Counted cash (reported)", data.countedCashCents === null ? "not entered" : formatMoney(data.countedCashCents)),
     pair("Variance", data.varianceCents === null ? "-" : formatMoney(data.varianceCents), true),
+    ...((data.eligibleSalesCents ?? null) === null ? [] : [
+      rule("dashed"),
+      left("COMMISSION", true),
+      pair("Sales excl. tax/delivery", formatMoney(data.eligibleSalesCents)),
+      pair("Selected commission", data.commissionPercent == null ? "-" : `${data.commissionPercent}%`),
+      pair("Commission amount", data.commissionCents == null ? "-" : formatMoney(data.commissionCents), true),
+    ]),
     ...(data.paymentTotals.length ? [rule("dashed"), left("Sales by payment", true), ...data.paymentTotals.map((total) => pair(total.label, formatMoney(total.cents)))] : []),
     rule(),
     left("Counted by: ____________________"),
