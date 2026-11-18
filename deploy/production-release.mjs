@@ -55,14 +55,18 @@ export const APPROVED_RELEASE = Object.freeze({
   }),
 });
 export const PRODUCTION_BASELINE = Object.freeze({
-  // Guarded production deployment run 41153008893 installed this exact
-  // rollback pair before the next immutable candidate was approved.
-  apiImage: "sha256:42c4f22f20759a1409666cc1b7c509782f9367130ca890ef5fa8d11d023ca80a",
-  apiRevision: "844c2ef0110fad28fd006f5891c7b00d5f85cce1",
-  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:42c4f22f20759a1409666cc1b7c509782f9367130ca890ef5fa8d11d023ca80a",
-  platformImage: "sha256:b030e7ddea466bc8499c6f1e5fb793a239b62e074c969b1ef9e9bc85453fb578",
-  platformRevision: "844c2ef0110fad28fd006f5891c7b00d5f85cce1",
-  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:b030e7ddea466bc8499c6f1e5fb793a239b62e074c969b1ef9e9bc85453fb578",
+  // Read-only runtime inspection on 2026-11-18 recorded this local rollback
+  // pair. Their labels are deployment nicknames rather than Git SHAs and no
+  // registry manifest/config provenance exists; preserve the exact daemon IDs
+  // and configured tags, and do not infer a source revision from either.
+  apiImage: "sha256:98d3ad0bb355fa69ff431ba7be41ba764fb975c2332d99f5e7a5df95e9a40554",
+  apiRevision: "profile-photo-20261116",
+  apiReference: "myorder-api:profile-photo-20261116",
+  apiProvenance: "local-image-id-and-runtime-label-verified; registry-and-source-sha-unavailable",
+  platformImage: "sha256:6c46c4781715efcf5804a0a74cff60b2de4c599e9240e6ea5b2429a5127ad8e2",
+  platformRevision: "profile-photo-20261116",
+  platformReference: "myorder-platform:profile-photo-20261116",
+  platformProvenance: "local-image-id-and-runtime-label-verified; registry-and-source-sha-unavailable",
   nginxImage: "sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a",
   nginxReference: "nginx:alpine",
   databaseImage: "sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229",
