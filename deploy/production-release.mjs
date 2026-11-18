@@ -327,6 +327,30 @@ export function assertReusableReleaseIdentity(identity, expected) {
   return true;
 }
 
+export function assertReleaseArchiveEntries(entries) {
+  if (!Array.isArray(entries) || entries.length === 0)
+    throw new Error("Release archive is empty or invalid");
+  const operationalRoots = new Set([
+    "control",
+    "incoming",
+    "media",
+    "quarantine",
+    "releases",
+    "shared",
+  ]);
+  const operationalFiles = new Set(["ssh-keyscan.err", "udo apt-get update"]);
+  for (const entry of entries) {
+    if (typeof entry !== "string" || !entry || entry.startsWith("/") || entry.split("/").includes(".."))
+      throw new Error("Release archive contains an unsafe path");
+    const normalized = entry.replace(/\/$/, "");
+    const [topLevel] = normalized.split("/");
+    if (operationalRoots.has(topLevel) || operationalFiles.has(normalized) ||
+        normalized === "deploy/.env" || normalized.startsWith("deploy/backups/"))
+      throw new Error("Release archive contains an operational artifact path");
+  }
+  return true;
+}
+
 export function assertKnownNonWriterService(service, properties) {
   if (service !== "myorder-preview.service")
     throw new Error("Service is not an approved non-writer");
@@ -468,6 +492,15 @@ export function assertProductionConfig(config, expected) {
     )
   )
     throw new Error("Production proxy binding mismatch");
+  if (
+    !config.services.nginx.volumes?.some((value) =>
+      typeof value === "string"
+        ? value.includes("/opt/alavont/deploy/nginx/nginx.conf:/etc/nginx/nginx.conf")
+        : value.source === "/opt/alavont/deploy/nginx/nginx.conf" &&
+          value.target === "/etc/nginx/nginx.conf",
+    )
+  )
+    throw new Error("Production nginx runtime configuration mount is missing");
   const networkNames = Object.values(config.networks ?? {})
     .map((network) => network.name)
     .sort();
@@ -2188,13 +2221,7 @@ async function main() {
   const archiveEntries = run("tar", ["--list", "--gzip", "--file", archivePath])
     .split("\n")
     .filter(Boolean);
-  if (
-    !archiveEntries.length ||
-    archiveEntries.some(
-      (entry) => entry.startsWith("/") || entry.split("/").includes(".."),
-    )
-  )
-    throw new Error("Release archive contains an unsafe path");
+  assertReleaseArchiveEntries(archiveEntries);
   const verboseEntries = run("tar", [
     "--list",
     "--verbose",
