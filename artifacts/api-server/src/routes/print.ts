@@ -65,6 +65,8 @@ import { SAMPLE_RECEIPT_DATA } from "../lib/print/receiptData";
 import { THERMAL_WIDTHS } from "../lib/print/documentTypes";
 import { BRIDGE_QUEUE_NAME, PrintAdminError, VALID_ROLES, createRegisteredPrinter, printerPaper } from "../lib/print/printerAdmin";
 import { queueDocumentPrint } from "../lib/print/documentJobs";
+import { customerReceiptUsesLogoImage } from "../lib/print/receiptLogo";
+import { getBranding } from "../config/brandingConfig";
 import { BRIDGE_KEY_PATTERN } from "../lib/print/bridgeKey";
 import { shiftLocationId } from "../lib/print/shiftDocuments";
 import multer from "multer";
@@ -2092,6 +2094,7 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
     shiftId: order.assignedShiftId ?? null,
   };
   // Same routing and receipt pipeline as automatic receipts; a fresh job per reprint.
+  const [receiptSettings, receiptBranding] = await Promise.all([getSettings(), getBranding(tenantId)]);
   const result = await queueDocumentPrint({
     tenantId,
     locationId: routeContext.locationId ?? (routeContext.shiftId ? await shiftLocationId(tenantId, routeContext.shiftId) : null),
@@ -2100,6 +2103,7 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
     operatorUserId: operator?.userId ?? null,
     documentType: "ORDER_RECEIPT",
     jobType: "receipt",
+    withLogo: customerReceiptUsesLogoImage(receiptSettings, receiptBranding?.supplier.displayName),
     idempotencyKey: `order_receipt_reprint:${tenantId}:${orderId}:${req.dbUser!.id}:${Date.now()}`,
     render: {
       kind: "thermal-text",

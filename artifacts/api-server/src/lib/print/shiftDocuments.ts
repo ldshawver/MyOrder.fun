@@ -244,7 +244,6 @@ export async function printClockOutDocuments(ctx: ShiftDocumentContext, figures:
   const clockedOutAt = ctx.clockedOutAt ?? new Date().toISOString();
   const report = shiftReportContext({ ...ctx, clockedOutAt }, clockedOutAt);
   const sales = shiftSalesData(figures.stats);
-  const cashSalesCents = sales.paymentTotals.find((total) => total.label === "Cash")?.cents ?? 0;
   return printForShift(ctx, [
     {
       documentType: "CLOCK_OUT", jobType: "shift_clock_out",

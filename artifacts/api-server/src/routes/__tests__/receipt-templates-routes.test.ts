@@ -144,6 +144,10 @@ vi.mock("../../config/tenantConfig", () => ({
 vi.mock("../../config/brandingConfig", () => ({ getBranding: async () => ({ supplier: { displayName: "Lucifer Cruz" } }) }));
 vi.mock("../../lib/logger", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } }));
 vi.mock("sharp", () => ({ default: vi.fn() }));
+vi.mock("../../lib/print/receiptLogo", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../lib/print/receiptLogo")>(),
+  composeLuciferReceiptPdf: async () => Buffer.from("%PDF-TEST-RECEIPT"),
+}));
 
 const { default: printRouter } = await import("../print");
 const { renderOrderReceipt, loadReceiptData } = await import("../../lib/print/receiptPipeline");

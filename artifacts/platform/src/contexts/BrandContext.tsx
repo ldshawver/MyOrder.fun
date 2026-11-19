@@ -88,7 +88,21 @@ export function BrandProvider({ children }: { children: ReactNode }) {
     fetch("/api/public/branding", { credentials: "same-origin" })
       .then((response) => response.ok ? response.json() : null)
       .then((value: BrandingInput | null) => {
-        if (!cancelled && value) setResolvedBranding(resolveBranding(value));
+        if (!cancelled && value) {
+          setResolvedBranding(resolveBranding(value));
+          const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+          if (favicon) favicon.href = resolveBranding(value).customer.faviconUrl;
+          // Install identity follows the public host, never the signed-in account.
+          if (value.installedApp) {
+            for (const name of ["apple-mobile-web-app-title", "application-name"]) {
+              let meta = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
+              if (!meta) { meta = document.createElement("meta"); meta.name = name; document.head.appendChild(meta); }
+              meta.content = value.installedApp.name;
+            }
+            const icon = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+            if (icon) icon.href = value.installedApp.iconUrl;
+          }
+        }
       })
       .catch(() => { /* unknown hosts intentionally retain the generic platform presentation */ })
       .finally(() => { if (!cancelled) setPublicBrandLoading(false); });
@@ -97,12 +111,6 @@ export function BrandProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.title = branding.customer.displayName;
-    const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-    if (favicon) favicon.href = branding.customer.faviconUrl;
-    const appleTouchIcon = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
-    if (appleTouchIcon && branding.customer.displayName.trim().toLowerCase() === "lucifer cruz") {
-      appleTouchIcon.href = "/branding/lucifer-cruz/LC-Order_Icon-iOS-Default-1024@1x.png?v=11ec8ee3";
-    }
   }, [branding]);
 
   const setBranding = useCallback((value: BrandingInput | null) => {

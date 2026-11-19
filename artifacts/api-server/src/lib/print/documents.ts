@@ -104,7 +104,7 @@ export function buildDepositSlip(data: DepositSlipData): ReceiptLine[] {
     pair("Expected cash", formatMoney(data.expectedCashCents), true),
     pair("Counted cash (reported)", data.countedCashCents === null ? "not entered" : formatMoney(data.countedCashCents)),
     pair("Variance", data.varianceCents === null ? "-" : formatMoney(data.varianceCents), true),
-    ...((data.eligibleSalesCents ?? null) === null ? [] : [
+    ...(data.eligibleSalesCents == null ? [] : [
       rule("dashed"),
       left("COMMISSION", true),
       pair("Sales excl. tax/delivery", formatMoney(data.eligibleSalesCents)),

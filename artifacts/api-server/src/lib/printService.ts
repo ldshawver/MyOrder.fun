@@ -23,7 +23,7 @@ import {
   shiftPrintAssignmentsTable,
 } from "@workspace/db";
 import { eq, and, inArray, lt, sql } from "drizzle-orm";
-import { decodeStoredReceiptText, renderCustomerReceipt } from "./receiptRenderer";
+import { decodeStoredReceiptText, renderCustomerReceipt, renderCustomerReceiptBody } from "./receiptRenderer";
 import {
   BRIGHTEK_POS80_QUEUE,
   isBrightekPos80,
@@ -32,6 +32,7 @@ import {
   withRerouteBanner,
 } from "./printFallback";
 import { charWidth, getLogo } from "./print/index";
+import { customerReceiptUsesLogoImage } from "./print/receiptLogo";
 import { generateThankYouLabel } from "./print/templates/thankYouLabel.js";
 import {
   selectActiveOperator,
@@ -259,6 +260,30 @@ async function dispatchBridge(
       const requestedMedia = (job.payloadJson as Record<string, unknown>)?.media;
       if (typeof requestedMedia === "string" && requestedMedia.trim()) bridgeBody.media = requestedMedia;
       bridgeBody.raw = false;
+    }
+
+    // PDF bytes bypass the text stream containing the drawer pulse. Keep the
+    // existing pulse as a separate raw job, with a durable at-most-once marker.
+    if (documentBase64 && openCashDrawer) {
+      const payload = { ...((job.payloadJson as Record<string, unknown> | null) ?? {}) };
+      if (payload.drawerPulseAttempted === true && payload.drawerPulseQueued !== true) {
+        clearTimeout(timer);
+        return { success: false, error: "Drawer pulse outcome requires staff verification; refusing to send it again" };
+      }
+      if (payload.drawerPulseQueued !== true) {
+        payload.drawerPulseAttempted = true;
+        await db.update(printJobsTable).set({ payloadJson: payload }).where(and(eq(printJobsTable.id, job.id), eq(printJobsTable.tenantId, job.tenantId)));
+        const pulse = await fetch(`${printer.bridgeUrl}/print`, {
+          method: "POST", headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+          body: JSON.stringify({ printerName, jobId: job.id, role: "cash_drawer", text: "\x1b@\x1bp\x00\x19\x19", raw: true, copies: 1 }),
+          signal: controller.signal,
+        });
+        const accepted = pulse.ok && (await pulse.json() as { success?: boolean }).success === true;
+        if (!accepted) { clearTimeout(timer); return { success: false, error: "Drawer pulse was not confirmed; staff verification required" }; }
+        payload.drawerPulseQueued = true;
+        await db.update(printJobsTable).set({ payloadJson: payload }).where(and(eq(printJobsTable.id, job.id), eq(printJobsTable.tenantId, job.tenantId)));
+      }
+      bridgeBody.openCashDrawer = false;
     }
 
     const res = await fetch(`${printer.bridgeUrl}/print`, {
@@ -608,13 +633,13 @@ async function renderAutomaticReceipt(
   orderId: number,
   legacyOrder: Parameters<typeof renderCustomerReceipt>[0],
   columns: number,
-): Promise<{ text: string; templateId: number | null; templateVersion: number | null }> {
+): Promise<{ text: string; plainText?: string; templateId: number | null; templateVersion: number | null }> {
   try {
     const { renderOrderReceipt } = await import("./print/receiptPipeline");
     const rendered = await renderOrderReceipt(tenantId, orderId, columns);
     if (rendered) {
-      const { text, templateId, templateVersion } = rendered.receipt;
-      return { text, templateId, templateVersion };
+      const { text, plainText, templateId, templateVersion } = rendered.receipt;
+      return { text, plainText, templateId, templateVersion };
     }
     pLog.warn({ event: "receipt_data_unavailable", orderId }, "receipt data not found; using legacy receipt");
   } catch (err) {
@@ -622,7 +647,7 @@ async function renderAutomaticReceipt(
       "receipt pipeline failed; using legacy receipt");
   }
   const paperWidth = columns <= 32 ? "58mm" : "80mm";
-  return { text: renderCustomerReceipt({ ...legacyOrder, paperWidth }), templateId: null, templateVersion: null };
+  return { text: renderCustomerReceipt({ ...legacyOrder, paperWidth }), plainText: renderCustomerReceiptBody({ ...legacyOrder, paperWidth }), templateId: null, templateVersion: null };
 }
 
 export async function enqueueOrderPrintJobs(order: {
@@ -743,6 +768,7 @@ export async function enqueueOrderPrintJobs(order: {
       ...documentBase,
       documentType: "ORDER_RECEIPT",
       jobType: "customer_receipt",
+      withLogo: customerReceiptUsesLogoImage(settings, brandingDisplayName),
       idempotencyKey: `order_receipt:${tenantId}:${order.id}`,
       render: { kind: "thermal-text", text: async (_printer, columns) => {
         const receipt = await renderAutomaticReceipt(tenantId, order.id, printOrder, columns);
