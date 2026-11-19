@@ -492,20 +492,18 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               exit={{ opacity: 0, y: -10, scale: 1.01 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
             >
-              {showOperationalQueueStatus && !customerStorefront && queueStatus && (
-                <div className={`mb-5 rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${queueStatus.activeShift ? "border-emerald-500/40 bg-emerald-500/10" : "border-amber-500/40 bg-amber-500/10"}`} data-testid="queue-status-banner">
+              {showOperationalQueueStatus && !customerStorefront && queueStatus && !queueStatus.activeShift && (
+                <div className="mb-5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3" data-testid="queue-status-banner">
                   <div>
                     <div className="font-semibold" data-testid="queue-status-title">
-                      {queueStatus.activeShift ? "Active CSR" : "General Queue Active"}
+                      General Queue Active
                     </div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      {queueStatus.activeShift
-                        ? `${`${queueStatus.activeCsr?.firstName ?? ""} ${queueStatus.activeCsr?.lastName ?? ""}`.trim() || queueStatus.activeCsr?.email || "Assigned CSR"} · active since ${new Date(queueStatus.activeShift.clockedInAt).toLocaleString()}`
-                        : `${queueStatus.queueCounts.defaultQueue} open/unassigned order${queueStatus.queueCounts.defaultQueue === 1 ? "" : "s"}`}
+                      {queueStatus.queueCounts.defaultQueue} open/unassigned order{queueStatus.queueCounts.defaultQueue === 1 ? "" : "s"}
                     </div>
                   </div>
-                  <Link href={queueStatus.activeShift ? "/staff" : "/staff?view=general"} className="inline-flex items-center justify-center rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground" data-testid="button-view-operational-queue">
-                    {queueStatus.activeShift ? "View Shift/Queue" : "View General Queue"}
+                  <Link href="/staff?view=general" className="inline-flex items-center justify-center rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground" data-testid="button-view-operational-queue">
+                    View General Queue
                   </Link>
                 </div>
               )}
