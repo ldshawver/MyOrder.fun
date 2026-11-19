@@ -38,6 +38,7 @@ import {
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
 import { useListNotifications, getListNotificationsQueryKey } from "@workspace/api-client-react";
+import { shouldShowGeneralQueueBanner } from "@/lib/queueVisibility";
 
 type NavItem = {
   href: string;
@@ -492,7 +493,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               exit={{ opacity: 0, y: -10, scale: 1.01 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
             >
-              {showOperationalQueueStatus && !customerStorefront && queueStatus && !queueStatus.activeShift && (
+              {shouldShowGeneralQueueBanner({
+                canManageQueue: showOperationalQueueStatus,
+                customerStorefront,
+                hasQueueStatus: Boolean(queueStatus),
+                hasActiveShift: Boolean(queueStatus?.activeShift),
+              }) && queueStatus && (
                 <div className="mb-5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3" data-testid="queue-status-banner">
                   <div>
                     <div className="font-semibold" data-testid="queue-status-title">
