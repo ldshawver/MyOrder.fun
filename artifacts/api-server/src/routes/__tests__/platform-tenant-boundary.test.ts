@@ -126,7 +126,7 @@ vi.mock("drizzle-orm", () => ({
 import adminRouter from "../admin";
 import auditRouter from "../audit";
 import onboardingRouter from "../onboarding";
-import reportsRouter from "../reports";
+import reportsRouter, { csvEscape } from "../reports";
 
 const platformCases = [
   { name: "stats", method: "get", path: "/api/admin/stats" },
@@ -210,6 +210,12 @@ describe("platform-only authorization boundary", () => {
 });
 
 describe("tenant report isolation", () => {
+  it("renders formula-shaped CSV values as literal text", () => {
+    expect(csvEscape("=SUM(A1:A2)")).toBe("'=SUM(A1:A2)");
+    expect(csvEscape("+1")).toBe("'+1");
+    expect(csvEscape("ordinary text")).toBe("ordinary text");
+  });
+
   it("returns only tenant A financial, item, shift, and user-derived report data", async () => {
     const response = await supertest(app(reportsRouter)).get("/api/admin/reports/summary");
     expect(response.status).toBe(200);
@@ -229,12 +235,15 @@ describe("tenant report isolation", () => {
     expect(response.text).not.toContain("900.00");
   });
 
-  it("keeps platform-wide reporting available to global_admin", async () => {
+  it("requires an explicit tenant scope for global_admin reports", async () => {
     fixture.actor = { id: 99, clerkId: "platform-admin", email: "platform@test.invalid", role: "global_admin", tenantId: null, status: "approved" };
-    const response = await supertest(app(reportsRouter)).get("/api/admin/reports/summary");
+    const unscoped = await supertest(app(reportsRouter)).get("/api/admin/reports/summary");
+    expect(unscoped.status).toBe(403);
+
+    const response = await supertest(app(reportsRouter)).get("/api/admin/reports/summary?tenantId=1");
     expect(response.status).toBe(200);
-    expect(response.body.totals).toMatchObject({ orderCount: 2, revenue: 915, activeShiftCount: 2, discrepancyTotal: 90 });
-    expect(JSON.stringify(response.body)).toContain("B confidential item");
+    expect(response.body.totals).toMatchObject({ orderCount: 1, revenue: 15, activeShiftCount: 1, discrepancyTotal: 0 });
+    expect(JSON.stringify(response.body)).not.toContain("B confidential item");
   });
 });
 
