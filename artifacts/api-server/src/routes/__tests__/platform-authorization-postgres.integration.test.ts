@@ -218,7 +218,7 @@ pgSuite("platform authorization boundaries against disposable PostgreSQL 16", ()
     expect((await supertest(onboardingApp).get(`/api/onboarding/requests/${onboardingId}`)).status).toBe(200);
   });
 
-  it("scopes tenant reports and CSV to authorized tenant A while global admin can view both tenants", async () => {
+  it("scopes tenant reports and CSV to the selected authorized tenant", async () => {
     as(`boundary-a-${process.pid}`);
     const report = await supertest(reportsApp).get("/api/admin/reports/summary");
     expect(report.status, JSON.stringify(report.body)).toBe(200);
@@ -230,10 +230,12 @@ pgSuite("platform authorization boundaries against disposable PostgreSQL 16", ()
     expect((await supertest(reportsApp).get("/api/admin/reports/summary?tenantId=" + tenantB)).status).toBe(403);
 
     as("platform-owner-fixture");
-    const globalReport = await supertest(reportsApp).get("/api/admin/reports/summary");
+    expect((await supertest(reportsApp).get("/api/admin/reports/summary")).status).toBe(403);
+    const globalReport = await supertest(reportsApp).get(`/api/admin/reports/summary?tenantId=${tenantB}`);
     expect(globalReport.status).toBe(200);
-    expect(globalReport.body.totals.orderCount).toBeGreaterThanOrEqual(2);
+    expect(globalReport.body.totals.orderCount).toBe(1);
     expect(JSON.stringify(globalReport.body)).toContain("Tenant B secret");
+    expect(JSON.stringify(globalReport.body)).not.toContain("private-a@");
   });
 
   it("keeps onboarding approval separate from account approval and audits tenant creation", async () => {
