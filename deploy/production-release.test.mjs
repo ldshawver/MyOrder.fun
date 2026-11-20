@@ -1243,16 +1243,16 @@ test("candidate builder is frozen to the exact source selected for immutable ima
     "utf8",
   );
   const candidate = {
-    sha: "733d266eca5073df7ab73abe4e003b0b76215107",
-    tree: "529e40b23d22b1ea0a9291d301e83fa9914c32dd",
+    sha: "076d4d70161b0a3261518e90eb67a182a78cd3dd",
+    tree: "a7c3af656cab2186ec5a8b833d32eeda02a87137",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));
   assert.match(workflow, new RegExp(`ref: ${candidate.sha}`));
   assert.equal(workflow.match(new RegExp(candidate.sha, "g"))?.length, 5);
-  // The separately reviewed approval now binds the built candidate and its
-  // immutable digests to the same exact application source.
-  assert.equal(candidate.sha, APPROVED_RELEASE.sha);
+  // Building publishes immutable candidate images only. A later, separately
+  // reviewed approval must bind their digests before deployment is possible.
+  assert.notEqual(candidate.sha, APPROVED_RELEASE.sha);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
