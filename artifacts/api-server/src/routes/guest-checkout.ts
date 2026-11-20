@@ -12,7 +12,15 @@ const router: IRouter = Router();
 const limiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Guest checkout requests rate-limited" } });
 const Body = z.object({ displayName: z.string().trim().min(1).max(120), phone: z.string().trim().max(32).optional(), deliveryAddress: z.string().trim().max(500).optional(), idempotencyKey: z.string().trim().min(16).max(200) }).strict();
 
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+// This router is mounted at /api alongside customer checkout.  Keep the
+// staff-only provenance gate scoped to the paths owned here; an unscoped
+// router.use() would reject /cart/* and /orders before their explicit legacy
+// customer-checkout compatibility policy can run.
+const ownsGuestCheckoutPath = (path: string) => path === "/guest-checkout" || path.startsWith("/guest-checkout/");
+router.use((req, _res, next) => {
+  if (!ownsGuestCheckoutPath(req.path)) { next("router"); return; }
+  next();
+}, requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 function isStaff(role: string) { return ["csr", "supervisor", "admin", "global_admin"].includes(normalizeRole(role)); }
 async function authorized(req: Request): Promise<boolean> {
   const actor = req.dbUser!; const tenantId = req.authorizedTenantId!; const role = normalizeRole(actor.role);
