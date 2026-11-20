@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Test-only disposable PostgreSQL fixture for guest-checkout integration tests.
+# It intentionally uses the established checkout-route schema fixture: this is
+# a behavior-test fixture, never a migration-lineage rehearsal.
+set -Eeuo pipefail
+die() { echo "ERROR: $*" >&2; exit 1; }
+root="$(git rev-parse --show-toplevel)"
+# Reuse the checkout fixture's established disposable-name allowlist.
+name="myorder_p0_owner_approval_guest_checkout_${RANDOM}_${RANDOM}"
+port="${MYORDER_GUEST_TEST_PORT:-55437}"
+case "$port" in *[!0-9]*|"") die "invalid test port";; esac
+case "${DATABASE_URL:-}" in "") ;; *) die "DATABASE_URL must not be supplied; bootstrap owns its disposable target";; esac
+docker run --rm -d --name "$name" -e POSTGRES_DB="$name" -e POSTGRES_USER="$name" -e POSTGRES_PASSWORD=guest_checkout_test_only -p "127.0.0.1:${port}:5432" postgres:16-alpine >/dev/null
+cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+for _ in $(seq 1 30); do docker exec "$name" pg_isready -U "$name" -d "$name" >/dev/null 2>&1 && break; sleep 1; done
+docker exec "$name" pg_isready -U "$name" -d "$name" >/dev/null 2>&1 || die "disposable postgres did not become ready"
+export DATABASE_URL="postgresql://${name}:guest_checkout_test_only@127.0.0.1:${port}/${name}" DB_SSL=false MYORDER_REPLAY_JOURNAL=false
+"$root/scripts/release/ci-checkout-route-schema.sh"
+echo "guest checkout behavior fixture ready: $DATABASE_URL"
+pnpm --filter @workspace/api-server exec vitest run src/lib/__tests__/guestTokens.test.ts

@@ -27,15 +27,31 @@ export DATABASE_URL DB_SSL=false
 
 (cd "$repo_root/lib/db" && pnpm exec drizzle-kit push --force --config ./drizzle.config.ts)
 
+if [ "${MYORDER_REPLAY_JOURNAL:-true}" = "true" ]; then
 node --input-type=module - "$repo_root/lib/db/drizzle/meta/_journal.json" <<'NODE' | while read -r tag; do
 import { readFileSync } from 'node:fs';
 for (const entry of JSON.parse(readFileSync(process.argv[2], 'utf8')).entries) console.log(entry.tag);
 NODE
-  psql -q -v ON_ERROR_STOP=0 "$DATABASE_URL" -f "$repo_root/lib/db/drizzle/$tag.sql" >/dev/null 2>&1 || true
+  echo "replaying migration $tag" >&2
+  log="${TMPDIR:-/tmp}/myorder-migration-${tag}-$$.log"
+  if ! timeout 20 psql -q -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$repo_root/lib/db/drizzle/$tag.sql" >"$log" 2>&1; then
+    # Push-created duplicate objects are expected only in this fixture. Keep
+    # their diagnostics; all other SQL errors remain fatal.
+    if grep -Eq 'already exists|duplicate key value violates unique constraint' "$log"; then
+      echo "expected fixture collision for $tag" >&2
+    else
+      cat "$log" >&2
+      exit 1
+    fi
+  fi
+  rm -f "$log"
 done
+fi
 
+if [ "${MYORDER_REPLAY_JOURNAL:-true}" = "true" ]; then
 for table in catalogue_products catalogue_options inventory_items location_pickup_schedules tax_configurations; do
   present="$(psql -Atqc "SELECT to_regclass('public.$table') IS NOT NULL" "$DATABASE_URL")"
   [ "$present" = "t" ] || die "checkout fixture schema is missing $table"
 done
+fi
 echo "checkout route schema fixture ready"
