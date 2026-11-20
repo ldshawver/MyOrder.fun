@@ -288,6 +288,21 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     });
   });
 
+  it("uses the mapped SAFE category when legacy merchantCategory is absent", async () => {
+    mockDbReturn([
+      makeAlavontItem({
+        id: 101,
+        customerSafeName: "Mapped SAFE fixture",
+        customerSafeDescription: "Mapped SAFE description",
+        luciferCruzCategory: "SAFE",
+        merchantCategory: null,
+      }),
+    ]);
+
+    const [normalized] = await normalizeCheckoutCart([{ catalogItemId: 101, quantity: 1 }], undefined, true, 1, true);
+    expect(normalized.customer_safe_category).toBe("SAFE");
+  });
+
   it("(3e) Alavont row with an UNSUPPORTED merchantProcessingMode still converts from safe fields", async () => {
     mockDbReturn([
       makeAlavontItem({ id: 510, merchantProcessingMode: "passthrough_alavont", customerSafeName: "Safe Tee", customerSafeDescription: "Safe description", merchantCategory: "Safe category" }),

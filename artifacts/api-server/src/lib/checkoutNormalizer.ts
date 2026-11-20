@@ -272,7 +272,10 @@ export async function normalizeCheckoutCart(
     ) ?? "Converted into a customer-ready branded checkout presentation.";
     const customer_safe_name = branded_name;
     const customer_safe_description = customerSafeDescription;
-    const customer_safe_category = firstNonEmpty(ci.merchantCategory);
+    // The mapped Lucifer Cruz category is the canonical customer-safe
+    // category. merchantCategory remains a legacy fallback only; neither raw
+    // catalog nor supplier categories are accepted for checkout conversion.
+    const customer_safe_category = firstNonEmpty(ci.luciferCruzCategory, ci.merchantCategory);
     const customer_safe_image = firstNonEmpty(ci.merchantImage);
     if (requireCompleteSafeFields) {
       const missingSafeFields = missingSafeFieldNames({
