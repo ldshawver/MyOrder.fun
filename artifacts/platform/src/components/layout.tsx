@@ -93,7 +93,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = userRole === "user";
   const showOperationalQueueStatus = ["global_admin", "admin", "supervisor"].includes(userRole);
-  const customerStorefront = /^\/(catalog|catalogue|cart|checkout|orders)(\/|$)/.test(location);
   const [queueStatus, setQueueStatus] = useState<{
     activeShift: { clockedInAt: string } | null;
     activeCsr: { firstName?: string | null; lastName?: string | null; email?: string | null } | null;
@@ -496,7 +495,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             >
               {shouldShowGeneralQueueBanner({
                 canManageQueue: showOperationalQueueStatus,
-                customerStorefront,
+                isCustomer,
                 hasQueueStatus: Boolean(queueStatus),
                 hasActiveShift: Boolean(queueStatus?.activeShift),
               }) && queueStatus && (
