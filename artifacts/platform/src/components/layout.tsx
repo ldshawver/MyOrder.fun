@@ -122,10 +122,10 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/cart", label: isCustomer ? "My Cart" : "Cart", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         {
           href: "/orders",
-          label: isCustomer ? "Order Status" : "Orders",
-          mobileLabel: isCustomer ? "Order Status" : "Orders",
+          label: "Order",
+          mobileLabel: "Order",
           icon: ListTodo,
-          roles: ALL_ROLES,
+          roles: ["user"],
           mobileShow: true,
         },
         {
@@ -155,6 +155,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       roles: SHIFT_ROLES,
       defaultOpen: true,
       items: [
+        { href: "/staff/orders", label: "Orders", icon: ListTodo, roles: SHIFT_ROLES },
         { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES },
         {
           href: "/csr-settings",

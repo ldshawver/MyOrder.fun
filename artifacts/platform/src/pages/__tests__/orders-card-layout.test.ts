@@ -15,4 +15,10 @@ describe("CSR Orders card layout", () => {
     expect(source).toContain("<CustomerOrderStage order={liveOrder} />");
     expect(source).toContain("The API enforces tenant and ownership scoping");
   });
+
+  it("loads the plural CSR workspace from the staff-only queue API and keeps actions server-authorized", () => {
+    expect(source).toContain('fetch("/api/shift-queue/orders"');
+    expect(source).toContain("staffFulfillmentAction(order.id");
+    expect(source).toContain('Awaiting verified payment — not available for fulfillment.');
+  });
 });

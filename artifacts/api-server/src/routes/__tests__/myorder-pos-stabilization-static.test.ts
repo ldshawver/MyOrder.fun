@@ -81,7 +81,9 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
     expect(layout).not.toContain('label: "Reprint Receipts"');
     expect(layout).not.toContain('label: "WooCommerce"');
     expect(layout).not.toContain('label: "Integrations"');
-    expect(layout).toContain('label: isCustomer ? "Order Status" : "Orders"');
+    expect(layout).toContain('href: "/staff/orders", label: "Orders"');
+    expect(layout).toContain('href: "/orders"');
+    expect(app).toContain('path="/staff/orders"');
     expect(layout).toContain('{ href: "/cart", label: isCustomer ? "My Cart" : "Cart"');
     expect(app).toContain('path="/cart" component={NewOrder}');
     expect(app).toContain('path="/orders/new" component={LegacyCartRedirect}');
@@ -494,6 +496,7 @@ describe("admin/POS/security cleanup regressions", () => {
     expect(queue).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_at" timestamptz');
     expect(queue).toContain('CREATE INDEX IF NOT EXISTS "orders_archived_at_idx"');
     expect(queue).toContain('router.get("/shift-queue/orders"');
+    expect(queue).toContain('eq(ordersTable.paymentStatus, "paid")');
   });
 
   it("repairs missing shift_routing_config and falls back when tenant row is absent", () => {

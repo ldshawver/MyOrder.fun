@@ -20,6 +20,9 @@ const ACTIVE_FULFILLMENT_STATUSES = ["submitted", "in_progress", "preparing", "r
 // Keep terminal fulfillment states out even when an old status is stale.
 const activeQueueOrder = and(
   inArray(ordersTable.status, [...QUEUE_ORDER_STATUSES, "confirmed"]),
+  // Only server-verified payments are fulfillment work. A browser approval
+  // must not let an unpaid digital order appear closable to a CSR.
+  eq(ordersTable.paymentStatus, "paid"),
   or(
     inArray(ordersTable.fulfillmentStatus, ACTIVE_FULFILLMENT_STATUSES),
     and(isNull(ordersTable.fulfillmentStatus), inArray(ordersTable.status, [...QUEUE_ORDER_STATUSES, "confirmed"])),

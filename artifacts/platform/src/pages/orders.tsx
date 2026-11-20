@@ -1,11 +1,13 @@
-import { useMemo } from "react";
-import { getGetOrderQueryKey, useGetOrder, useListOrders, useGetCurrentUser } from "@workspace/api-client-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAuth } from "@clerk/react";
+import { getGetOrderQueryKey, useGetOrder, useListOrders, useGetCurrentUser, type Order } from "@workspace/api-client-react";
 import { Link } from "wouter";
 import { Plus, Package, Clock, ShieldAlert, ShoppingCart } from "lucide-react";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { CustomerOrderStage } from "@/components/CustomerOrderStage";
 import { SupervisorDelayedOrders } from "@/components/SupervisorDelayedOrders";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
+import { staffFulfillmentAction, staffVisibleFulfillmentState } from "@/lib/staffFulfillmentAction";
 
 const CLOSED_ORDER_STATES = new Set(["completed", "cancelled", "canceled", "refunded", "voided", "archived", "delivered"]);
 
@@ -32,6 +34,7 @@ function PaymentBadge({ status }: { status: string }) {
 }
 
 export default function Orders() {
+  const { getToken } = useAuth();
   const { data, isLoading } = useListOrders(
     { limit: 50 },
     { query: { queryKey: ["listOrders"] } }
@@ -40,9 +43,32 @@ export default function Orders() {
   const userRole = normalizeNotificationRole(user?.role);
   const isCustomer = userRole === "user";
   const isSupervisor = userRole === "global_admin" || userRole === "admin";
+  const [staffOrders, setStaffOrders] = useState<Array<Order & { fulfillmentStatus?: string | null }>>([]);
+  const [staffLoading, setStaffLoading] = useState(false);
+  const [staffError, setStaffError] = useState<string | null>(null);
+  const [actioningOrderId, setActioningOrderId] = useState<number | null>(null);
+
+  const refreshStaffOrders = useCallback(async () => {
+    if (isCustomer) return;
+    setStaffLoading(true);
+    try {
+      const token = await getToken();
+      const response = await fetch("/api/shift-queue/orders", { headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: "no-store" });
+      if (!response.ok) throw new Error(response.status === 403 ? "You are not authorized to view operational orders." : "Could not load operational orders.");
+      const payload = await response.json() as { orders?: Array<Order & { fulfillmentStatus?: string | null }> };
+      setStaffOrders(Array.isArray(payload.orders) ? payload.orders : []);
+      setStaffError(null);
+    } catch (error) {
+      setStaffError(error instanceof Error ? error.message : "Could not load operational orders.");
+    } finally {
+      setStaffLoading(false);
+    }
+  }, [getToken, isCustomer]);
+
+  useEffect(() => { void refreshStaffOrders(); }, [refreshStaffOrders]);
 
   // The API enforces tenant and ownership scoping; customers see only their own persisted orders.
-  const visibleOrders = useMemo(() => data?.orders ?? [], [data?.orders]);
+  const visibleOrders = useMemo(() => isCustomer ? (data?.orders ?? []) : staffOrders, [data?.orders, isCustomer, staffOrders]);
   const liveOrderId = useMemo(() => {
     const live = visibleOrders.filter(order => !CLOSED_ORDER_STATES.has(order.status.toLowerCase()));
     return live.sort((a, b) => b.id - a.id)[0]?.id ?? 0;
@@ -55,6 +81,28 @@ export default function Orders() {
   const hasPendingOrders = visibleOrders.some(o =>
     o.status === "pending" || o.status === "processing"
   );
+
+  const advanceOrder = useCallback(async (order: Order & { fulfillmentStatus?: string | null }) => {
+    if (order.paymentStatus !== "paid" || actioningOrderId !== null) return;
+    const state = staffVisibleFulfillmentState(order.fulfillmentStatus ?? order.status);
+    const next = state === "ready" ? "completed" : state === "in_progress" || state === "preparing" || state === "processing" ? "ready" : "in_progress";
+    setActioningOrderId(order.id);
+    try {
+      const token = await getToken();
+      const action = staffFulfillmentAction(order.id, next, isSupervisor);
+      const response = await fetch(action.endpoint, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, ...(action.body ? { "Content-Type": "application/json" } : {}) },
+        ...(action.body ? { body: JSON.stringify(action.body) } : {}),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => null) as { error?: string } | null)?.error ?? "Order action was not accepted.");
+      await refreshStaffOrders();
+    } catch (error) {
+      setStaffError(error instanceof Error ? error.message : "Order action was not accepted.");
+    } finally {
+      setActioningOrderId(null);
+    }
+  }, [actioningOrderId, getToken, isSupervisor, refreshStaffOrders]);
 
   if (isCustomer) {
     return (
@@ -112,7 +160,8 @@ export default function Orders() {
 
       {isSupervisor && <SupervisorDelayedOrders />}
 
-      {isLoading ? (
+      {staffError && <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{staffError}</div>}
+      {isLoading || staffLoading ? (
         <div className="flex flex-col items-center justify-center py-24 gap-6">
           <AnimatedHourglass size={160} message="Loading your orders..." />
         </div>
@@ -156,14 +205,17 @@ export default function Orders() {
 
           {/* Compact fulfillment cards: one column on phones, two on tablets, three on wide CSR screens. */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3" data-testid="orders-card-grid">
-            {visibleOrders.map(order => (
-              <Link
+            {visibleOrders.map(order => {
+              const lifecycle = staffVisibleFulfillmentState((order as Order & { fulfillmentStatus?: string | null }).fulfillmentStatus ?? order.status);
+              const actionLabel = lifecycle === "ready" ? "Complete" : lifecycle === "in_progress" || lifecycle === "preparing" || lifecycle === "processing" ? "Mark ready" : "Claim";
+              return (
+              <div
                 key={order.id}
-                href={`/orders/${order.id}`}
-                className="glass-card card-hover-glow rounded-2xl p-4 block min-w-0 group"
+                className="glass-card card-hover-glow rounded-2xl p-4 min-w-0 group"
                 data-testid={`row-order-${order.id}`}
               >
-                <div className="flex items-start justify-between gap-3 mb-3">
+                <Link href={`/orders/${order.id}`} className="block">
+                  <div className="flex items-start justify-between gap-3 mb-3">
                   <div>
                     <div className="text-sm font-bold font-mono text-primary group-hover:underline" data-testid={`link-order-${order.id}`}>#{order.id}</div>
                     <div className="text-xs text-muted-foreground mt-0.5">
@@ -179,8 +231,16 @@ export default function Orders() {
                     <PaymentBadge status={order.paymentStatus} />
                   </div>
                 </div>
-              </Link>
-            ))}
+                </Link>
+                {order.paymentStatus === "paid" ? (
+                  <button type="button" className="mt-3 w-full rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-60" disabled={actioningOrderId !== null} onClick={() => void advanceOrder(order as Order & { fulfillmentStatus?: string | null })} data-testid={`button-order-action-${order.id}`}>
+                    {actioningOrderId === order.id ? "Updating…" : actionLabel}
+                  </button>
+                ) : (
+                  <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200" data-testid={`payment-pending-${order.id}`}>Awaiting verified payment — not available for fulfillment.</p>
+                )}
+              </div>
+            )})}
           </div>
         </>
       )}
