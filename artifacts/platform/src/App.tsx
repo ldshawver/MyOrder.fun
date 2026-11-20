@@ -541,6 +541,7 @@ function AuthenticatedApp() {
           {/* Keep this direct route ahead of conditional route fragments. Wouter's
               Switch treats a fragment as a candidate, which previously shadowed
               /staff for supervisor and admin sessions. */}
+          {isStaff && <Route path="/staff/orders">{() => protect(<Orders />)}</Route>}
           {isStaff && <Route path="/staff">{() => protect(<StaffQueue />)}</Route>}
 
           {appRole === "global_admin" && (

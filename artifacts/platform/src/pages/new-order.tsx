@@ -100,7 +100,7 @@ type CheckoutQuote = {
 type PickupLocationAvailability = { locationId: number; locationName: string; configured: boolean; timeZone: string | null; openNow: boolean; immediateAvailable: boolean; slots: Array<{ at: string; label: string }>; nextOpenAt: string | null; message: string; regularHours?: Array<{ dayOfWeek: number; day: string; hours: string }> };
 
 const FINAL_SALE_TEXT = "All sales are final. I confirm the item list, quantities, pricing, fees, and fulfillment instructions before payment.";
-const CHECKOUT_NOTE = "We verify items, availability, taxes, and eligible payment methods before payment.";
+const CHECKOUT_NOTE = "We verify items, availability, taxes, and eligible payment methods before payment. You may save by paying cash when a cash price is available.";
 
 const isDevelopment = import.meta.env.DEV;
 
@@ -469,14 +469,16 @@ export default function NewOrder() {
 
   const finishCheckout = useCallback(async (orderId: number) => {
     notifyOrderPlaced(orderId, user?.firstName || undefined);
-    await queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
-    await queryClient.invalidateQueries({ queryKey: ["listOrders"] });
     clearCart();
     try {
       const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
       sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, orderId]));
     } catch { /* ignore storage errors */ }
-    setLocation("/orders");
+    // This runs only after the API has verified the provider capture. Send the
+    // buyer to the exact persisted order so a stale list cannot hide it.
+    setLocation(`/orders/${orderId}`);
+    void queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
+    void queryClient.invalidateQueries({ queryKey: ["listOrders"] });
   }, [clearCart, notifyOrderPlaced, queryClient, setLocation, user?.firstName]);
 
   const handleSubmit = async (paymentMethodOverride = selectedPaymentMethod) => {
