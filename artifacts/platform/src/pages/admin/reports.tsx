@@ -61,6 +61,8 @@ export default function AdminReports() {
   const [csrId, setCsrId] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("all");
   const [product, setProduct] = useState("");
+  const [reprintingOrderId, setReprintingOrderId] = useState<number | null>(null);
+  const [reprintMessage, setReprintMessage] = useState<string | null>(null);
 
   const buildQuery = useCallback(() => {
     const params = new URLSearchParams();
@@ -95,6 +97,22 @@ export default function AdminReports() {
     a.download = "myorder-reports.csv";
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function reprintReceipt(orderId: number) {
+    setReprintingOrderId(orderId);
+    setReprintMessage(null);
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/print/orders/${orderId}/receipt`, { method: "POST", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      const payload = await response.json().catch(() => ({})) as { error?: string; status?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Receipt reprint could not be queued.");
+      setReprintMessage(payload.status === "completed" ? `Receipt #${orderId} printed.` : `Receipt #${orderId} was queued for printing.`);
+    } catch (error) {
+      setReprintMessage(error instanceof Error ? error.message : "Receipt reprint could not be queued.");
+    } finally {
+      setReprintingOrderId(null);
+    }
   }
 
   useEffect(() => { load().catch(err => { setError(err.message); setLoading(false); }); }, [load]);
@@ -181,7 +199,7 @@ export default function AdminReports() {
             <h2 className="text-xl font-semibold">{title}{report === "sales" ? ` · ${salesView === "time" ? "time period" : salesView === "product" ? "product" : "CSR"}` : ""}</h2>
             <p className="text-xs text-muted-foreground">{range}. Sales times are Pacific. Inventory and suggested order use current stock. Sales use the latest 500 orders.</p>
           </div>
-          <ReportView report={report} salesView={salesView} data={data} />
+          <ReportView report={report} salesView={salesView} data={data} onReprint={reprintReceipt} reprintingOrderId={reprintingOrderId} reprintMessage={reprintMessage} />
         </div>
       )}
     </div>
@@ -228,7 +246,7 @@ function Table({ headers, rows }: { headers: string[]; rows: string[][] }) {
   );
 }
 
-function ReportView({ report, salesView, data }: { report: ReportId; salesView: SalesView; data: ReportsSummary }) {
+function ReportView({ report, salesView, data, onReprint, reprintingOrderId, reprintMessage }: { report: ReportId; salesView: SalesView; data: ReportsSummary; onReprint: (orderId: number) => Promise<void>; reprintingOrderId: number | null; reprintMessage: string | null }) {
   if (report === "sales") return <SalesReport view={salesView} data={data} />;
   if (report === "time") {
     const busyHour = peak(data.hourOfDay);
@@ -345,13 +363,14 @@ function ReportView({ report, salesView, data }: { report: ReportId; salesView: 
     <Card className="rounded-sm border-border/50">
       <CardHeader className="bg-muted/10 border-b border-border/50"><CardTitle className="text-sm uppercase tracking-wider">Receipt reprints</CardTitle></CardHeader>
       <CardContent className="pt-2 divide-y divide-border/40">
+        {reprintMessage && <p className="py-3 text-xs text-muted-foreground" role="status">{reprintMessage}</p>}
         {data.receipts.length === 0 ? <div className="text-sm text-muted-foreground py-6">No orders in this filter.</div> : data.receipts.map((receipt) => (
           <div key={receipt.orderId} className="py-3 flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-medium">Order #{receipt.orderId}</div>
               <div className="text-xs text-muted-foreground">{new Date(receipt.createdAt).toLocaleString()} · {receipt.paymentStatus} · {receipt.paymentMethod ?? "cash"} · {money(receipt.total)}</div>
             </div>
-            <Button asChild size="sm" variant="outline" className="rounded-sm"><a href={`/api/print/orders/${receipt.orderId}/receipt`} target="_blank" rel="noreferrer">Reprint</a></Button>
+            <Button size="sm" variant="outline" className="rounded-sm" disabled={reprintingOrderId !== null} onClick={() => void onReprint(receipt.orderId)} data-testid={`button-reprint-receipt-${receipt.orderId}`}>{reprintingOrderId === receipt.orderId ? "Queueing…" : "Reprint"}</Button>
           </div>
         ))}
       </CardContent>
