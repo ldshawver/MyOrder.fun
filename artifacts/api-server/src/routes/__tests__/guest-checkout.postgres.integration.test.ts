@@ -4,7 +4,21 @@ import express from "express";
 import supertest from "supertest";
 
 type Actor = { id: number; role: string; email: string; tenantId: number };
-const state = vi.hoisted(() => ({ actor: undefined as Actor | undefined, audits: [] as Array<Record<string, unknown>> }));
+const state = vi.hoisted(() => ({ actor: undefined as Actor | undefined, audits: [] as Array<Record<string, unknown>>, failSettlementOnce: false }));
+
+vi.mock("../../lib/cashSettlement", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/cashSettlement")>();
+  return {
+    ...actual,
+    settleCashOrder: async (...args: Parameters<typeof actual.settleCashOrder>) => {
+      if (state.failSettlementOnce) {
+        state.failSettlementOnce = false;
+        throw new Error("guest_checkout_test_settlement_failure");
+      }
+      return actual.settleCashOrder(...args);
+    },
+  };
+});
 
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
@@ -98,7 +112,7 @@ pgSuite("POST /guest-checkout/sessions (disposable PostgreSQL)", () => {
     request = supertest(app);
   }, 60_000);
 
-  beforeEach(() => { state.actor = csrOne; state.audits.length = 0; });
+  beforeEach(() => { state.actor = csrOne; state.audits.length = 0; state.failSettlementOnce = false; });
   afterAll(async () => { await dbModule.pool.end(); });
 
   const confirmation = () => ({ acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: disclaimerText });
@@ -220,6 +234,24 @@ pgSuite("POST /guest-checkout/sessions (disposable PostgreSQL)", () => {
       (SELECT count(*) FROM cash_ledger_entries WHERE idempotency_key = $2) AS ledger,
       (SELECT consumed_at IS NULL FROM guest_checkout_sessions WHERE id = $1) AS unconsumed`, [session.sessionId, "guest-cash-insufficient-order-key-003"]);
     expect(residue.rows[0]).toEqual({ orders: "0", ledger: "0", unconsumed: true });
+  });
+
+  it("rolls back guest capability, order, inventory, cash, and effects when settlement throws", async () => {
+    const session = await guestSession("guest-cash-forced-rollback-session-003a");
+    state.failSettlementOnce = true;
+    const response = await guestCash(session, "20.00", "guest-cash-forced-rollback-order-003a");
+    expect(response.status).toBe(500);
+    const residue = await dbModule.pool.query(`SELECT
+      (SELECT count(*) FROM orders WHERE guest_identity_id = (SELECT guest_identity_id FROM guest_checkout_sessions WHERE id = $1)) AS orders,
+      (SELECT consumed_at IS NULL FROM guest_checkout_sessions WHERE id = $1) AS unconsumed,
+      (SELECT count(*) FROM inventory_reservations WHERE order_id IN (SELECT id FROM orders WHERE tenant_id = $2)) AS reservations,
+      (SELECT count(*) FROM inventory_movements WHERE tenant_id = $2) AS movements,
+      (SELECT count(*) FROM payment_attempts WHERE tenant_id = $2) AS payments,
+      (SELECT count(*) FROM cash_ledger_entries WHERE idempotency_key = $3) AS ledger,
+      (SELECT count(*) FROM print_jobs WHERE tenant_id = $2) AS prints,
+      (SELECT count(*) FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.tenant_id = $2) AS notifications`, [session.sessionId, tenantOne, "guest-cash-forced-rollback-order-003a"]);
+    expect(residue.rows[0]).toEqual({ orders: "0", unconsumed: true, reservations: "0", movements: "0", payments: "0", ledger: "0", prints: "0", notifications: "0" });
+    expect(state.audits).not.toEqual(expect.arrayContaining([expect.objectContaining({ action: "CREATE_ORDER" })]));
   });
 
   it("fails closed for a foreign tenant capability", async () => {
