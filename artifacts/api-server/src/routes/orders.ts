@@ -2126,12 +2126,6 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     if (Number((order.taxSnapshot as { schemaVersion?: unknown } | null)?.schemaVersion) >= 3
       && order.selectedPaymentMethod !== "cash") return { status: 409, error: "Order was not confirmed for Cash tender" } as const;
     if (order.paymentStatus !== "unpaid" || order.paymentIntentId) return { status: 409, error: "Another payment is pending or associated with this order" } as const;
-    try {
-      await requireOrderCatalogForSale(tx, order);
-    } catch (error) {
-      if (error instanceof OrderCatalogUnavailableError) return { status: 409, error: error.message } as const;
-      throw error;
-    }
     const dueCents = moneyToCents(order.remainingTenderAmount ?? order.total);
     const tenderedCents = moneyToCents(parsed.data.amountTendered);
     if (dueCents == null || tenderedCents == null) return { status: 422, error: "Invalid authoritative order balance or tender" } as const;
@@ -2186,6 +2180,15 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
       if (!box) return { status: 409, error: "The active CSR register is unavailable" } as const;
       const [location] = await tx.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.csrBoxId, box.id), eq(inventoryLocationsTable.isActive, true))).limit(1);
       locationId = location?.id ?? null;
+    }
+
+    // Authorization and accountable cash context must be established before
+    // inventory validation, so an unauthorized caller cannot infer stock.
+    try {
+      await requireOrderCatalogForSale(tx, order);
+    } catch (error) {
+      if (error instanceof OrderCatalogUnavailableError) return { status: 409, error: error.message } as const;
+      throw error;
     }
 
     const now = new Date();
