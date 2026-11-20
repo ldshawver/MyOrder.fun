@@ -16,6 +16,7 @@ import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
 import { toast } from "@/hooks/use-toast";
 import { checkoutOptionLines } from "@/lib/sellableOptions";
 import { formatPickupSlotLabel } from "@/lib/pickupTimeLabel";
+import { checkoutPreparationError } from "@/lib/checkoutMappingFeedback";
 
 type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
 type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct" | "csr_delivery";
@@ -327,7 +328,7 @@ export default function NewOrder() {
       }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data?.error ?? "Could not prepare checkout.");
+    if (!res.ok) throw new Error(checkoutPreparationError(data, cart));
     return data as ConversionPreview;
   };
 
