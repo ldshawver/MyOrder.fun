@@ -1,16 +1,8 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { guestCheckoutSessionsTable } from "@workspace/db";
+import { db, guestCheckoutSessionsTable } from "@workspace/db";
 
-/** Any Drizzle transaction supporting the project's update/returning convention. */
-type GuestCheckoutTransaction = {
-  update: (table: typeof guestCheckoutSessionsTable) => {
-    set: (values: { consumedAt: Date }) => {
-      where: (condition: unknown) => {
-        returning: (selection: Record<string, unknown>) => Promise<Array<{ sessionId: number; tenantId: number; guestIdentityId: number; staffActorUserId: number }>>;
-      };
-    };
-  };
-};
+/** The caller owns this transaction; capability consumption never commits it. */
+type GuestCheckoutTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type ConsumeGuestCheckoutCapabilityInput = {
   sessionId: number;
