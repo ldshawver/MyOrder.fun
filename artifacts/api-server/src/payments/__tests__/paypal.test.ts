@@ -15,6 +15,17 @@ describe("PayPal provider", () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token", expires_in: 300 })).mockResolvedValueOnce(json({ purchase_units: [{ payments: { captures: [{ id: "CAP1", status: "COMPLETED", amount: { value: "10.80", currency_code: "USD" } }] } }] }));
     await new PayPalProvider(config, fetcher as typeof fetch).captureOrder("ORDER1", "capture-key"); expect((fetcher.mock.calls[1][1].headers as Record<string, string>)["PayPal-Request-Id"]).toBe("capture-key");
   });
+  it.each([
+    ["venmo", { venmo: {} }, "venmo"],
+    ["Apple Pay", { apple_pay: {} }, "apple_pay"],
+    ["Google Pay", { google_pay: {} }, "google_pay"],
+    ["debit card", { card: { card_type: "DEBIT" } }, "debit"],
+    ["credit card", { card: { card_type: "CREDIT" } }, "credit"],
+    ["PayPal", { paypal: {} }, "paypal"],
+  ])("records the verified %s funding source", async (_label, paymentSource, expected) => {
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token", expires_in: 300 })).mockResolvedValueOnce(json({ payment_source: paymentSource, purchase_units: [{ payments: { captures: [{ id: "CAP1", status: "COMPLETED", amount: { value: "10.80", currency_code: "USD" } }] } }] }));
+    await expect(new PayPalProvider(config, fetcher as typeof fetch).captureOrder("ORDER1", "capture-key")).resolves.toMatchObject({ fundingSource: expected });
+  });
   it("verifies webhooks through PayPal with all transmission metadata", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token", expires_in: 300 })).mockResolvedValueOnce(json({ verification_status: "SUCCESS" })); const provider = new PayPalProvider(config, fetcher as typeof fetch);
     await expect(provider.verifyWebhook({ transmissionId: "id", transmissionTime: "time", transmissionSignature: "sig", certificateUrl: "https://api.paypal.com/cert", authAlgorithm: "SHA256withRSA" }, { id: "event" })).resolves.toBe(true);

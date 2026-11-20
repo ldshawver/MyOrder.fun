@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
-import { db, labTechShiftsTable, orderItemsTable, ordersTable, orderTaxSnapshotsTable, usersTable } from "@workspace/db";
+import { db, labTechShiftsTable, orderItemsTable, ordersTable, orderTaxSnapshotsTable, paymentAttemptsTable, usersTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
 import { requireTenantContext } from "../lib/tenantContext";
 import { buildSalesTaxReportFromRows } from "../lib/salesTaxReport";
@@ -72,6 +72,20 @@ function parseFilters(query: Record<string, unknown>): ReportFilters {
 }
 
 type ReportOrder = Pick<typeof ordersTable.$inferSelect, "id" | "tenantId" | "createdAt" | "assignedCsrUserId" | "paymentMethod" | "paymentStatus" | "total">;
+
+function paymentReportLabel(order: ReportOrder, fundingSource: string | null | undefined): string {
+  const method = order.paymentMethod ?? "cash";
+  if (!method.includes("paypal")) return method === "customer_credit" ? "Customer credit" : method === "cash" ? "Cash" : method;
+  switch (fundingSource) {
+    case "paypal": return "PayPal";
+    case "venmo": return "Venmo";
+    case "apple_pay": return "Apple Pay";
+    case "google_pay": return "Google Pay";
+    case "credit": return "Credit card";
+    case "debit": return "Debit card";
+    default: return "Unspecified digital";
+  }
+}
 
 function filterOrders<T extends ReportOrder>(orders: T[], filters: ReportFilters): T[] {
   return orders.filter((order) => {
@@ -167,14 +181,16 @@ async function loadStockRows(tenantId: number): Promise<StockLocationRow[]> {
 
 async function buildReport(tenantId: number, query: Record<string, unknown>) {
   const filters = parseFilters(query);
-  const [orders, shifts, users] = await Promise.all([
+  const [orders, shifts, users, paymentAttempts] = await Promise.all([
     db.select({ id: ordersTable.id, tenantId: ordersTable.tenantId, createdAt: ordersTable.createdAt, assignedCsrUserId: ordersTable.assignedCsrUserId, paymentMethod: ordersTable.paymentMethod, paymentStatus: ordersTable.paymentStatus, total: ordersTable.total }).from(ordersTable).where(eq(ordersTable.tenantId, tenantId)).orderBy(desc(ordersTable.createdAt)).limit(REPORT_MAX_ROWS + 1),
     db.select({ id: labTechShiftsTable.id, tenantId: labTechShiftsTable.tenantId, createdAt: labTechShiftsTable.createdAt, techId: labTechShiftsTable.techId, status: labTechShiftsTable.status, clockedInAt: labTechShiftsTable.clockedInAt, clockedOutAt: labTechShiftsTable.clockedOutAt, summary: labTechShiftsTable.summary, differenceAmount: labTechShiftsTable.differenceAmount, depositAmount: labTechShiftsTable.depositAmount }).from(labTechShiftsTable).where(eq(labTechShiftsTable.tenantId, tenantId)).orderBy(desc(labTechShiftsTable.createdAt)).limit(REPORT_MAX_ROWS + 1),
     db.select({ id: usersTable.id, tenantId: usersTable.tenantId, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email }).from(usersTable).where(eq(usersTable.tenantId, tenantId)).limit(REPORT_MAX_ROWS + 1),
+    db.select({ orderId: paymentAttemptsTable.orderId, fundingSource: paymentAttemptsTable.fundingSource, createdAt: paymentAttemptsTable.createdAt }).from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, tenantId), eq(paymentAttemptsTable.state, "captured"))).orderBy(desc(paymentAttemptsTable.createdAt)).limit(REPORT_MAX_ROWS + 1),
   ]);
   requireCompleteReportRows(orders, "Orders");
   requireCompleteReportRows(shifts, "Shifts");
   requireCompleteReportRows(users, "Users");
+  requireCompleteReportRows(paymentAttempts, "Payment attempts");
   // Order items have no tenant column. Resolve their IDs only through orders
   // already selected in the authenticated tenant scope.
   const orderIds = orders.map((order) => order.id);
@@ -199,6 +215,8 @@ async function buildReport(tenantId: number, query: Record<string, unknown>) {
   });
   const filteredShifts = filters.csrId ? shifts.filter((shift) => shift.techId === filters.csrId) : shifts;
   const paidOrders = filteredOrders.filter((order) => order.paymentStatus === "paid");
+  const fundingByOrder = new Map<number, string | null>();
+  for (const attempt of paymentAttempts) if (!fundingByOrder.has(attempt.orderId)) fundingByOrder.set(attempt.orderId, attempt.fundingSource);
   const revenue = paidOrders.reduce((sum, order) => sum + money(order.total), 0);
   const averageOrderValue = paidOrders.length > 0 ? revenue / paidOrders.length : 0;
 
@@ -213,7 +231,7 @@ async function buildReport(tenantId: number, query: Record<string, unknown>) {
 
   const byPayment = new Map<string, { method: string; orders: number; revenue: number }>();
   for (const order of paidOrders) {
-    const method = order.paymentMethod ?? "cash";
+    const method = paymentReportLabel(order, fundingByOrder.get(order.id));
     const row = byPayment.get(method) ?? { method, orders: 0, revenue: 0 };
     row.orders += 1;
     row.revenue += money(order.total);
