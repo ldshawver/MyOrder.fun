@@ -4,7 +4,7 @@ import { displaySpecialComponents } from "./specialComponents";
 
 export async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
   const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
-  const customer = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
+  const customer = order.customerId == null ? [] : await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
     .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
   const c = customer[0];
   return {

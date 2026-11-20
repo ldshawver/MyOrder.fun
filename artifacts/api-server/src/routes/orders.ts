@@ -2194,7 +2194,10 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
 
     const now = new Date();
     const creditCents = moneyToCents(order.customerCreditApplied) ?? 0;
-    if (creditCents > 0) await consumeCustomerCredit(tx, { tenantId, customerId: order.customerId, actorUserId: actor.id, orderId, amountCents: creditCents, idempotencyKey: `consume:cash:${parsed.data.idempotencyKey}` });
+    if (creditCents > 0) {
+      if (order.customerId == null) return { status: 409, error: "Guest orders cannot use customer credit" } as const;
+      await consumeCustomerCredit(tx, { tenantId, customerId: order.customerId, actorUserId: actor.id, orderId, amountCents: creditCents, idempotencyKey: `consume:cash:${parsed.data.idempotencyKey}` });
+    }
     const [updated] = await tx.update(ordersTable).set({
       paymentStatus: "paid", paymentMethod: creditCents > 0 ? "customer_credit+cash" : "cash", selectedPaymentMethod: "cash",
       amountTendered: (tenderedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), remainingTenderAmount: (dueCents / 100).toFixed(2),
@@ -2329,11 +2332,15 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
   // is null). Re-emit order.assigned so CsrAlertBanner enqueues for the
   // appropriate audience.
   let routedCustomerName = `customer ${updated.customerId}`;
-  try {
-    const [cust] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
-      .from(usersTable).where(eq(usersTable.id, updated.customerId)).limit(1);
-    if (cust) routedCustomerName = [cust.firstName, cust.lastName].filter(Boolean).join(" ") || cust.email || routedCustomerName;
-  } catch { /* best-effort */ }
+  if (updated.customerId != null) {
+    try {
+      const [cust] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
+        .from(usersTable).where(eq(usersTable.id, updated.customerId)).limit(1);
+      if (cust) routedCustomerName = [cust.firstName, cust.lastName].filter(Boolean).join(" ") || cust.email || routedCustomerName;
+    } catch { /* best-effort */ }
+  } else {
+    routedCustomerName = "Guest";
+  }
   const itemRows = await db.select({ qty: orderItemsTable.quantity })
     .from(orderItemsTable).where(eq(orderItemsTable.orderId, updated.id));
   publishOrderEvent({
@@ -2717,6 +2724,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
         const count = await releaseInventoryReservationsForOrder(tx, tenantId, id);
         const [current] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
         if (current && Number(current.customerCreditApplied) > 0) {
+          if (current.customerId == null) throw new CustomerCreditError(409, "GUEST_CREDIT_FORBIDDEN", "Guest orders cannot use customer credit");
           await releaseCustomerCredit(tx, { tenantId, customerId: current.customerId, actorUserId: actor.id, orderId: id, amountCents: dollarsToCents(current.customerCreditApplied), idempotencyKey: `release:cancel:${id}`, reason: "Unpaid order cancelled" });
           await tx.update(ordersTable).set({ customerCreditApplied: "0.00", remainingTenderAmount: current.total }).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId)));
         }
@@ -2762,6 +2770,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
       const [current] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
       if (!current || current.paymentStatus === "paid") throw new Error("Payment must be resolved before cancellation");
       if (Number(current.customerCreditApplied) > 0) {
+        if (current.customerId == null) throw new CustomerCreditError(409, "GUEST_CREDIT_FORBIDDEN", "Guest orders cannot use customer credit");
         await releaseCustomerCredit(tx, { tenantId, customerId: current.customerId, actorUserId: actor.id, orderId: id, amountCents: dollarsToCents(current.customerCreditApplied), idempotencyKey: `release:cancel:${id}`, reason: "Unpaid order cancelled" });
         stamps.customerCreditApplied = "0.00";
         stamps.remainingTenderAmount = current.total;
@@ -2868,6 +2877,7 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
 
   // In-app notification to customer. Channel opt-outs are enforced server-side so clients cannot force sends.
   try {
+    if (order.customerId != null) {
     const [customerPrefs] = await db
       .select({ notificationPreferences: usersTable.notificationPreferences })
       .from(usersTable)
@@ -2892,6 +2902,7 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
       // No active order-status SMS/email sender is configured here today. Future senders must be
       // registered in this helper so SMS/email opt-outs are checked immediately before each send.
       await sendOrderStatusSmsEmailIfAllowed(customerPrefs.notificationPreferences, {});
+    }
     }
   } catch { /* non-critical */ }
   await writeAuditLog({

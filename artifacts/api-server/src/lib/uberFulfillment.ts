@@ -49,6 +49,10 @@ export async function queueUberDeliveryForPaidOrder(tenantId: number, orderId: n
 export async function requestUberDelivery(tenantId: number, orderId: number): Promise<string> {
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
   if (!order || order.deliveryMethod !== "uber_direct" || order.fulfillmentStatus !== "ready" || !order.readyAt) return "not_ready";
+  // Guest delivery contact handling is intentionally not implemented in this
+  // path yet; fail closed rather than attaching a guest order to a CSR or a
+  // different authenticated customer.
+  if (order.customerId == null) return "guest_contact_required";
   if (!await isUberDeliveryFullySettled(order)) return "payment_required";
   if (!await isUberDirectDispatchEnabledForTenant(tenantId) || !await getUberDirectRuntimeConfig(tenantId) || !await getUberDirectPickupContact(tenantId)) return "configuration_required";
   const [fulfillment] = await db.select().from(uberDeliveryFulfillmentsTable).where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId))).limit(1);
@@ -87,7 +91,7 @@ export async function requestUberDelivery(tenantId: number, orderId: number): Pr
       }
       nextQuoteId = randomUUID();
       await db.transaction(async tx => {
-        await tx.insert(uberDeliveryQuotesTable).values({ id: nextQuoteId, tenantId, customerId: order.customerId, providerQuoteId: refreshed.id, cartFingerprint: quote.cartFingerprint, pickupAddress: quoteSettings.pickupAddress, dropoffAddress: quote.dropoffAddress, manifestItems: quote.manifestItems, pickupLocationId: quoteSettings.pickupLocationId, pickupAt: selection.pickupAt, pickupScheduleSnapshot: quote.pickupScheduleSnapshot, manifestTotalValue: quote.manifestTotalValue, externalStoreId: quoteSettings.externalStoreId, feeCents: refreshed.fee!, currency: quote.currency, dropoffEta, durationSeconds, pickupDurationSeconds, providerCreatedAt: refreshed.created ? new Date(refreshed.created) : null, expiresAt: expires, status: "consumed", consumedAt: new Date() });
+        await tx.insert(uberDeliveryQuotesTable).values({ id: nextQuoteId, tenantId, customerId: order.customerId!, providerQuoteId: refreshed.id, cartFingerprint: quote.cartFingerprint, pickupAddress: quoteSettings.pickupAddress, dropoffAddress: quote.dropoffAddress, manifestItems: quote.manifestItems, pickupLocationId: quoteSettings.pickupLocationId, pickupAt: selection.pickupAt, pickupScheduleSnapshot: quote.pickupScheduleSnapshot, manifestTotalValue: quote.manifestTotalValue, externalStoreId: quoteSettings.externalStoreId, feeCents: refreshed.fee!, currency: quote.currency, dropoffEta, durationSeconds, pickupDurationSeconds, providerCreatedAt: refreshed.created ? new Date(refreshed.created) : null, expiresAt: expires, status: "consumed", consumedAt: new Date() });
         await tx.update(uberDeliveryFulfillmentsTable).set({ quoteId: nextQuoteId, updatedAt: new Date() }).where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "staff_requesting")));
         await tx.update(ordersTable).set({ deliveryQuoteId: nextQuoteId, updatedAt: new Date() }).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.deliveryQuoteId, quote.id)));
       });
@@ -110,7 +114,7 @@ export async function dispatchPendingUberDelivery(tenantId: number, orderId: num
   if (!fulfillment || fulfillment.providerDeliveryId || !RETRYABLE.has(fulfillment.requestState)) return;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.fulfillmentStatus, "ready"))).limit(1);
   const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(eq(uberDeliveryQuotesTable.id, fulfillment.quoteId), eq(uberDeliveryQuotesTable.tenantId, tenantId))).limit(1);
-  const [customer] = order ? await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, phone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1) : [];
+  const [customer] = order?.customerId == null ? [] : await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, phone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
   const [pickup, config] = await Promise.all([getUberDirectPickupContact(tenantId), getUberDirectRuntimeConfig(tenantId)]);
   const customerName = `${customer?.firstName ?? ""} ${customer?.lastName ?? ""}`.trim();
   if (!order || !order.readyAt || !await isUberDeliveryFullySettled(order) || !quote || !pickup || !config || !customerName || !customer?.phone) {

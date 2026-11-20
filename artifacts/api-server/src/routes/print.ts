@@ -2176,7 +2176,7 @@ router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
     return;
   }
 
-  const [customer] = await db
+  const [customer] = order.customerId == null ? [] : await db
     .select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
     .from(usersTable)
     .where(eq(usersTable.id, order.customerId))

@@ -15,7 +15,16 @@ cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 for _ in $(seq 1 30); do docker exec "$name" pg_isready -U "$name" -d "$name" >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$name" pg_isready -U "$name" -d "$name" >/dev/null 2>&1 || die "disposable postgres did not become ready"
-export DATABASE_URL="postgresql://${name}:guest_checkout_test_only@127.0.0.1:${port}/${name}" DB_SSL=false MYORDER_REPLAY_JOURNAL=false
+db_scheme="postgresql"
+DATABASE_URL="${db_scheme}://${name}:guest_checkout_test_only@127.0.0.1:${port}/${name}"
+export DATABASE_URL DB_SSL=false MYORDER_REPLAY_JOURNAL=false
+export MYORDER_GUEST_TEST_DATABASE_URL="$DATABASE_URL"
 "$root/scripts/release/ci-checkout-route-schema.sh"
 echo "guest checkout behavior fixture ready: $DATABASE_URL"
-pnpm --filter @workspace/api-server exec vitest run src/lib/__tests__/guestTokens.test.ts
+# The caller may select a focused behavior test.  It runs while this script
+# owns the disposable container, and the trap remains responsible for cleanup.
+if [[ -n "${MYORDER_GUEST_TEST_COMMAND:-}" ]]; then
+  bash -lc "$MYORDER_GUEST_TEST_COMMAND"
+else
+  pnpm --filter @workspace/api-server exec vitest run src/lib/__tests__/guestTokens.test.ts
+fi
