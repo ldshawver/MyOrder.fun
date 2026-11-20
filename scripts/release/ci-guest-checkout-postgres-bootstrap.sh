@@ -17,9 +17,21 @@ for _ in $(seq 1 30); do docker exec "$name" pg_isready -U "$name" -d "$name" >/
 docker exec "$name" pg_isready -U "$name" -d "$name" >/dev/null 2>&1 || die "disposable postgres did not become ready"
 db_scheme="postgresql"
 DATABASE_URL="${db_scheme}://${name}:guest_checkout_test_only@127.0.0.1:${port}/${name}"
-export DATABASE_URL DB_SSL=false MYORDER_REPLAY_JOURNAL=false
+export DATABASE_URL DB_SSL=false MYORDER_REPLAY_JOURNAL=true
 export MYORDER_GUEST_TEST_DATABASE_URL="$DATABASE_URL"
 "$root/scripts/release/ci-checkout-route-schema.sh"
+required_relations=(
+  catalogue_products catalogue_options inventory_items inventory_balances
+  location_pickup_schedules tax_configurations guest_order_identities
+  guest_checkout_sessions orders order_items inventory_reservations
+  inventory_movements cash_ledger_entries payment_attempts print_jobs
+  notifications audit_logs general_queue_cash_sessions
+  general_queue_cash_session_participants
+)
+for relation in "${required_relations[@]}"; do
+  present="$(psql -Atqc "SELECT to_regclass('public.$relation') IS NOT NULL" "$DATABASE_URL")"
+  [ "$present" = "t" ] || die "guest checkout fixture schema is missing required relation: $relation"
+done
 echo "guest checkout behavior fixture ready: $DATABASE_URL"
 # The caller may select a focused behavior test.  It runs while this script
 # owns the disposable container, and the trap remains responsible for cleanup.

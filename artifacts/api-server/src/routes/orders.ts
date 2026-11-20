@@ -17,13 +17,10 @@ import {
   adminSettingsTable,
   inventoryLocationsTable,
   catalogItemsTable,
-  cashLedgerEntriesTable,
   paymentAttemptsTable,
   paymentCapturesTable,
   auditLogsTable,
   csrBoxesTable,
-  generalQueueCashSessionParticipantsTable,
-  generalQueueCashSessionsTable,
   orderTaxSnapshotsTable,
   uberDeliveryQuotesTable,
   uberDeliveryFulfillmentsTable,
@@ -79,17 +76,16 @@ import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
 
 import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
-import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { allocateOrderLineRefundTax } from "../lib/refundAccounting";
 import { createCheckoutTaxQuoteToken, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError, verifyCheckoutTaxQuoteToken } from "../lib/checkoutConversionGate";
-import { requireOrderCatalogForSale, OrderCatalogUnavailableError } from "../lib/orderCatalogEligibility";
 import { CartItemUnavailableError, requireCartLinesAvailable, WooAvailabilityProviderError } from "../lib/cartAvailability";
 import { groupSpecialReservationDemands, loadCheckoutSpecialComponents, specialComponentSnapshot, syncCatalogStockForInventoryItem } from "../lib/specialComponents";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import { buildOrderResponse } from "../lib/orderResponse";
 import { orderOwnerColumns, type OrderOwnership } from "../lib/orderOwnership";
 import { consumeGuestCheckoutCapability, type ConsumeGuestCheckoutCapabilityInput } from "../lib/guestCheckoutSessionRepository";
+import { settleCashOrder, type CashSettlementInput } from "../lib/cashSettlement";
 import {
   sendOrderStatusSmsEmailIfAllowed,
   shouldSendNotificationChannel,
@@ -968,7 +964,13 @@ type OrderSubmissionOptions = {
   ownership?: OrderOwnership;
   /** A guest capability is consumed in the same transaction as the order. */
   guestCapability?: ConsumeGuestCheckoutCapabilityInput;
+  /** Only trusted staff-assisted checkout can settle during creation. */
+  cashSettlement?: Pick<CashSettlementInput, "amountTendered" | "idempotencyKey" | "internalNote" | "supervisorOverride">;
 };
+
+class CashSettlementRejectedError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
 
 /**
  * The shared authenticated order-creation path.  The public /orders route is
@@ -1752,6 +1754,18 @@ export async function submitOrderWithTrustedOwnership(
         }
       }
 
+      if (options.cashSettlement) {
+        const settled = await settleCashOrder(tx, {
+          tenantId: houseTenantId,
+          orderId: createdOrder.id,
+          actor,
+          ipAddress: req.ip,
+          ...options.cashSettlement,
+        });
+        if (!("updated" in settled)) throw new CashSettlementRejectedError(settled.status, settled.error);
+        currentOrder = settled.updated;
+      }
+
       // The event and channel jobs commit with the order. Provider work is
       // performed only by the independent worker after this transaction.
       await enqueueOrderCreated(tx, houseTenantId, createdOrder.id, createdOrder.createdAt);
@@ -1760,6 +1774,7 @@ export async function submitOrderWithTrustedOwnership(
     });
   } catch (err) {
     if (err instanceof CheckoutReplayConflictError) { res.status(409).json({ error: err.message }); return; }
+    if (err instanceof CashSettlementRejectedError) { res.status(err.status).json({ error: err.message }); return; }
     if (err instanceof PickupScheduleChangedError) { res.status(409).json({ error: "PICKUP_SCHEDULE_CHANGED" }); return; }
     if (err instanceof CustomerCreditError) { res.status(err.status).json({ error: err.code }); return; }
     if (err instanceof UberQuoteConsumedError) {
@@ -1822,6 +1837,10 @@ async function runOrderPostCommitEffects(input: OrderPostCommitEffectsInput) {
   } catch (err) { logger.warn({ err, orderId: order.id }, "Order print enqueue failed (non-critical)"); }
   const orderObj = await buildOrderResponse(order);
   publishOrderEvent({ type: "order.assigned", orderId: order.id, tenantId: order.tenantId, customerId: actor.id, assignedCsrUserId: routing.assignedCsrUserId, routeSource: routing.routeSource, customerName, total: finalTotal, itemCount: normalizedLines.reduce((s, l) => s + l.quantity, 0), routedAt: now.toISOString(), estimatedReadyAt: routing.estimatedReadyAt.toISOString(), promisedMinutes: routing.promisedMinutes });
+  // Guest orders intentionally have no authenticated customerId.  They are
+  // returned only to the authorized staff caller here; do not force them
+  // through the authenticated-customer response schema.
+  if (order.customerId == null) return orderObj;
   return GetOrderResponse.parse(orderObj);
 }
 
@@ -2098,14 +2117,6 @@ const CashCloseoutBody = z.object({
   supervisorOverride: z.boolean().default(false),
 }).strict();
 
-function moneyToCents(value: string | number): number | null {
-  const text = String(value);
-  if (!/^\d+(\.\d{1,2})?$/.test(text)) return null;
-  const [whole, fraction = ""] = text.split(".");
-  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
-  return Number.isSafeInteger(cents) ? cents : null;
-}
-
 // POST /api/orders/:id/closeout — accountable, idempotent CASH closeout.
 router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "supervisor", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
@@ -2119,7 +2130,20 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
 
   await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "CASH_CLOSEOUT_ATTEMPTED", resourceType: "order", resourceId: String(orderId), metadata: { paymentMethod: "cash", queueContext: "resolved_server_side", supervisorOverride: parsed.data.supervisorOverride }, ipAddress: req.ip });
 
-  const outcome = await db.transaction(async (tx) => {
+  const outcome = await db.transaction((tx) => settleCashOrder(tx, {
+    tenantId,
+    orderId,
+    actor,
+    amountTendered: parsed.data.amountTendered,
+    idempotencyKey: parsed.data.idempotencyKey,
+    internalNote: parsed.data.internalNote,
+    supervisorOverride: parsed.data.supervisorOverride,
+    ipAddress: req.ip,
+  }));
+  /* Previous route-local implementation retained temporarily while the
+   * extracted service is characterized against the cash closeout suite.
+   * It is unreachable and will be removed with the verified extraction. */
+  /*
     await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${orderId})`);
     const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).for("update").limit(1);
     if (!order) return { status: 404, error: "Order not found" } as const;
@@ -2246,6 +2270,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     }
     return { status: 200, updated, ledger, idempotent: false } as const;
   });
+  */
 
   if (!("updated" in outcome) || !outcome.updated || !outcome.ledger) {
     if ("updated" in outcome) {

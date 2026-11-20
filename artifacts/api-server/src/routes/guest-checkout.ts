@@ -6,7 +6,8 @@ import { z } from "zod";
 import { db, generalQueueCashSessionParticipantsTable, generalQueueCashSessionsTable, guestCheckoutSessionsTable, guestOrderIdentitiesTable, labTechShiftsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
 import { requireTenantContext } from "../lib/tenantContext";
-import { createGuestToken } from "../lib/guestTokens";
+import { createGuestToken, hashGuestToken } from "../lib/guestTokens";
+import { submitOrderWithTrustedOwnership } from "./orders";
 
 const router: IRouter = Router();
 const limiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Guest checkout requests rate-limited" } });
@@ -78,5 +79,40 @@ router.post("/guest-checkout/sessions", limiter, async (req, res): Promise<void>
   // The checkout capability is returned once to the authorized staff session.
   // Tracking delivery is a later explicit handoff flow; never bundle it here.
   res.status(201).json({ sessionId: result.sessionId, guestIdentityId: result.identityId, expiresAt, capability: capability.token });
+});
+
+const CashHeaders = z.object({
+  sessionId: z.coerce.number().int().positive(),
+  capability: z.string().min(1),
+  amountTendered: z.string().regex(/^\d{1,7}(\.\d{1,2})?$/),
+  idempotencyKey: z.string().trim().min(8).max(120),
+});
+
+/** Staff-assisted pickup/Cash completion.  The request body remains the same
+ * strict server-calculated order body as authenticated checkout; authority is
+ * carried only in headers and consumed inside the shared order transaction. */
+router.post("/guest-checkout/orders", limiter, async (req, res): Promise<void> => {
+  if (!(await authorized(req))) { res.status(403).json({ error: "Guest checkout requires an authorized active staff session" }); return; }
+  const parsed = CashHeaders.safeParse({
+    sessionId: req.header("x-guest-checkout-session"),
+    capability: req.header("x-guest-checkout-capability"),
+    amountTendered: req.header("x-cash-tender"),
+    idempotencyKey: req.header("x-guest-order-idempotency-key"),
+  });
+  if (!parsed.success) { res.status(400).json({ error: "Invalid guest cash checkout authorization" }); return; }
+  const actor = req.dbUser!;
+  const tenantId = req.authorizedTenantId!;
+  let digest: string;
+  try { digest = hashGuestToken("checkout", parsed.data.capability); } catch { res.status(409).json({ error: "Guest checkout capability is unavailable" }); return; }
+  const [session] = await db.select({ id: guestCheckoutSessionsTable.id, guestIdentityId: guestCheckoutSessionsTable.guestIdentityId })
+    .from(guestCheckoutSessionsTable)
+    .where(and(eq(guestCheckoutSessionsTable.id, parsed.data.sessionId), eq(guestCheckoutSessionsTable.tenantId, tenantId), eq(guestCheckoutSessionsTable.staffActorUserId, actor.id), eq(guestCheckoutSessionsTable.capabilityHash, digest)))
+    .limit(1);
+  if (!session) { res.status(409).json({ error: "Guest checkout capability is unavailable" }); return; }
+  await submitOrderWithTrustedOwnership(req, res, {
+    ownership: { kind: "guest", tenantId, guestIdentityId: session.guestIdentityId, staffActorUserId: actor.id, conversionSubjectUserId: actor.id, shiftId: null, generalCashSessionId: null },
+    guestCapability: { sessionId: session.id, tenantId, actorId: actor.id, capabilityDigest: digest },
+    cashSettlement: { amountTendered: parsed.data.amountTendered, idempotencyKey: parsed.data.idempotencyKey, supervisorOverride: false },
+  });
 });
 export default router;

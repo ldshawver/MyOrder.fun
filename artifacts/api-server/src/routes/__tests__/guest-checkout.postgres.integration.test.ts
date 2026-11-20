@@ -11,6 +11,8 @@ vi.mock("../../lib/auth", () => ({
   loadDbUser: (req: express.Request, _res: express.Response, next: express.NextFunction) => { (req as express.Request & { dbUser?: Actor }).dbUser = state.actor; next(); },
   requireDbUser: (req: express.Request, res: express.Response, next: express.NextFunction) => state.actor ? next() : res.status(401).json({ error: "Authentication required" }),
   requireApproved: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  requireRole: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  requireCustomerCheckoutAccess: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
   normalizeRole: (role: string) => role,
   writeAuditLog: vi.fn(async (entry: Record<string, unknown>) => { state.audits.push(entry); }),
 }));
@@ -34,6 +36,9 @@ pgSuite("POST /guest-checkout/sessions (disposable PostgreSQL)", () => {
   let csrTwo: Actor;
   let inactiveCsr: Actor;
   let customer: Actor;
+  let catalogItemId: number;
+  let pickupLocationId: number;
+  const disclaimerText = "Synthetic guest checkout confirmation";
 
   const payload = (key: string, displayName = "Guest Customer") => ({
     displayName,
@@ -50,7 +55,7 @@ pgSuite("POST /guest-checkout/sessions (disposable PostgreSQL)", () => {
     process.env.DATABASE_URL = databaseUrl;
     process.env.DB_SSL = "false";
     dbModule = await import("@workspace/db");
-    const { db, pool, tenantsTable, usersTable, labTechShiftsTable } = dbModule;
+    const { db, pool, tenantsTable, usersTable, labTechShiftsTable, adminSettingsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable } = dbModule;
     await pool.query("TRUNCATE TABLE tenants RESTART IDENTITY CASCADE");
     const tenants = await db.insert(tenantsTable).values([
       { name: "Guest One", slug: "guest-one", status: "active" },
@@ -67,14 +72,53 @@ pgSuite("POST /guest-checkout/sessions (disposable PostgreSQL)", () => {
     csrTwo = { id: rows[1]!.id, role: "csr", email: rows[1]!.email!, tenantId: tenantTwo };
     inactiveCsr = { id: rows[2]!.id, role: "csr", email: rows[2]!.email!, tenantId: tenantOne };
     customer = { id: rows[3]!.id, role: "user", email: rows[3]!.email!, tenantId: tenantOne };
-    await db.insert(labTechShiftsTable).values({ tenantId: tenantOne, techId: csrOne.id, status: "active", boxAssignmentId: "guest-test-box" });
+    const [cashBox] = await db.insert(csrBoxesTable).values({ tenantId: tenantOne, slug: "sales-box-1", label: "Guest Test Box", isActive: true }).returning();
+    await db.insert(labTechShiftsTable).values({ tenantId: tenantOne, techId: csrOne.id, status: "active", boxAssignmentId: "sales-box-1" });
     await db.insert(labTechShiftsTable).values({ tenantId: tenantTwo, techId: csrTwo.id, status: "active", boxAssignmentId: "guest-test-box" });
-    const { default: router } = await import("../guest-checkout");
-    const app = express(); app.use(express.json()); app.use("/api", router); request = supertest(app);
+    await db.insert(adminSettingsTable).values({ tenantId: tenantOne, customerDisclaimerText: disclaimerText, customerDisclaimerVersion: 1, enabledProcessors: ["cash"], wcEnabled: false });
+    await pool.query(`INSERT INTO tax_configurations(tenant_id,jurisdiction,rate,sourcing_rule,effective_from,source_name,source_url,verified_at,verified_by_user_id) VALUES($1,'Fixture',0.1,'tenant',CURRENT_DATE - 1,'fixture','https://example.invalid',now(),$2)`, [tenantOne, csrOne.id]);
+    const [item] = await db.insert(catalogItemsTable).values({ tenantId: tenantOne, name: "Guest Fixture", description: "Fixture", category: "Menu", sku: "GUEST-FIXTURE", price: "20.00", stockQuantity: "3", inventoryAmount: "3", isAvailable: true, alavontName: "Guest Fixture", alavontDescription: "Fixture", alavontCategory: "Menu", alavontId: "GUEST-FIXTURE", alavontInStock: true, luciferCruzName: "Guest Fixture", luciferCruzDescription: "Fixture", luciferCruzCategory: "Menu", displayName: "Guest Fixture", customerSafeName: "Guest Fixture", customerSafeDescription: "Fixture", merchantName: "Guest Fixture", merchantDescription: "Fixture", merchantCategory: "Menu", merchantSku: "GUEST-FIXTURE", merchantBrand: "fixture", merchantProductSource: "local_mapped", merchantProcessingMode: "mapped_lucifer", receiptName: "Guest Fixture", labelName: "Guest Fixture", labName: "Guest Fixture" }).returning();
+    catalogItemId = item!.id;
+    const product = await pool.query<{ id: number }>("INSERT INTO catalogue_products(tenant_id,name,inventory_model,location_evaluation,active) VALUES($1,$2,'SEPARATE_VARIANTS','PER_LOCATION',true) RETURNING id", [tenantOne, item!.name]);
+    const inventoryItem = await pool.query<{ id: number }>("INSERT INTO inventory_items(tenant_id,catalog_item_id,base_unit) VALUES($1,$2,'each') RETURNING id", [tenantOne, catalogItemId]);
+    await pool.query("INSERT INTO catalogue_options(tenant_id,product_id,catalog_item_id,inventory_item_id,label,consumption_quantity,sort_order,active) VALUES($1,$2,$3,$4,'Standard',1,0,true)", [tenantOne, product.rows[0]!.id, catalogItemId, inventoryItem.rows[0]!.id]);
+    const [location] = await db.insert(inventoryLocationsTable).values({ tenantId: tenantOne, type: "storefront", name: "Guest Front", displayOrder: 1, csrBoxId: cashBox!.id }).returning();
+    pickupLocationId = location!.id;
+    await db.insert(inventoryBalancesTable).values({ tenantId: tenantOne, productId: catalogItemId, locationId: pickupLocationId, quantityOnHand: "3", parLevel: "1" });
+    await pool.query("INSERT INTO location_pickup_schedules(tenant_id,location_id,time_zone,weekly_hours,exceptions,slot_minutes,max_advance_days,version) VALUES($1,$2,'UTC',$3::jsonb,'[]'::jsonb,15,7,1)", [tenantOne, pickupLocationId, JSON.stringify(Array.from({ length: 7 }, (_, dayOfWeek) => ({ dayOfWeek, intervals: [{ open: "00:00", close: "23:59" }] }))) ]);
+    const { default: guestRouter } = await import("../guest-checkout");
+    const { default: ordersRouter } = await import("../orders");
+    const app = express();
+    app.use(express.json());
+    // This intentionally mounts the real order creation and closeout routes:
+    // guest cash tests must exercise the same transaction as authenticated
+    // checkout, not a route-local substitute.
+    app.use("/api", guestRouter);
+    app.use("/api", ordersRouter);
+    request = supertest(app);
   }, 60_000);
 
   beforeEach(() => { state.actor = csrOne; state.audits.length = 0; });
   afterAll(async () => { await dbModule.pool.end(); });
+
+  const confirmation = () => ({ acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: disclaimerText });
+  async function guestSession(key: string) {
+    const response = await request.post("/api/guest-checkout/sessions").send(payload(key));
+    expect(response.status, response.text).toBe(201);
+    return response.body as { sessionId: number; capability: string };
+  }
+  async function guestCash(session: { sessionId: number; capability: string }, tender = "22.00", key = "guest-order-cash-key-0001") {
+    const converted = await request.post("/api/cart/convert").send({ items: [{ catalogItemId, quantity: 1 }], confirmation: confirmation() });
+    expect(converted.status, converted.text).toBe(200);
+    const quote = await request.post("/api/checkout/quote").send({ items: [{ catalogItemId, quantity: 1 }], paymentMethod: "cash", deliveryMethod: "pickup", pickupLocationId });
+    expect(quote.status, quote.text).toBe(200);
+    return request.post("/api/guest-checkout/orders")
+      .set("x-guest-checkout-session", String(session.sessionId))
+      .set("x-guest-checkout-capability", session.capability)
+      .set("x-cash-tender", tender)
+      .set("x-guest-order-idempotency-key", key)
+      .send({ items: [{ catalogItemId, quantity: 1 }], notes: "", checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, selectedPaymentMethod: "cash", paymentMethod: "cash", pickupLocationId, checkoutConfirmation: { ...confirmation(), paymentMethod: "cash", checkoutTaxQuoteToken: quote.body.checkoutTaxQuoteToken } });
+  }
 
   it("serializes same-key concurrent requests and never discloses a capability on the replay", async () => {
     const key = "guest-session-concurrent-key-0001";
@@ -146,5 +190,55 @@ pgSuite("POST /guest-checkout/sessions (disposable PostgreSQL)", () => {
       expect(await consumeGuestCheckoutCapability(tx, { sessionId: session!.id, tenantId: tenantOne, actorId: csrOne.id, capabilityDigest: capability.digest })).toEqual({ available: false });
       expect(await consumeGuestCheckoutCapability(tx, { sessionId: session!.id, tenantId: tenantTwo, actorId: csrOne.id, capabilityDigest: capability.digest })).toEqual({ available: false });
     });
+  });
+
+  it("settles an exact-tender guest pickup order through the shared transaction", async () => {
+    const session = await guestSession("guest-cash-exact-session-key-001");
+    const response = await guestCash(session, "20.00", "guest-cash-exact-order-key-001");
+    expect(response.status, response.text).toBe(201);
+    expect(response.body.paymentStatus).toBe("paid");
+    const rows = await dbModule.pool.query("SELECT customer_id, guest_identity_id, payment_status, amount_tendered, change_given FROM orders WHERE id = $1", [response.body.id]);
+    expect(rows.rows).toEqual([{ customer_id: null, guest_identity_id: expect.any(Number), payment_status: "paid", amount_tendered: "20.00", change_given: "0.00" }]);
+    const ledger = await dbModule.pool.query("SELECT amount_tendered, change_given FROM cash_ledger_entries WHERE order_id = $1", [response.body.id]);
+    expect(ledger.rows).toEqual([{ amount_tendered: "20.00", change_given: "0.00" }]);
+  });
+
+  it("records change due from the authoritative guest cash balance", async () => {
+    const session = await guestSession("guest-cash-change-session-key-002");
+    const response = await guestCash(session, "22.00", "guest-cash-change-order-key-002");
+    expect(response.status, response.text).toBe(201);
+    const ledger = await dbModule.pool.query("SELECT amount_tendered, change_given FROM cash_ledger_entries WHERE order_id = $1", [response.body.id]);
+    expect(ledger.rows).toEqual([{ amount_tendered: "22.00", change_given: "2.00" }]);
+  });
+
+  it("rejects insufficient tender without consuming the guest capability or creating a cash sale", async () => {
+    const session = await guestSession("guest-cash-insufficient-session-key-003");
+    const response = await guestCash(session, "19.99", "guest-cash-insufficient-order-key-003");
+    expect(response.status).toBe(422);
+    const residue = await dbModule.pool.query(`SELECT
+      (SELECT count(*) FROM orders WHERE guest_identity_id = (SELECT guest_identity_id FROM guest_checkout_sessions WHERE id = $1)) AS orders,
+      (SELECT count(*) FROM cash_ledger_entries WHERE idempotency_key = $2) AS ledger,
+      (SELECT consumed_at IS NULL FROM guest_checkout_sessions WHERE id = $1) AS unconsumed`, [session.sessionId, "guest-cash-insufficient-order-key-003"]);
+    expect(residue.rows[0]).toEqual({ orders: "0", ledger: "0", unconsumed: true });
+  });
+
+  it("fails closed for a foreign tenant capability", async () => {
+    state.actor = csrTwo;
+    const foreign = await guestSession("guest-cash-foreign-session-key-004");
+    state.actor = csrOne;
+    const response = await guestCash(foreign, "20.00", "guest-cash-foreign-order-key-004");
+    expect(response.status).toBe(409);
+    const residue = await dbModule.pool.query("SELECT count(*) FROM orders WHERE tenant_id = $1", [tenantOne]);
+    // Earlier successful fixture cases are allowed; the foreign request adds none.
+    expect(Number(residue.rows[0]!.count)).toBe(2);
+  });
+
+  it("rejects an inactive staff actor before creating a guest cash order", async () => {
+    state.actor = inactiveCsr;
+    const response = await request.post("/api/guest-checkout/orders")
+      .set("x-guest-checkout-session", "1").set("x-guest-checkout-capability", "a".repeat(43))
+      .set("x-cash-tender", "20.00").set("x-guest-order-idempotency-key", "guest-cash-inactive-order-key-005")
+      .send({});
+    expect(response.status).toBe(403);
   });
 });
