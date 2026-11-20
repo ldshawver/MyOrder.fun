@@ -1433,7 +1433,9 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.match(runner, /\/opt\/alavont\/shared\/print-assets/);
   assert.match(runner, /\/opt\/alavont\/deploy\/nginx\/nginx\.conf/);
   assert.match(workflow, /production-release\.mjs/);
-  assert.ok(workflow.includes('git merge-base --is-ancestor "${RELEASE_SHA}" "${TOOLING_SHA}"'));
+  assert.doesNotMatch(workflow, /git merge-base --is-ancestor "\$\{RELEASE_SHA\}" "\$\{TOOLING_SHA\}"/);
+  assert.ok(workflow.includes('git cat-file -e "${TOOLING_SHA}^{commit}"'));
+  assert.ok(workflow.includes('TOOLING_SHA: ${{ github.sha }}'));
   assert.doesNotMatch(workflow, /git show "\$\{GITHUB_SHA\}:artifacts\/api-server\/src\/routes\/__tests__\/myorder-pos-stabilization-static\.test\.ts"/);
   assert.ok(workflow.includes("Candidate release-identity assertion is missing or ambiguous"));
   assert.ok(workflow.includes('sha: "${process.env.RELEASE_SHA}"'));
