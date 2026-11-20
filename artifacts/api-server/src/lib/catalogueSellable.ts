@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { formatEmployeeUnitPrice } from "./employeePricing";
+import { resolveEffectiveCatalogUnitPrice } from "./checkoutNormalizer";
 import { formatRetailQuantity, groupSpecialStock, loadSpecialComponentRows, specialsAvailable } from "./specialComponents";
 
 type Product = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
@@ -243,7 +244,7 @@ export async function loadSellableProducts(tenantId: number, pricing?: { isCurre
     )
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.homie_price AS "employeePrice", ci.compare_at_price AS "compareAtPrice",
+      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.regular_price AS "regularPrice", ci.homie_price AS "employeePrice", ci.compare_at_price AS "compareAtPrice", ci.is_sale_featured AS "isSaleFeatured", ci.metadata,
       ii.base_unit AS "baseUnit", co.active,ci.is_available AS "isAvailable",
       COALESCE((ci.metadata->>'showCatalogueStockIndicator')::boolean,true) AS "showCatalogueStockIndicator",
       CASE WHEN ii.id IS NULL THEN 'missing_identity'
@@ -290,12 +291,26 @@ export async function loadSellableProducts(tenantId: number, pricing?: { isCurre
         })),
       };
     })() : option;
-    const priced = sellable as Option & { employeePrice?: string | null };
+    const priced = sellable as Option & {
+      employeePrice?: string | null;
+      regularPrice?: string | null;
+      isSaleFeatured?: boolean | null;
+      metadata?: unknown;
+    };
+    let retailPrice: string | number = priced.price;
+    try {
+      retailPrice = resolveEffectiveCatalogUnitPrice(priced);
+    } catch {
+      retailPrice = priced.price;
+    }
     const visible = {
       ...priced,
-      price: employee ? formatEmployeeUnitPrice(priced.price, priced.employeePrice, true) : priced.price,
+      price: employee ? formatEmployeeUnitPrice(retailPrice, priced.employeePrice, true) : Number(retailPrice).toFixed(2),
     };
     delete visible.employeePrice;
+    delete visible.regularPrice;
+    delete visible.isSaleFeatured;
+    delete visible.metadata;
     if (visible.showCatalogueStockIndicator) return visible;
     const hiddenFields = new Set(["balanceRowCount", "stockOnHand", "reservedQuantity", "availableQuantity"]);
     const withoutQuantities = Object.fromEntries(Object.entries(visible).filter(([field]) => !hiddenFields.has(field)));

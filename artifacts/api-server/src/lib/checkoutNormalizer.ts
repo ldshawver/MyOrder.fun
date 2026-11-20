@@ -175,17 +175,26 @@ export function resolveEffectiveCatalogUnitPrice(input: {
   regularPrice?: string | number | null;
   compareAtPrice?: string | number | null;
   metadata?: unknown;
+  isSaleFeatured?: boolean | null;
 }): number {
   const regular = input.regularPrice == null || String(input.regularPrice).trim() === ""
     ? input.price
     : input.regularPrice;
   const regularCents = dollarsToCents(regular);
-  if (!saleIsActive(input.metadata)) return regularCents / 100;
+  const importedSale = saleIsActive(input.metadata);
+  // The catalog Sale checkbox is isSaleFeatured. A filled Sale Price
+  // (compareAtPrice) is charged when that option is on.
+  const clickedSale = input.isSaleFeatured === true;
+  if (!importedSale && !clickedSale) return regularCents / 100;
   if (input.compareAtPrice == null || String(input.compareAtPrice).trim() === "") {
-    throw new Error("Active sale requires a sale price");
+    if (importedSale) throw new Error("Active sale requires a sale price");
+    return regularCents / 100;
   }
   const saleCents = dollarsToCents(input.compareAtPrice);
-  if (saleCents > regularCents) throw new Error("Sale price cannot exceed regular price");
+  if (saleCents > regularCents) {
+    if (importedSale) throw new Error("Sale price cannot exceed regular price");
+    return regularCents / 100;
+  }
   return saleCents / 100;
 }
 

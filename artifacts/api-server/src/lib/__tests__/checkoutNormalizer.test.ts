@@ -145,6 +145,30 @@ describe("checkoutNormalizer", () => {
       expect(retail[0].unit_price).toBe(25);
     });
 
+    it("charges the sale price when the sale option is on and a sale price is present", async () => {
+      makeDbMock(makeSampleLocalMappedItem({
+        price: "25.00",
+        regularPrice: "25.00",
+        compareAtPrice: "19.99",
+        isSaleFeatured: true,
+      }));
+
+      const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 2 }]);
+      expect(result[0]).toMatchObject({ unit_price: 19.99, line_subtotal: 39.98 });
+    });
+
+    it("keeps the regular price when the sale option is on without a sale price", async () => {
+      makeDbMock(makeSampleLocalMappedItem({
+        price: "25.00",
+        regularPrice: "25.00",
+        compareAtPrice: null,
+        isSaleFeatured: true,
+      }));
+
+      const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
+      expect(result[0].unit_price).toBe(25);
+    });
+
     it("calculates an active sale price on the server", async () => {
       makeDbMock(makeSampleLocalMappedItem({
         price: "25.00",

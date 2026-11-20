@@ -176,6 +176,14 @@ function CatalogItemCard({
     ? (item.luciferCruzImageUrl?.trim() || media[0]?.src?.trim() || item.imageUrl?.trim() || null)
     : (item.imageUrl?.trim() || item.alavontImageUrl?.trim() || media[0]?.src?.trim() || null);
   const hasSale = item.isSaleFeatured || (item.compareAtPrice && Number(item.compareAtPrice) > Number(item.price));
+  const customerView = customerPreview || !canEdit;
+  const salePrice = item.isSaleFeatured && item.compareAtPrice != null
+    && Number(item.compareAtPrice) <= Number(item.regularPrice ?? item.price)
+    ? item.compareAtPrice
+    : null;
+  const listedPrice = selectedOption?.price
+    ?? (!customerView ? salePrice : null)
+    ?? (isLC && item.regularPrice && !(customerView && item.isSaleFeatured) ? item.regularPrice : item.price);
 
   return (
     <div
@@ -296,7 +304,7 @@ function CatalogItemCard({
             >
               {showOptionSelector(product) && !selectedOption
                 ? "Select an option for price"
-                : `$${parseFloat(String(selectedOption?.price ?? (isLC && item.regularPrice ? item.regularPrice : item.price))).toFixed(2)}`}
+                : `$${parseFloat(String(listedPrice)).toFixed(2)}`}
             </span>
           </div>
           {item.showCatalogueStockIndicator !== false && item.stockQuantity !== undefined && !isLC && (!product || product.options.length === 1) && (
