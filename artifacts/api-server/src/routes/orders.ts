@@ -1715,106 +1715,47 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(200).json(await buildOrderResponse(order));
     return;
   }
+  res.status(201).json(await runOrderPostCommitEffects({ order, actor, normalizedLines, routing, finalTotal, finalConfirmationAt, checkoutConfirmation, conversionExpiresAt, isCsrDelivery, deliveryQuote, requestedDeliveryMethod, deliveryFee, tipAmount, now, tenantId: houseTenantId, assignedShiftId, shippingAddress: body.data.shippingAddress ?? null, ipAddress: req.ip }));
+});
 
-  // Merchant payload audit: log provider-safe line items without sensitive content.
+type OrderPostCommitEffectsInput = {
+  order: typeof ordersTable.$inferSelect;
+  actor: { id: number; email: string | null; role: string; firstName: string | null; lastName: string | null };
+  normalizedLines: NormalizedCartLine[];
+  routing: Awaited<ReturnType<typeof decideRouting>>;
+  finalTotal: number;
+  finalConfirmationAt: Date | null;
+  checkoutConfirmation: { acceptedAllSalesFinal?: boolean; paymentMethod?: string; tipPercent?: number } | null;
+  conversionExpiresAt: Date;
+  isCsrDelivery: boolean;
+  deliveryQuote: { provider: string; quoteId: string; fee: number; currency: string } | null;
+  requestedDeliveryMethod: string;
+  deliveryFee: number;
+  tipAmount: number;
+  now: Date;
+  tenantId: number;
+  assignedShiftId: number | null;
+  shippingAddress: string | null;
+  ipAddress: string | undefined;
+};
+
+async function runOrderPostCommitEffects(input: OrderPostCommitEffectsInput) {
+  const { order, actor, normalizedLines, routing, finalTotal, finalConfirmationAt, checkoutConfirmation, conversionExpiresAt, isCsrDelivery, deliveryQuote, requestedDeliveryMethod, deliveryFee, tipAmount, now, tenantId, assignedShiftId, shippingAddress, ipAddress } = input;
   try {
     const merchantLines = buildSafeMerchantPayloadLines(normalizedLines);
-    logger.info(
-      { orderId: order.id, merchantLines, actorId: actor.id },
-      "MERCHANT_PAYLOAD_AUDIT: LC-safe names for processor — Alavont names NOT present"
-    );
+    logger.info({ orderId: order.id, merchantLines, actorId: actor.id }, "MERCHANT_PAYLOAD_AUDIT: LC-safe names for processor — Alavont names NOT present");
   } catch { /* non-critical audit log */ }
-
-  await writeAuditLog({
-    actorId: actor.id,
-    actorEmail: actor.email,
-    actorRole: actor.role,
-    action: "CREATE_ORDER",
-    resourceType: "order",
-    resourceId: String(order.id),
-    metadata: {
-      total: finalTotal,
-      itemCount: normalizedLines.length,
-      routeSource: routing.routeSource,
-      assignedCsrUserId: routing.assignedCsrUserId,
-      finalConfirmationAt: finalConfirmationAt?.toISOString() ?? null,
-      legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
-      selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-      checkoutConversionExpiresAt: conversionExpiresAt,
-      deliveryMethod: isCsrDelivery
-        ? "csr_delivery"
-        : (deliveryQuote?.provider ?? requestedDeliveryMethod),
-      deliveryQuoteId: deliveryQuote?.quoteId ?? null,
-      deliveryFee,
-      tipAmount,
-      tipPercent: checkoutConfirmation?.tipPercent ?? null,
-    },
-    ipAddress: req.ip,
-  });
-  await writeAuditLog({
-    actorId: actor.id,
-    actorEmail: actor.email,
-    actorRole: actor.role,
-    action: "ORDER_ASSIGNED",
-    resourceType: "order",
-    resourceId: String(order.id),
-    metadata: { routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, promisedMinutes: routing.promisedMinutes },
-    ipAddress: req.ip,
-  });
-
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "CREATE_ORDER", resourceType: "order", resourceId: String(order.id), metadata: { total: finalTotal, itemCount: normalizedLines.length, routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, finalConfirmationAt: finalConfirmationAt?.toISOString() ?? null, legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true, selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash", checkoutConversionExpiresAt: conversionExpiresAt, deliveryMethod: isCsrDelivery ? "csr_delivery" : (deliveryQuote?.provider ?? requestedDeliveryMethod), deliveryQuoteId: deliveryQuote?.quoteId ?? null, deliveryFee, tipAmount, tipPercent: checkoutConfirmation?.tipPercent ?? null }, ipAddress });
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "ORDER_ASSIGNED", resourceType: "order", resourceId: String(order.id), metadata: { routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, promisedMinutes: routing.promisedMinutes }, ipAddress });
   const customerName = `${actor.firstName ?? ""} ${actor.lastName ?? ""}`.trim() || actor.email || "Customer";
-
-  // Print: enqueue print jobs (fire-and-forget)
   try {
     const { enqueueOrderPrintJobs } = await import("../lib/printService");
-    await enqueueOrderPrintJobs({
-      id: order.id,
-      status: order.status,
-      paymentStatus: order.paymentStatus,
-      paymentMethod: order.paymentMethod,
-      notes: order.notes,
-      subtotal: order.subtotal as string,
-      tax: order.tax as string,
-      total: order.total as string,
-      createdAt: order.createdAt,
-      customerName,
-      customerFirstName: actor.firstName,
-      fulfillmentType: requestedDeliveryMethod === "pickup" ? "pickup" : "delivery",
-      shippingAddress: body.data.shippingAddress ?? null,
-      tenantId: houseTenantId,
-      assignedShiftId,
-      items: normalizedLines.map(l => ({
-        quantity: l.quantity,
-        catalogItemName: l.catalog_display_name,  // Alavont display name (internal)
-        alavontName: l.receipt_alavont_name,
-        luciferCruzName: l.merchant_name,          // LC merchant name for receipt mode
-        unitPrice: String(l.unit_price.toFixed(2)),
-        totalPrice: String((l.unit_price * l.quantity).toFixed(2)),
-      })),
-    });
+    await enqueueOrderPrintJobs({ id: order.id, status: order.status, paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod, notes: order.notes, subtotal: order.subtotal as string, tax: order.tax as string, total: order.total as string, createdAt: order.createdAt, customerName, customerFirstName: actor.firstName, fulfillmentType: requestedDeliveryMethod === "pickup" ? "pickup" : "delivery", shippingAddress, tenantId, assignedShiftId, items: normalizedLines.map(l => ({ quantity: l.quantity, catalogItemName: l.catalog_display_name, alavontName: l.receipt_alavont_name, luciferCruzName: l.merchant_name, unitPrice: String(l.unit_price.toFixed(2)), totalPrice: String((l.unit_price * l.quantity).toFixed(2)) })) });
   } catch (err) { logger.warn({ err, orderId: order.id }, "Order print enqueue failed (non-critical)"); }
-
   const orderObj = await buildOrderResponse(order);
-
-  // Realtime: notify CSR pool / supervisors. Server enforces scoping in
-  // shouldDeliver — clients receive only what they're authorized to see.
-  publishOrderEvent({
-    type: "order.assigned",
-    orderId: order.id,
-    tenantId: order.tenantId,
-    customerId: actor.id,
-    assignedCsrUserId: routing.assignedCsrUserId,
-    routeSource: routing.routeSource,
-    customerName,
-    total: finalTotal,
-    itemCount: normalizedLines.reduce((s, l) => s + l.quantity, 0),
-    routedAt: now.toISOString(),
-    estimatedReadyAt: routing.estimatedReadyAt.toISOString(),
-    promisedMinutes: routing.promisedMinutes,
-  });
-
-  res.status(201).json(GetOrderResponse.parse(orderObj));
-});
+  publishOrderEvent({ type: "order.assigned", orderId: order.id, tenantId: order.tenantId, customerId: actor.id, assignedCsrUserId: routing.assignedCsrUserId, routeSource: routing.routeSource, customerName, total: finalTotal, itemCount: normalizedLines.reduce((s, l) => s + l.quantity, 0), routedAt: now.toISOString(), estimatedReadyAt: routing.estimatedReadyAt.toISOString(), promisedMinutes: routing.promisedMinutes });
+  return GetOrderResponse.parse(orderObj);
+}
 
 
 function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
