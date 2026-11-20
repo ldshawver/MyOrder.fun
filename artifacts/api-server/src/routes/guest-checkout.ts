@@ -3,7 +3,7 @@ import rateLimit from "express-rate-limit";
 import { and, eq, isNull } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { db, guestCheckoutSessionsTable, guestOrderIdentitiesTable, labTechShiftsTable } from "@workspace/db";
+import { db, generalQueueCashSessionParticipantsTable, generalQueueCashSessionsTable, guestCheckoutSessionsTable, guestOrderIdentitiesTable, labTechShiftsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
 import { requireTenantContext } from "../lib/tenantContext";
 import { createGuestToken } from "../lib/guestTokens";
@@ -32,7 +32,23 @@ async function authorized(req: Request): Promise<boolean> {
     eq(labTechShiftsTable.status, "active"),
     isNull(labTechShiftsTable.clockedOutAt),
   )).limit(1);
-  return Boolean(shift);
+  if (shift) return true;
+  // A CSR can also work an explicitly joined, tenant-scoped General Queue
+  // cash session.  The session is resolved again during cash settlement; this
+  // check merely establishes that the staff member may begin an assisted sale.
+  const [participant] = await db.select({ sessionId: generalQueueCashSessionParticipantsTable.sessionId })
+    .from(generalQueueCashSessionParticipantsTable)
+    .innerJoin(generalQueueCashSessionsTable, and(
+      eq(generalQueueCashSessionsTable.id, generalQueueCashSessionParticipantsTable.sessionId),
+      eq(generalQueueCashSessionsTable.tenantId, generalQueueCashSessionParticipantsTable.tenantId),
+    ))
+    .where(and(
+      eq(generalQueueCashSessionParticipantsTable.tenantId, tenantId),
+      eq(generalQueueCashSessionParticipantsTable.userId, actor.id),
+      isNull(generalQueueCashSessionParticipantsTable.leftAt),
+      eq(generalQueueCashSessionsTable.status, "open"),
+    )).limit(1);
+  return Boolean(participant);
 }
 
 router.post("/guest-checkout/sessions", limiter, async (req, res): Promise<void> => {
