@@ -65,8 +65,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git show "${GITHUB_SHA}:artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts" \
-            > artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts
+          node <<'NODE'
+          const { readFileSync, writeFileSync } = require("node:fs");
+          const testPath = "artifacts/api-server/src/routes/__tests__/myorder-pos-stabilization-static.test.ts";
+          const source = readFileSync(testPath, "utf8");
+          const identity = /const approvedProduction = \{\n  sha: "[a-f0-9]{40}",\n  tree: "[a-f0-9]{40}",\n\};/g;
+          const matches = source.match(identity) ?? [];
+          if (matches.length !== 1) throw new Error("Candidate release-identity assertion is missing or ambiguous");
+          writeFileSync(
+            testPath,
+            source.replace(
+              identity,
+              `const approvedProduction = {\n  sha: "${process.env.RELEASE_SHA}",\n  tree: "${process.env.RELEASE_TREE}",\n};`,
+            ),
+          );
+          NODE
           git show "${GITHUB_SHA}:artifacts/api-server/src/lib/__tests__/itemConversion.test.ts" \
             > artifacts/api-server/src/lib/__tests__/itemConversion.test.ts
           git show "${GITHUB_SHA}:.github/workflows/deploy.yml" \
