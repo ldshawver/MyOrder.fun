@@ -176,7 +176,10 @@ export class PaymentService {
           await input.finalize(order, finalizeTx);
           const creditCents = dollarsToCents(order.customerCreditApplied);
           if (creditCents > 0) await consumeCustomerCredit(finalizeTx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.customerId, orderId: order.id, amountCents: creditCents, idempotencyKey: `consume:capture:${attempt.id}` });
-          const tender = capture.fundingSource === "card" ? "paypal_card" : "paypal";
+          // The order tender remains compatible with existing settlement and
+          // return logic. The exact verified provider source is durably stored
+          // on the payment attempt for reporting.
+          const tender = capture.fundingSource === "credit" || capture.fundingSource === "debit" ? "paypal_card" : "paypal";
           const finalTender = creditCents > 0 ? `customer_credit+${tender}` : tender;
           await finalizeTx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: finalTender, selectedPaymentMethod: tender, paymentIntentId: capture.captureId,
             taxSnapshot: { ...(order.taxSnapshot as Record<string, unknown> ?? {}), tender: finalTender } }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
