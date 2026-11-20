@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "environment": "staging",
+  "status": "source_frozen_images_unresolved",
+  "source": {
+    "repository": "ldshawver/MyOrder.fun",
+    "commit": "28b987bb92960e0a496b99060acef06ae1446152",
+    "tree": "40e494b4cf474b93674c95956bbfe9274b2f9966",
+    "migrationTip": "0083_uber_quote_authoritative_settings.sql",
+    "excludedMigrations": [
+      "0084"
+    ],
+    "excludedFeatures": [
+      "guest checkout",
+      "Speed Order 3x3"
+    ]
+  },
+  "images": {
+    "api": null,
+    "platform": null,
+    "migrate": null
+  },
+  "gates": {
+    "imagesBuilt": false,
+    "immutableDigestsRecorded": false,
+    "stagingControllerReviewedThroughMigrationTip": false,
+    "stagingDeploymentAuthorized": false,
+    "productionDeploymentAuthorized": false
+  }
+}
