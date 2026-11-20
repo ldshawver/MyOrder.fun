@@ -88,6 +88,7 @@ import { CartItemUnavailableError, requireCartLinesAvailable, WooAvailabilityPro
 import { groupSpecialReservationDemands, loadCheckoutSpecialComponents, specialComponentSnapshot, syncCatalogStockForInventoryItem } from "../lib/specialComponents";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import { buildOrderResponse } from "../lib/orderResponse";
+import { orderOwnerColumns, type OrderOwnership } from "../lib/orderOwnership";
 import {
   sendOrderStatusSmsEmailIfAllowed,
   shouldSendNotificationChannel,
@@ -981,6 +982,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
 
   const houseTenantId = req.authorizedTenantId!;
+  const ownership: OrderOwnership = {
+    kind: "authenticated_customer",
+    tenantId: houseTenantId,
+    customerUserId: actor.id,
+    conversionSubjectUserId: actor.id,
+  };
+  const ownerColumns = orderOwnerColumns(ownership);
   if (body.data.checkoutConfirmation?.acceptedAllSalesFinal !== true) {
     res.status(422).json({ error: "Final-sale confirmation is required before checkout." });
     return;
@@ -993,7 +1001,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     if (typeof submittedConversionToken !== "string" || !submittedConversionToken) return null;
     const [candidate] = await queryDb.select().from(ordersTable).where(and(
       eq(ordersTable.tenantId, houseTenantId),
-      eq(ordersTable.customerId, actor.id),
+      eq(ordersTable.customerId, ownerColumns.customerId!),
       sql`${ordersTable.checkoutConversionSnapshot}->>'checkoutConversionToken' = ${submittedConversionToken}`,
     )).limit(1);
     return candidate ?? null;
@@ -1004,7 +1012,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(200).json(await buildOrderResponse(priorOrder));
     return;
   }
-  const conversionCheck = verifyConversionSnapshot((body.data as { checkoutConversionToken?: unknown }).checkoutConversionToken, houseTenantId, actor.id, strictItems.data);
+  const conversionCheck = verifyConversionSnapshot((body.data as { checkoutConversionToken?: unknown }).checkoutConversionToken, houseTenantId, ownership.conversionSubjectUserId, strictItems.data);
   if (!conversionCheck.ok) {
     res.status(422).json({ error: conversionCheck.error });
     return;
@@ -1016,7 +1024,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   let conversionExpiresAt: Date;
   let trustedTotals: ReturnType<typeof computeCheckoutTotals>;
   try {
-    const verified = await requireVerifiedCheckoutConversion({ tenantId: houseTenantId, userId: actor.id, checkoutConversionToken: conversionToken, requestedItems: strictItems.data, legalDisclaimerAccepted: body.data.checkoutConfirmation?.acceptedAllSalesFinal, finalConfirmationAt: body.data.checkoutConfirmation?.confirmedAt, snapshot: conversionSnapshot, isCurrentEmployee: actor.isCurrentEmployee === true });
+    const verified = await requireVerifiedCheckoutConversion({ tenantId: houseTenantId, userId: ownership.conversionSubjectUserId, checkoutConversionToken: conversionToken, requestedItems: strictItems.data, legalDisclaimerAccepted: body.data.checkoutConfirmation?.acceptedAllSalesFinal, finalConfirmationAt: body.data.checkoutConfirmation?.confirmedAt, snapshot: conversionSnapshot, isCurrentEmployee: actor.isCurrentEmployee === true });
     normalizedLines = verified.lines;
     conversionExpiresAt = verified.conversionExpiresAt;
     trustedTotals = verified.totals;
@@ -1332,7 +1340,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       }
       const [createdOrder] = await tx.insert(ordersTable).values({
         tenantId: houseTenantId,
-        customerId: actor.id,
+        ...ownerColumns,
         status: "submitted",
         paymentStatus: "unpaid",
         paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
