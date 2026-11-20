@@ -95,6 +95,10 @@ pgSuite("platform authorization boundaries against disposable PostgreSQL 16", ()
         reconciliation_state text NOT NULL DEFAULT 'not_required', created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       );
+      -- Reports read the verified provider funding source when it exists.
+      -- The P0 compatibility fixture may already contain this table, so make
+      -- the current nullable reporting column explicit in either case.
+      ALTER TABLE public.payment_attempts ADD COLUMN IF NOT EXISTS funding_source text;
       CREATE TABLE IF NOT EXISTS public.order_notes (id serial PRIMARY KEY, order_id integer NOT NULL, author_id integer NOT NULL, content text NOT NULL, is_encrypted text NOT NULL DEFAULT 'false', is_internal text NOT NULL DEFAULT 'false', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
       CREATE TABLE IF NOT EXISTS public.onboarding_requests (id serial PRIMARY KEY, company_name text NOT NULL, contact_name text NOT NULL, contact_email text NOT NULL, contact_phone text, business_output text NOT NULL, website text, description text, expected_order_volume text, status text NOT NULL DEFAULT 'submitted', review_notes text, reviewed_by integer, tenant_id integer, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
     `);
