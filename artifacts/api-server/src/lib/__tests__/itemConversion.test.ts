@@ -241,7 +241,23 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     });
   });
 
-  it("(3d.1) strict checkout conversion rejects rows missing canonical safe fields instead of using fallbacks", async () => {
+  it("(3d.1) strict checkout conversion falls back to the canonical Lucifer Cruz category", async () => {
+    mockDbReturn([
+      makeAlavontItem({
+        id: 100,
+        customerSafeName: "Customer Safe Tee",
+        customerSafeDescription: "Customer-safe production description",
+        merchantCategory: null,
+        luciferCruzCategory: "Canonical Safe Category",
+      }),
+    ]);
+
+    const normalized = await normalizeCheckoutCart([{ catalogItemId: 100, quantity: 1 }], undefined, true, 1, true);
+
+    expect(normalized[0].customer_safe_category).toBe("Canonical Safe Category");
+  });
+
+  it("(3d.2) strict checkout conversion rejects rows missing canonical safe fields instead of using fallbacks", async () => {
     mockDbReturn([
       makeAlavontItem({
         id: 100,

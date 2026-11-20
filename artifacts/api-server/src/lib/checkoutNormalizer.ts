@@ -272,7 +272,7 @@ export async function normalizeCheckoutCart(
     ) ?? "Converted into a customer-ready branded checkout presentation.";
     const customer_safe_name = branded_name;
     const customer_safe_description = customerSafeDescription;
-    const customer_safe_category = firstNonEmpty(ci.merchantCategory);
+    const customer_safe_category = firstNonEmpty(ci.merchantCategory, ci.luciferCruzCategory);
     const customer_safe_image = firstNonEmpty(ci.merchantImage);
     if (requireCompleteSafeFields) {
       const missingSafeFields = missingSafeFieldNames({
