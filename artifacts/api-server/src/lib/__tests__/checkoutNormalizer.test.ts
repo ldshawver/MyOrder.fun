@@ -145,6 +145,50 @@ describe("checkoutNormalizer", () => {
       expect(retail[0].unit_price).toBe(25);
     });
 
+    it("calculates an active sale price on the server", async () => {
+      makeDbMock(makeSampleLocalMappedItem({
+        price: "25.00",
+        regularPrice: "25.00",
+        compareAtPrice: "19.99",
+        metadata: { activeSale: true },
+      }));
+
+      const result = await normalizeCheckoutCartWithContext(
+        [{ catalogItemId: 1, quantity: 2 }], undefined, true, 1, false, { isCurrentEmployee: false },
+      );
+
+      expect(result[0]).toMatchObject({ unit_price: 19.99, line_subtotal: 39.98 });
+    });
+
+    it("charges regular price when a configured sale is inactive", async () => {
+      makeDbMock(makeSampleLocalMappedItem({
+        price: "19.99",
+        regularPrice: "25.00",
+        compareAtPrice: "19.99",
+        metadata: { activeSale: false },
+      }));
+
+      const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
+      expect(result[0].unit_price).toBe(25);
+    });
+
+    it.each([
+      ["missing sale price", null],
+      ["sale price above regular price", "30.00"],
+    ])("rejects an active sale with %s", async (_label, compareAtPrice) => {
+      makeDbMock(makeSampleLocalMappedItem({
+        price: "25.00",
+        regularPrice: "25.00",
+        compareAtPrice,
+        metadata: { activeSale: true },
+      }));
+
+      await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }])).rejects.toMatchObject({
+        name: "CheckoutMappingError",
+        reason: "invalid_sale_price_configuration",
+      });
+    });
+
     it("classifies a locally-mapped Alavont item as local_mapped", async () => {
       makeDbMock(makeSampleLocalMappedItem());
       const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 2 }]);
