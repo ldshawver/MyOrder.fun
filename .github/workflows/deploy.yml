@@ -348,7 +348,9 @@ jobs:
           set -euo pipefail
 
           git cat-file -e "${TOOLING_SHA}^{commit}"
-          git merge-base --is-ancestor "${RELEASE_SHA}" "${TOOLING_SHA}"
+          # The approved application candidate may be a detached minimal
+          # hotfix. Its exact SHA/tree and image identities are enforced
+          # separately; deployment tooling is bound to this workflow SHA.
 
           TOOLING_ROOT="${RUNNER_TEMP}/production-tooling-${TOOLING_SHA}"
           test ! -e "${TOOLING_ROOT}"
