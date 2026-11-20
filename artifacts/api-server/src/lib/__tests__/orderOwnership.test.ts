@@ -2,27 +2,24 @@ import { describe, expect, it } from "vitest";
 import { assertOrderOwnership, orderOwnerColumns } from "../orderOwnership";
 
 describe("server-only checkout ownership", () => {
-  it("keeps a guest identity distinct from the staff actor", () => {
+  it("requires a registered customer as the immutable order owner", () => {
     const ownership = {
-      kind: "guest" as const,
+      kind: "authenticated_customer" as const,
       tenantId: 7,
-      guestIdentityId: 71,
-      staffActorUserId: 19,
-      conversionSubjectUserId: 19,
-      shiftId: 31,
-      generalCashSessionId: null,
+      customerUserId: 71,
+      conversionSubjectUserId: 71,
     };
-    expect(orderOwnerColumns(ownership)).toEqual({ customerId: null, guestIdentityId: 71 });
+    expect(orderOwnerColumns(ownership)).toEqual({ customerId: 71, guestIdentityId: null });
   });
 
-  it("rejects an ambiguous cash context or a mismatched conversion subject", () => {
+  it("rejects a missing customer or mismatched conversion subject", () => {
     expect(() => assertOrderOwnership({
-      kind: "guest", tenantId: 7, guestIdentityId: 71, staffActorUserId: 19,
-      conversionSubjectUserId: 20, shiftId: 31, generalCashSessionId: null,
-    })).toThrow("Invalid guest checkout ownership");
+      kind: "authenticated_customer", tenantId: 7, customerUserId: 71,
+      conversionSubjectUserId: 20,
+    })).toThrow("Invalid authenticated checkout ownership");
     expect(() => assertOrderOwnership({
-      kind: "guest", tenantId: 7, guestIdentityId: 71, staffActorUserId: 19,
-      conversionSubjectUserId: 19, shiftId: 31, generalCashSessionId: 9,
-    })).toThrow("Invalid guest checkout ownership");
+      kind: "authenticated_customer", tenantId: 7, customerUserId: 0,
+      conversionSubjectUserId: 0,
+    })).toThrow("Invalid authenticated checkout ownership");
   });
 });

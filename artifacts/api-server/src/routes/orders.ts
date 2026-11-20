@@ -84,7 +84,6 @@ import { groupSpecialReservationDemands, loadCheckoutSpecialComponents, specialC
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import { buildOrderResponse } from "../lib/orderResponse";
 import { orderOwnerColumns, type OrderOwnership } from "../lib/orderOwnership";
-import { consumeGuestCheckoutCapability, type ConsumeGuestCheckoutCapabilityInput } from "../lib/guestCheckoutSessionRepository";
 import { settleCashOrder, type CashSettlementInput } from "../lib/cashSettlement";
 import {
   sendOrderStatusSmsEmailIfAllowed,
@@ -962,8 +961,6 @@ type OrderSubmissionOptions = {
    * Browser input never selects an order owner or conversion subject.
    */
   ownership?: OrderOwnership;
-  /** A guest capability is consumed in the same transaction as the order. */
-  guestCapability?: ConsumeGuestCheckoutCapabilityInput;
   /** Only trusted staff-assisted checkout can settle during creation. */
   cashSettlement?: Pick<CashSettlementInput, "amountTendered" | "idempotencyKey" | "internalNote" | "supervisorOverride">;
 };
@@ -974,9 +971,8 @@ class CashSettlementRejectedError extends Error {
 
 /**
  * The shared authenticated order-creation path.  The public /orders route is
- * deliberately its first caller; staff-assisted guest checkout will supply a
- * separately authorized guest ownership context rather than impersonating a
- * customer or reimplementing checkout.
+ * deliberately its first caller. Any staff-assisted sale must supply an
+ * existing, authorized customer owner through this same server-only input.
  */
 export async function submitOrderWithTrustedOwnership(
   req: Request,
@@ -1015,14 +1011,6 @@ export async function submitOrderWithTrustedOwnership(
     return;
   }
   const ownerColumns = orderOwnerColumns(ownership);
-  if (ownership.kind === "guest" && !options.guestCapability) {
-    res.status(403).json({ error: "Guest checkout capability is required" });
-    return;
-  }
-  if (ownership.kind !== "guest" && options.guestCapability) {
-    res.status(403).json({ error: "Guest checkout capability cannot be used for a customer order" });
-    return;
-  }
   if (body.data.checkoutConfirmation?.acceptedAllSalesFinal !== true) {
     res.status(422).json({ error: "Final-sale confirmation is required before checkout." });
     return;
@@ -1033,12 +1021,9 @@ export async function submitOrderWithTrustedOwnership(
     (candidate.checkoutConversionSnapshot as { checkoutRequestHash?: string } | null)?.checkoutRequestHash === checkoutRequestHash;
   const findReplay = async (queryDb: Pick<typeof db, "select">) => {
     if (typeof submittedConversionToken !== "string" || !submittedConversionToken) return null;
-    const ownerScope = ownership.kind === "guest"
-      ? eq(ordersTable.guestIdentityId, ownerColumns.guestIdentityId!)
-      : eq(ordersTable.customerId, ownerColumns.customerId!);
     const [candidate] = await queryDb.select().from(ordersTable).where(and(
       eq(ordersTable.tenantId, houseTenantId),
-      ownerScope,
+      eq(ordersTable.customerId, ownerColumns.customerId),
       sql`${ordersTable.checkoutConversionSnapshot}->>'checkoutConversionToken' = ${submittedConversionToken}`,
     )).limit(1);
     return candidate ?? null;
@@ -1106,10 +1091,6 @@ export async function submitOrderWithTrustedOwnership(
     res.status(422).json({ error: "Select an available payment method from checkout" });
     return;
   }
-  if (ownership.kind === "guest" && tender !== "cash") {
-    res.status(422).json({ error: "Guest checkout supports Cash tender only" });
-    return;
-  }
   const processor = tender === "paypal_card" ? "paypal" : tender;
   if ((processor === "cash" || processor === "paypal") && !financialSettings?.enabledProcessors?.includes(processor)) {
     res.status(422).json({ error: `${tender === "paypal" ? "PayPal" : "Cash"} is not enabled for this tenant` });
@@ -1120,10 +1101,6 @@ export async function submitOrderWithTrustedOwnership(
     return;
   }
   const requestedCreditAmount = (body.data.checkoutConfirmation as { customerCreditAmount?: number } | undefined)?.customerCreditAmount;
-  if (ownership.kind === "guest" && requestedCreditAmount != null) {
-    res.status(422).json({ error: "Guest orders cannot use customer credit" });
-    return;
-  }
   const { routing, targetLocationId } = await resolveCheckoutRouting(houseTenantId);
   const deliveryResolution = resolveCustomerFulfillment(body.data.deliveryMethod ?? "pickup", await activeShiftDeliveryMode(houseTenantId));
   if ("error" in deliveryResolution) {
@@ -1131,10 +1108,6 @@ export async function submitOrderWithTrustedOwnership(
     return;
   }
   const requestedDeliveryMethod = deliveryResolution.method;
-  if (ownership.kind === "guest" && requestedDeliveryMethod !== "pickup") {
-    res.status(422).json({ error: "Guest checkout supports pickup only" });
-    return;
-  }
   let checkoutLocationId = targetLocationId;
   let pickupLocation: { id: number; name: string } | null = null;
   let pickupSchedule: Awaited<ReturnType<typeof loadPickupSchedule>> | null = null;
@@ -1214,7 +1187,7 @@ export async function submitOrderWithTrustedOwnership(
     const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(
       eq(uberDeliveryQuotesTable.id, clientDeliveryQuote.quoteId),
       eq(uberDeliveryQuotesTable.tenantId, houseTenantId),
-      eq(uberDeliveryQuotesTable.customerId, actor.id),
+      eq(uberDeliveryQuotesTable.customerId, ownerColumns.customerId),
       eq(uberDeliveryQuotesTable.status, "quoted"),
       gt(uberDeliveryQuotesTable.expiresAt, new Date()),
     )).limit(1);
@@ -1363,14 +1336,6 @@ export async function submitOrderWithTrustedOwnership(
         if (!replayIntentMatches(concurrentOrder)) throw new CheckoutReplayConflictError("Checkout token was already used for a different request");
         replayed = true;
         return concurrentOrder;
-      }
-      if (ownership.kind === "guest") {
-        const consumed = await consumeGuestCheckoutCapability(tx, options.guestCapability!);
-        if (!consumed.available || consumed.tenantId !== ownership.tenantId
-          || consumed.staffActorUserId !== ownership.staffActorUserId
-          || consumed.guestIdentityId !== ownership.guestIdentityId) {
-          throw new CheckoutReplayConflictError("Guest checkout capability is unavailable");
-        }
       }
       if (pickupLocation && pickupSchedule) {
         // Hold the schedule row stable until the order and its immutable
