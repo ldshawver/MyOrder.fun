@@ -675,6 +675,7 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
         : null;
       res.status(422).json({
         error: missingSafeFieldMessage ?? "Item not available for branded checkout conversion",
+        code: "CHECKOUT_MAPPING_REQUIRED",
         catalogItemId: normErr.catalogItemId,
         reason: normErr.reason,
         ...(normErr.missingSafeFields ? { missingSafeFields: normErr.missingSafeFields } : {}),
