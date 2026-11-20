@@ -22,7 +22,10 @@ import { normalizeRole } from "./auth";
 export type OrderEventBase = {
   tenantId: number;
   orderId: number;
-  customerId: number;
+  // Guest orders deliberately have no authenticated customer principal.  They
+  // remain visible to staff under tenant authorization, never to another
+  // signed-in customer through SSE.
+  customerId: number | null;
   assignedCsrUserId: number | null;
   eventId?: string;
 };

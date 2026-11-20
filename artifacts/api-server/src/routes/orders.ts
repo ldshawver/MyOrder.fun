@@ -17,13 +17,10 @@ import {
   adminSettingsTable,
   inventoryLocationsTable,
   catalogItemsTable,
-  cashLedgerEntriesTable,
   paymentAttemptsTable,
   paymentCapturesTable,
   auditLogsTable,
   csrBoxesTable,
-  generalQueueCashSessionParticipantsTable,
-  generalQueueCashSessionsTable,
   orderTaxSnapshotsTable,
   uberDeliveryQuotesTable,
   uberDeliveryFulfillmentsTable,
@@ -79,15 +76,15 @@ import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
 
 import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
-import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { allocateOrderLineRefundTax } from "../lib/refundAccounting";
 import { createCheckoutTaxQuoteToken, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError, verifyCheckoutTaxQuoteToken } from "../lib/checkoutConversionGate";
-import { requireOrderCatalogForSale, OrderCatalogUnavailableError } from "../lib/orderCatalogEligibility";
 import { CartItemUnavailableError, requireCartLinesAvailable, WooAvailabilityProviderError } from "../lib/cartAvailability";
 import { groupSpecialReservationDemands, loadCheckoutSpecialComponents, specialComponentSnapshot, syncCatalogStockForInventoryItem } from "../lib/specialComponents";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import { buildOrderResponse } from "../lib/orderResponse";
+import { orderOwnerColumns, type OrderOwnership } from "../lib/orderOwnership";
+import { settleCashOrder, type CashSettlementInput } from "../lib/cashSettlement";
 import {
   sendOrderStatusSmsEmailIfAllowed,
   shouldSendNotificationChannel,
@@ -958,8 +955,30 @@ router.get("/orders", async (req, res): Promise<void> => {
   res.json(ListOrdersResponse.parse({ orders: orderObjs, total, page, limit }));
 });
 
-// POST /api/orders
-router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create"), async (req, res): Promise<void> => {
+type OrderSubmissionOptions = {
+  /**
+   * Set only by a server-side caller after it has authenticated the owner.
+   * Browser input never selects an order owner or conversion subject.
+   */
+  ownership?: OrderOwnership;
+  /** Only trusted staff-assisted checkout can settle during creation. */
+  cashSettlement?: Pick<CashSettlementInput, "amountTendered" | "idempotencyKey" | "internalNote" | "supervisorOverride">;
+};
+
+class CashSettlementRejectedError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
+/**
+ * The shared authenticated order-creation path.  The public /orders route is
+ * deliberately its first caller. Any staff-assisted sale must supply an
+ * existing, authorized customer owner through this same server-only input.
+ */
+export async function submitOrderWithTrustedOwnership(
+  req: Request,
+  res: Response,
+  options: OrderSubmissionOptions = {},
+): Promise<void> {
   const actor = req.dbUser!;
   const body = CreateOrderBody.safeParse(req.body);
   if (!body.success) {
@@ -981,6 +1000,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
 
   const houseTenantId = req.authorizedTenantId!;
+  const ownership: OrderOwnership = options.ownership ?? {
+    kind: "authenticated_customer",
+    tenantId: houseTenantId,
+    customerUserId: actor.id,
+    conversionSubjectUserId: actor.id,
+  };
+  if (ownership.tenantId !== houseTenantId) {
+    res.status(403).json({ error: "Order ownership does not match the authorized tenant" });
+    return;
+  }
+  const ownerColumns = orderOwnerColumns(ownership);
   if (body.data.checkoutConfirmation?.acceptedAllSalesFinal !== true) {
     res.status(422).json({ error: "Final-sale confirmation is required before checkout." });
     return;
@@ -993,7 +1023,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     if (typeof submittedConversionToken !== "string" || !submittedConversionToken) return null;
     const [candidate] = await queryDb.select().from(ordersTable).where(and(
       eq(ordersTable.tenantId, houseTenantId),
-      eq(ordersTable.customerId, actor.id),
+      eq(ordersTable.customerId, ownerColumns.customerId),
       sql`${ordersTable.checkoutConversionSnapshot}->>'checkoutConversionToken' = ${submittedConversionToken}`,
     )).limit(1);
     return candidate ?? null;
@@ -1004,7 +1034,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(200).json(await buildOrderResponse(priorOrder));
     return;
   }
-  const conversionCheck = verifyConversionSnapshot((body.data as { checkoutConversionToken?: unknown }).checkoutConversionToken, houseTenantId, actor.id, strictItems.data);
+  const conversionCheck = verifyConversionSnapshot((body.data as { checkoutConversionToken?: unknown }).checkoutConversionToken, houseTenantId, ownership.conversionSubjectUserId, strictItems.data);
   if (!conversionCheck.ok) {
     res.status(422).json({ error: conversionCheck.error });
     return;
@@ -1016,7 +1046,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   let conversionExpiresAt: Date;
   let trustedTotals: ReturnType<typeof computeCheckoutTotals>;
   try {
-    const verified = await requireVerifiedCheckoutConversion({ tenantId: houseTenantId, userId: actor.id, checkoutConversionToken: conversionToken, requestedItems: strictItems.data, legalDisclaimerAccepted: body.data.checkoutConfirmation?.acceptedAllSalesFinal, finalConfirmationAt: body.data.checkoutConfirmation?.confirmedAt, snapshot: conversionSnapshot, isCurrentEmployee: actor.isCurrentEmployee === true });
+    const verified = await requireVerifiedCheckoutConversion({ tenantId: houseTenantId, userId: ownership.conversionSubjectUserId, checkoutConversionToken: conversionToken, requestedItems: strictItems.data, legalDisclaimerAccepted: body.data.checkoutConfirmation?.acceptedAllSalesFinal, finalConfirmationAt: body.data.checkoutConfirmation?.confirmedAt, snapshot: conversionSnapshot, isCurrentEmployee: actor.isCurrentEmployee === true });
     normalizedLines = verified.lines;
     conversionExpiresAt = verified.conversionExpiresAt;
     trustedTotals = verified.totals;
@@ -1121,7 +1151,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: checkoutTaxSettings.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: checkoutTaxSettings.taxJurisdiction, taxConfigurationId: checkoutTaxSettings.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
   if (!verifyCheckoutTaxQuoteToken(body.data.checkoutConfirmation?.checkoutTaxQuoteToken, {
     tenantId: houseTenantId,
-    userId: actor.id,
+    userId: ownership.conversionSubjectUserId,
     cartFingerprint: checkoutFingerprint(normalizedLines),
     locationId: checkoutLocationId,
     taxConfigurationId: checkoutTaxSettings.taxConfigurationId,
@@ -1157,7 +1187,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(
       eq(uberDeliveryQuotesTable.id, clientDeliveryQuote.quoteId),
       eq(uberDeliveryQuotesTable.tenantId, houseTenantId),
-      eq(uberDeliveryQuotesTable.customerId, actor.id),
+      eq(uberDeliveryQuotesTable.customerId, ownerColumns.customerId),
       eq(uberDeliveryQuotesTable.status, "quoted"),
       gt(uberDeliveryQuotesTable.expiresAt, new Date()),
     )).limit(1);
@@ -1332,7 +1362,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       }
       const [createdOrder] = await tx.insert(ordersTable).values({
         tenantId: houseTenantId,
-        customerId: actor.id,
+        ...ownerColumns,
         status: "submitted",
         paymentStatus: "unpaid",
         paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
@@ -1689,6 +1719,18 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         }
       }
 
+      if (options.cashSettlement) {
+        const settled = await settleCashOrder(tx, {
+          tenantId: houseTenantId,
+          orderId: createdOrder.id,
+          actor,
+          ipAddress: req.ip,
+          ...options.cashSettlement,
+        });
+        if (!("updated" in settled)) throw new CashSettlementRejectedError(settled.status, settled.error);
+        currentOrder = settled.updated;
+      }
+
       // The event and channel jobs commit with the order. Provider work is
       // performed only by the independent worker after this transaction.
       await enqueueOrderCreated(tx, houseTenantId, createdOrder.id, createdOrder.createdAt);
@@ -1697,6 +1739,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     });
   } catch (err) {
     if (err instanceof CheckoutReplayConflictError) { res.status(409).json({ error: err.message }); return; }
+    if (err instanceof CashSettlementRejectedError) { res.status(err.status).json({ error: err.message }); return; }
     if (err instanceof PickupScheduleChangedError) { res.status(409).json({ error: "PICKUP_SCHEDULE_CHANGED" }); return; }
     if (err instanceof CustomerCreditError) { res.status(err.status).json({ error: err.code }); return; }
     if (err instanceof UberQuoteConsumedError) {
@@ -1715,106 +1758,56 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(200).json(await buildOrderResponse(order));
     return;
   }
+  res.status(201).json(await runOrderPostCommitEffects({ order, actor, normalizedLines, routing, finalTotal, finalConfirmationAt, checkoutConfirmation, conversionExpiresAt, isCsrDelivery, deliveryQuote, requestedDeliveryMethod, deliveryFee, tipAmount, now, tenantId: houseTenantId, assignedShiftId, shippingAddress: body.data.shippingAddress ?? null, ipAddress: req.ip }));
+}
 
-  // Merchant payload audit: log provider-safe line items without sensitive content.
+// POST /api/orders
+router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create"), async (req, res): Promise<void> => {
+  await submitOrderWithTrustedOwnership(req, res);
+});
+
+type OrderPostCommitEffectsInput = {
+  order: typeof ordersTable.$inferSelect;
+  actor: { id: number; email: string | null; role: string; firstName: string | null; lastName: string | null };
+  normalizedLines: NormalizedCartLine[];
+  routing: Awaited<ReturnType<typeof decideRouting>>;
+  finalTotal: number;
+  finalConfirmationAt: Date | null;
+  checkoutConfirmation: { acceptedAllSalesFinal?: boolean; paymentMethod?: string; tipPercent?: number | null } | null;
+  conversionExpiresAt: Date;
+  isCsrDelivery: boolean;
+  deliveryQuote: { provider: string; quoteId: string; fee: number; currency: string } | null;
+  requestedDeliveryMethod: string;
+  deliveryFee: number;
+  tipAmount: number;
+  now: Date;
+  tenantId: number;
+  assignedShiftId: number | null;
+  shippingAddress: string | null;
+  ipAddress: string | undefined;
+};
+
+async function runOrderPostCommitEffects(input: OrderPostCommitEffectsInput) {
+  const { order, actor, normalizedLines, routing, finalTotal, finalConfirmationAt, checkoutConfirmation, conversionExpiresAt, isCsrDelivery, deliveryQuote, requestedDeliveryMethod, deliveryFee, tipAmount, now, tenantId, assignedShiftId, shippingAddress, ipAddress } = input;
   try {
     const merchantLines = buildSafeMerchantPayloadLines(normalizedLines);
-    logger.info(
-      { orderId: order.id, merchantLines, actorId: actor.id },
-      "MERCHANT_PAYLOAD_AUDIT: LC-safe names for processor — Alavont names NOT present"
-    );
+    logger.info({ orderId: order.id, merchantLines, actorId: actor.id }, "MERCHANT_PAYLOAD_AUDIT: LC-safe names for processor — Alavont names NOT present");
   } catch { /* non-critical audit log */ }
-
-  await writeAuditLog({
-    actorId: actor.id,
-    actorEmail: actor.email,
-    actorRole: actor.role,
-    action: "CREATE_ORDER",
-    resourceType: "order",
-    resourceId: String(order.id),
-    metadata: {
-      total: finalTotal,
-      itemCount: normalizedLines.length,
-      routeSource: routing.routeSource,
-      assignedCsrUserId: routing.assignedCsrUserId,
-      finalConfirmationAt: finalConfirmationAt?.toISOString() ?? null,
-      legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
-      selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-      checkoutConversionExpiresAt: conversionExpiresAt,
-      deliveryMethod: isCsrDelivery
-        ? "csr_delivery"
-        : (deliveryQuote?.provider ?? requestedDeliveryMethod),
-      deliveryQuoteId: deliveryQuote?.quoteId ?? null,
-      deliveryFee,
-      tipAmount,
-      tipPercent: checkoutConfirmation?.tipPercent ?? null,
-    },
-    ipAddress: req.ip,
-  });
-  await writeAuditLog({
-    actorId: actor.id,
-    actorEmail: actor.email,
-    actorRole: actor.role,
-    action: "ORDER_ASSIGNED",
-    resourceType: "order",
-    resourceId: String(order.id),
-    metadata: { routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, promisedMinutes: routing.promisedMinutes },
-    ipAddress: req.ip,
-  });
-
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "CREATE_ORDER", resourceType: "order", resourceId: String(order.id), metadata: { total: finalTotal, itemCount: normalizedLines.length, routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, finalConfirmationAt: finalConfirmationAt?.toISOString() ?? null, legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true, selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash", checkoutConversionExpiresAt: conversionExpiresAt, deliveryMethod: isCsrDelivery ? "csr_delivery" : (deliveryQuote?.provider ?? requestedDeliveryMethod), deliveryQuoteId: deliveryQuote?.quoteId ?? null, deliveryFee, tipAmount, tipPercent: checkoutConfirmation?.tipPercent ?? null }, ipAddress });
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "ORDER_ASSIGNED", resourceType: "order", resourceId: String(order.id), metadata: { routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, promisedMinutes: routing.promisedMinutes }, ipAddress });
   const customerName = `${actor.firstName ?? ""} ${actor.lastName ?? ""}`.trim() || actor.email || "Customer";
-
-  // Print: enqueue print jobs (fire-and-forget)
   try {
     const { enqueueOrderPrintJobs } = await import("../lib/printService");
-    await enqueueOrderPrintJobs({
-      id: order.id,
-      status: order.status,
-      paymentStatus: order.paymentStatus,
-      paymentMethod: order.paymentMethod,
-      notes: order.notes,
-      subtotal: order.subtotal as string,
-      tax: order.tax as string,
-      total: order.total as string,
-      createdAt: order.createdAt,
-      customerName,
-      customerFirstName: actor.firstName,
-      fulfillmentType: requestedDeliveryMethod === "pickup" ? "pickup" : "delivery",
-      shippingAddress: body.data.shippingAddress ?? null,
-      tenantId: houseTenantId,
-      assignedShiftId,
-      items: normalizedLines.map(l => ({
-        quantity: l.quantity,
-        catalogItemName: l.catalog_display_name,  // Alavont display name (internal)
-        alavontName: l.receipt_alavont_name,
-        luciferCruzName: l.merchant_name,          // LC merchant name for receipt mode
-        unitPrice: String(l.unit_price.toFixed(2)),
-        totalPrice: String((l.unit_price * l.quantity).toFixed(2)),
-      })),
-    });
+    await enqueueOrderPrintJobs({ id: order.id, status: order.status, paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod, notes: order.notes, subtotal: order.subtotal as string, tax: order.tax as string, total: order.total as string, createdAt: order.createdAt, customerName, customerFirstName: actor.firstName, fulfillmentType: requestedDeliveryMethod === "pickup" ? "pickup" : "delivery", shippingAddress, tenantId, assignedShiftId, items: normalizedLines.map(l => ({ quantity: l.quantity, catalogItemName: l.catalog_display_name, alavontName: l.receipt_alavont_name, luciferCruzName: l.merchant_name, unitPrice: String(l.unit_price.toFixed(2)), totalPrice: String((l.unit_price * l.quantity).toFixed(2)) })) });
   } catch (err) { logger.warn({ err, orderId: order.id }, "Order print enqueue failed (non-critical)"); }
-
   const orderObj = await buildOrderResponse(order);
-
-  // Realtime: notify CSR pool / supervisors. Server enforces scoping in
-  // shouldDeliver — clients receive only what they're authorized to see.
-  publishOrderEvent({
-    type: "order.assigned",
-    orderId: order.id,
-    tenantId: order.tenantId,
-    customerId: actor.id,
-    assignedCsrUserId: routing.assignedCsrUserId,
-    routeSource: routing.routeSource,
-    customerName,
-    total: finalTotal,
-    itemCount: normalizedLines.reduce((s, l) => s + l.quantity, 0),
-    routedAt: now.toISOString(),
-    estimatedReadyAt: routing.estimatedReadyAt.toISOString(),
-    promisedMinutes: routing.promisedMinutes,
-  });
-
-  res.status(201).json(GetOrderResponse.parse(orderObj));
-});
+  publishOrderEvent({ type: "order.assigned", orderId: order.id, tenantId: order.tenantId, customerId: actor.id, assignedCsrUserId: routing.assignedCsrUserId, routeSource: routing.routeSource, customerName, total: finalTotal, itemCount: normalizedLines.reduce((s, l) => s + l.quantity, 0), routedAt: now.toISOString(), estimatedReadyAt: routing.estimatedReadyAt.toISOString(), promisedMinutes: routing.promisedMinutes });
+  // Guest orders intentionally have no authenticated customerId.  They are
+  // returned only to the authorized staff caller here; do not force them
+  // through the authenticated-customer response schema.
+  if (order.customerId == null) return orderObj;
+  return GetOrderResponse.parse(orderObj);
+}
 
 
 function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
@@ -2089,14 +2082,6 @@ const CashCloseoutBody = z.object({
   supervisorOverride: z.boolean().default(false),
 }).strict();
 
-function moneyToCents(value: string | number): number | null {
-  const text = String(value);
-  if (!/^\d+(\.\d{1,2})?$/.test(text)) return null;
-  const [whole, fraction = ""] = text.split(".");
-  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
-  return Number.isSafeInteger(cents) ? cents : null;
-}
-
 // POST /api/orders/:id/closeout — accountable, idempotent CASH closeout.
 router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "supervisor", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
@@ -2110,7 +2095,20 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
 
   await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "CASH_CLOSEOUT_ATTEMPTED", resourceType: "order", resourceId: String(orderId), metadata: { paymentMethod: "cash", queueContext: "resolved_server_side", supervisorOverride: parsed.data.supervisorOverride }, ipAddress: req.ip });
 
-  const outcome = await db.transaction(async (tx) => {
+  const outcome = await db.transaction((tx) => settleCashOrder(tx, {
+    tenantId,
+    orderId,
+    actor,
+    amountTendered: parsed.data.amountTendered,
+    idempotencyKey: parsed.data.idempotencyKey,
+    internalNote: parsed.data.internalNote,
+    supervisorOverride: parsed.data.supervisorOverride,
+    ipAddress: req.ip,
+  }));
+  /* Previous route-local implementation retained temporarily while the
+   * extracted service is characterized against the cash closeout suite.
+   * It is unreachable and will be removed with the verified extraction. */
+  /*
     await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${orderId})`);
     const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).for("update").limit(1);
     if (!order) return { status: 404, error: "Order not found" } as const;
@@ -2194,7 +2192,10 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
 
     const now = new Date();
     const creditCents = moneyToCents(order.customerCreditApplied) ?? 0;
-    if (creditCents > 0) await consumeCustomerCredit(tx, { tenantId, customerId: order.customerId, actorUserId: actor.id, orderId, amountCents: creditCents, idempotencyKey: `consume:cash:${parsed.data.idempotencyKey}` });
+    if (creditCents > 0) {
+      if (order.customerId == null) return { status: 409, error: "Guest orders cannot use customer credit" } as const;
+      await consumeCustomerCredit(tx, { tenantId, customerId: order.customerId, actorUserId: actor.id, orderId, amountCents: creditCents, idempotencyKey: `consume:cash:${parsed.data.idempotencyKey}` });
+    }
     const [updated] = await tx.update(ordersTable).set({
       paymentStatus: "paid", paymentMethod: creditCents > 0 ? "customer_credit+cash" : "cash", selectedPaymentMethod: "cash",
       amountTendered: (tenderedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), remainingTenderAmount: (dueCents / 100).toFixed(2),
@@ -2234,6 +2235,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     }
     return { status: 200, updated, ledger, idempotent: false } as const;
   });
+  */
 
   if (!("updated" in outcome) || !outcome.updated || !outcome.ledger) {
     if ("updated" in outcome) {
@@ -2329,11 +2331,15 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
   // is null). Re-emit order.assigned so CsrAlertBanner enqueues for the
   // appropriate audience.
   let routedCustomerName = `customer ${updated.customerId}`;
-  try {
-    const [cust] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
-      .from(usersTable).where(eq(usersTable.id, updated.customerId)).limit(1);
-    if (cust) routedCustomerName = [cust.firstName, cust.lastName].filter(Boolean).join(" ") || cust.email || routedCustomerName;
-  } catch { /* best-effort */ }
+  if (updated.customerId != null) {
+    try {
+      const [cust] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
+        .from(usersTable).where(eq(usersTable.id, updated.customerId)).limit(1);
+      if (cust) routedCustomerName = [cust.firstName, cust.lastName].filter(Boolean).join(" ") || cust.email || routedCustomerName;
+    } catch { /* best-effort */ }
+  } else {
+    routedCustomerName = "Guest";
+  }
   const itemRows = await db.select({ qty: orderItemsTable.quantity })
     .from(orderItemsTable).where(eq(orderItemsTable.orderId, updated.id));
   publishOrderEvent({
@@ -2717,6 +2723,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
         const count = await releaseInventoryReservationsForOrder(tx, tenantId, id);
         const [current] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
         if (current && Number(current.customerCreditApplied) > 0) {
+          if (current.customerId == null) throw new CustomerCreditError(409, "GUEST_CREDIT_FORBIDDEN", "Guest orders cannot use customer credit");
           await releaseCustomerCredit(tx, { tenantId, customerId: current.customerId, actorUserId: actor.id, orderId: id, amountCents: dollarsToCents(current.customerCreditApplied), idempotencyKey: `release:cancel:${id}`, reason: "Unpaid order cancelled" });
           await tx.update(ordersTable).set({ customerCreditApplied: "0.00", remainingTenderAmount: current.total }).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId)));
         }
@@ -2762,6 +2769,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
       const [current] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
       if (!current || current.paymentStatus === "paid") throw new Error("Payment must be resolved before cancellation");
       if (Number(current.customerCreditApplied) > 0) {
+        if (current.customerId == null) throw new CustomerCreditError(409, "GUEST_CREDIT_FORBIDDEN", "Guest orders cannot use customer credit");
         await releaseCustomerCredit(tx, { tenantId, customerId: current.customerId, actorUserId: actor.id, orderId: id, amountCents: dollarsToCents(current.customerCreditApplied), idempotencyKey: `release:cancel:${id}`, reason: "Unpaid order cancelled" });
         stamps.customerCreditApplied = "0.00";
         stamps.remainingTenderAmount = current.total;
@@ -2868,6 +2876,7 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
 
   // In-app notification to customer. Channel opt-outs are enforced server-side so clients cannot force sends.
   try {
+    if (order.customerId != null) {
     const [customerPrefs] = await db
       .select({ notificationPreferences: usersTable.notificationPreferences })
       .from(usersTable)
@@ -2892,6 +2901,7 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
       // No active order-status SMS/email sender is configured here today. Future senders must be
       // registered in this helper so SMS/email opt-outs are checked immediately before each send.
       await sendOrderStatusSmsEmailIfAllowed(customerPrefs.notificationPreferences, {});
+    }
     }
   } catch { /* non-critical */ }
   await writeAuditLog({
