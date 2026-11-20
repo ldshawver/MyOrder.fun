@@ -205,7 +205,7 @@ vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
   const ordersTable = { __t: "orders", id: "id", tenantId: "tenantId", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", assignedShiftId: "assignedShiftId", routeSource: "routeSource", routedTo: "routedTo", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status", fulfillmentStatus: "fulfillmentStatus" };
   const usersTable = { __t: "users", id: "id", role: "role", firstName: "firstName", lastName: "lastName", email: "email", contactPhone: "contactPhone", notificationPreferences: "notificationPreferences" };
-  const labTechShiftsTable = { __t: "shifts", id: "id", techId: "techId", status: "status", clockedInAt: "clockedInAt" };
+  const labTechShiftsTable = { __t: "shifts", id: "id", tenantId: "tenantId", techId: "techId", status: "status", boxAssignmentId: "boxAssignmentId", clockedInAt: "clockedInAt" };
   const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId", enabledProcessors: "enabledProcessors", cashDiscountEnabled: "cashDiscountEnabled", cashDiscountType: "cashDiscountType", cashDiscountValue: "cashDiscountValue", shiftLocationOptions: "shiftLocationOptions" };
   const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
   const tenantsTable = { __t: "tenants", id: "id", name: "name", settings: "settings" };
@@ -214,7 +214,8 @@ vi.mock("@workspace/db", () => {
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", name: "name", type: "type", isActive: "isActive", csrBoxId: "csrBoxId" };
   const locationPickupSchedulesTable = { __t: "pickup_schedules", tenantId: "tenantId", locationId: "locationId" };
   const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand", inventoryKind: "inventoryKind", isSellable: "isSellable", quarantinedAt: "quarantinedAt", quarantinedByUserId: "quarantinedByUserId", quarantineReason: "quarantineReason" };
-  const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
+  const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug", isActive: "isActive" };
+  const generalQueueCashSessionsTable = { __t: "general_queue_cash_sessions", tenantId: "tenantId", status: "status", openedAt: "openedAt" };
   const orderTaxSnapshotsTable = { __t: "order_tax_snapshots", id: "id", tenantId: "tenantId", orderId: "orderId" };
   const uberDeliveryQuotesTable = { __t: "uber_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
   const auditLogsTable = { __t: "audit_logs" };
@@ -231,6 +232,8 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "inventory_locations") return dbState.inventoryLocations;
     if (t.__t === "pickup_schedules") return dbState.pickupSchedules;
     if (t.__t === "inventory_balances") return dbState.inventoryBalances;
+    if (t.__t === "csr_boxes") return [{ id: 71, tenantId: 1, slug: "sales-box-1", isActive: true }];
+    if (t.__t === "general_queue_cash_sessions") return [];
     if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
     if (t.__t === "order_tax_snapshots") return dbState.taxSnapshots;
     if (t.__t === "uber_quotes") return dbState.uberQuotes;
@@ -348,7 +351,7 @@ vi.mock("@workspace/db", () => {
 
   return {
     db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve({ rows: [{ id: "test-event", version: 1 }] })) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, locationPickupSchedulesTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, locationPickupSchedulesTable, inventoryBalancesTable, csrBoxesTable, generalQueueCashSessionsTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
     orderNotesTable: { __t: "order_notes" },
     cashLedgerEntriesTable: { __t: "cash_ledger", tenantId: "tenantId", idempotencyKey: "idempotencyKey" },
   };
@@ -924,13 +927,18 @@ describe("cash closeout rechecks current catalog eligibility", () => {
     ["active", {}],
   ])("checks %s products before accepting cash", async (state, patch) => {
     mockActor = dbState.users[2]!;
+    // This actor has an accountable active shift. The eligibility assertions
+    // therefore exercise the post-authorization catalog guard.
+    dbState.shifts = [{ id: 81, tenantId: 1, techId: 9, status: "active", boxAssignmentId: "sales-box-1", clockedInAt: new Date() }];
     const orderId = 9001;
-    dbState.orders = [{ id: orderId, tenantId: 1, customerId: 5, status: "pending", paymentStatus: "unpaid", total: "10.00", remainingTenderAmount: "10.00" }];
+    dbState.orders = [{ id: orderId, tenantId: 1, customerId: 5, assignedCsrUserId: 9, assignedShiftId: 81, status: "pending", paymentStatus: "unpaid", total: "10.00", remainingTenderAmount: "10.00" }];
     Object.assign(dbState.catalog[0]!, patch);
     await db.insert(orderItemsTable).values({ orderId, catalogItemId: 1, quantity: 1 } as never).returning();
     vi.mocked(db.update).mockClear();
     const response = await supertest(buildApp()).post(`/api/orders/${orderId}/closeout`)
-      .send({ paymentMethod: "cash", amountTendered: 0, idempotencyKey: "catalog-cash-check" });
+      // Supply the authoritative tender so this reaches the post-authorization
+      // catalog eligibility guard instead of failing on insufficient cash.
+      .send({ paymentMethod: "cash", amountTendered: state === "active" ? 0 : 10, idempotencyKey: "catalog-cash-check" });
     expect(response.status, response.text).toBe(state === "active" ? 422 : 409);
     expect(response.body.error).toBe(state === "active"
       ? "Amount tendered is insufficient"
