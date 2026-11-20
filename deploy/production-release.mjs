@@ -55,18 +55,18 @@ export const APPROVED_RELEASE = Object.freeze({
   }),
 });
 export const PRODUCTION_BASELINE = Object.freeze({
-  // Read-only runtime inspection on 2026-11-18 recorded this local rollback
-  // pair. Their labels are deployment nicknames rather than Git SHAs and no
-  // registry manifest/config provenance exists; preserve the exact daemon IDs
-  // and configured tags, and do not infer a source revision from either.
-  apiImage: "sha256:98d3ad0bb355fa69ff431ba7be41ba764fb975c2332d99f5e7a5df95e9a40554",
-  apiRevision: "profile-photo-20261116",
-  apiReference: "myorder-api:profile-photo-20261116",
-  apiProvenance: "local-image-id-and-runtime-label-verified; registry-and-source-sha-unavailable",
-  platformImage: "sha256:6c46c4781715efcf5804a0a74cff60b2de4c599e9240e6ea5b2429a5127ad8e2",
-  platformRevision: "profile-photo-20261116",
-  platformReference: "myorder-platform:profile-photo-20261116",
-  platformProvenance: "local-image-id-and-runtime-label-verified; registry-and-source-sha-unavailable",
+  // Read-only diagnostic run 44794727707 recorded the exact immutable images
+  // and source revision currently serving production. These were the previously
+  // approved 733d266 release, so preserve them as the rollback pair for the next
+  // release instead of retaining the superseded local-image baseline.
+  apiImage: "sha256:dfd8f1ec4231a3c9eeede4001ef4504d7060443f9fb0efa8ea3ccd5d048c37d1",
+  apiRevision: "733d266eca5073df7ab73abe4e003b0b76215107",
+  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:dfd8f1ec4231a3c9eeede4001ef4504d7060443f9fb0efa8ea3ccd5d048c37d1",
+  apiProvenance: "registry-manifest-and-runtime-label-verified; diagnostic-run=44794727707",
+  platformImage: "sha256:706d56895fc04b6c485351961b42ba79214abf27156f03251a2e01fb15efd381",
+  platformRevision: "733d266eca5073df7ab73abe4e003b0b76215107",
+  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:706d56895fc04b6c485351961b42ba79214abf27156f03251a2e01fb15efd381",
+  platformProvenance: "registry-manifest-and-runtime-label-verified; diagnostic-run=44794727707",
   nginxImage: "sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a",
   nginxReference: "nginx:alpine",
   databaseImage: "sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229",
