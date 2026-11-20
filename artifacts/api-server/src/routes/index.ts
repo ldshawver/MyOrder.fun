@@ -41,6 +41,7 @@ import publicBrandingRouter from "./public-branding";
 import publicCatalogRouter from "./public-catalog";
 import uberDirectWebhooksRouter from "./uber-direct-webhooks";
 import wooCommerceWebhooksRouter from "./woocommerce-webhooks";
+import guestCheckoutRouter from "./guest-checkout";
 
 const router: IRouter = Router();
 
@@ -55,6 +56,7 @@ router.use(publicCatalogRouter);
 router.use(printBridgeDiscoveryRouter);
 router.use(onboardingRouter);
 router.use(usersRouter);
+router.use(guestCheckoutRouter);
 // Own feedback and store credit must run before the path-less provenance
 // gates on catalogue, settings, and shifts. Those gates were answering 403
 // for /api/feedback and /api/credits/me before either router was reached.
