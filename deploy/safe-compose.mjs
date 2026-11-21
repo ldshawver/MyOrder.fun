@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -34,7 +34,8 @@ const PINNED_ROLLBACK = {
   },
 };
 const TOOLING_ONLY_PATHS = new Set(["deploy/docker-compose.staging.yml", "deploy/safe-compose.mjs", "deploy/safe-compose.test.mjs"]);
-const ACTIONS = new Set(["config", "build", "up", "migrate", "p0", "bootstrap", "stop"]);
+const ACTIONS = new Set(["config", "build", "up", "migrate", "migrations", "p0", "bootstrap", "stop"]);
+const RELEASE_MODE_ACTIONS = new Set(["config", "build", "migrations", "up", "migrate"]);
 
 export function validatePinnedImageMetadata({ daemonId, expectedDaemonId = EXPECTED_DOCKER_DAEMON_ID, image, expected, revision, architecture = EXPECTED_ARCH }) {
   if (daemonId !== expectedDaemonId) throw new Error("Docker daemon identity does not match the approved staging host");
@@ -157,6 +158,76 @@ export function validateStagingDatabasePreflight({ p0Ready, recognizedLineage, w
   if (!recognizedLineage) throw new Error("Staging migration lineage is not recognized through 0076");
   if (typeof wooExternalEnabled !== "boolean") throw new Error("Staging WooCommerce external integration policy is not explicit");
   if (wooExternalEnabled && (!Number.isSafeInteger(wooSafeTenantCount) || wooSafeTenantCount < 1)) throw new Error("Staging WooCommerce test integration is missing or required tenant credentials are absent");
+  return true;
+}
+
+// ── Verified-release mode (staging only) ────────────────────────────────────
+// The original staging path is pinned to one approved candidate. Verified-
+// release mode lets the GitHub "Deploy to staging" workflow release any
+// CI-verified commit through this same guard. It is opt-in, staging-only, and
+// keeps every other check (worktree, project, database, network, volume,
+// ports, side effects, P0 schema). Images are built locally from the exact
+// clean checkout and must carry that commit's labels. Migrations are never run
+// implicitly: `up` refuses while any are pending, and `migrate` needs an
+// explicit confirmation plus a fresh verified backup.
+export const RELEASE_MODE_VALUE = "verified-release";
+export const STAGING_MIGRATION_CONFIRMATION = "APPLY_STAGING_MIGRATIONS";
+export const RELEASE_IMAGE_SERVICES = ["api", "platform", "migrate"];
+
+export function isVerifiedReleaseMode({ environment, deploySha, mode }) {
+  if (mode === undefined || mode === "") return false;
+  if (mode !== RELEASE_MODE_VALUE) throw new Error("Unknown staging release mode");
+  if (environment !== "staging") throw new Error("Verified-release mode is staging-only");
+  if (!/^[a-f0-9]{40}$/.test(deploySha ?? "")) throw new Error("Verified-release mode requires a full release SHA");
+  if (deploySha === PINNED_CANDIDATE.sha) throw new Error("The pinned candidate uses its immutable pinned path, not verified-release mode");
+  return true;
+}
+
+export function classifyMigrationValidatorOutput(output) {
+  const text = String(output ?? "");
+  const applied = [...text.matchAll(/\[migration-ledger\] APPLIED (\S+)/g)].map(m => m[1]);
+  const pending = [...text.matchAll(/\[migration-ledger\] PENDING (\S+)/g)].map(m => m[1]);
+  const summary = text.match(/\[migration-ledger\] recognized lineage preserved: (\d+)\/(\d+)/);
+  if (!summary) throw new Error("Migration validator did not confirm a recognized staging lineage");
+  const [appliedCount, journalCount] = [Number(summary[1]), Number(summary[2])];
+  if (applied.length + pending.length !== journalCount || applied.length < appliedCount) throw new Error("Migration validator output is inconsistent");
+  return { applied, pending, journalCount };
+}
+
+export function validateReleaseMigrationPlan({ action, pending, confirmation }) {
+  if (!Array.isArray(pending)) throw new Error("Migration status is unavailable");
+  if (action === "up" && pending.length) throw new Error(`Release requires ${pending.length} pending staging migration(s); run the guarded migrate action first: ${pending.join(", ")}`);
+  if (action === "migrate") {
+    if (confirmation !== STAGING_MIGRATION_CONFIRMATION) throw new Error("Staging migrations require the explicit migration confirmation");
+    if (!pending.length) throw new Error("No pending staging migrations; refusing an unnecessary migration run");
+  }
+  return true;
+}
+
+export function validateReleaseImageMetadata({ daemonId, expectedDaemonId = EXPECTED_DOCKER_DAEMON_ID, image, service, revision, architecture = EXPECTED_ARCH }) {
+  if (daemonId !== expectedDaemonId) throw new Error("Docker daemon identity does not match the approved staging host");
+  if (!RELEASE_IMAGE_SERVICES.includes(service)) throw new Error("Unexpected release image service");
+  const tag = `myorder-${service}:${revision}`;
+  if (!image || !Array.isArray(image.RepoTags) || !image.RepoTags.includes(tag)) throw new Error(`Release image ${tag} was not built on this host`);
+  if (image.Os !== "linux" || image.Architecture !== architecture) throw new Error("Release image architecture does not match the staging host");
+  if (image.Config?.Labels?.["org.opencontainers.image.revision"] !== revision || image.Config?.Labels?.["com.myorder.deploy-sha"] !== revision) throw new Error("Release image source labels do not match the selected release");
+  return tag;
+}
+
+export function validateDeployedReleaseContainer({ container, service, revision }) {
+  const tag = `myorder-${service}:${revision}`;
+  if (container?.Config?.Image !== tag) throw new Error(`Staging ${service} is not running ${tag}`);
+  if (container?.Config?.Labels?.["com.myorder.deploy-sha"] !== revision) throw new Error(`Staging ${service} container source label does not match the release`);
+  if (container?.State?.Running !== true) throw new Error(`Staging ${service} container is not running`);
+  return true;
+}
+
+export function validateReleaseBackupArtifact({ backupPath, size, mode, isFile, isSymlink, restoreListOk }) {
+  const root = path.resolve(STAGING_BACKUP_ROOT);
+  if (!path.resolve(backupPath ?? "").startsWith(`${root}/`)) throw new Error("Release backup must be inside the protected release-backups directory");
+  if (!isFile || isSymlink || (mode & 0o077) !== 0) throw new Error("Release backup must be a restricted regular file");
+  if (!(size > 0)) throw new Error("Release backup is empty");
+  if (!restoreListOk) throw new Error("Release backup could not be read back by pg_restore");
   return true;
 }
 
@@ -305,7 +376,7 @@ function verifyStagingP0Patch(prefix, resolved) {
   console.log("Staging P0 patch applied and verified; recognized 49-row ledger unchanged.");
 }
 
-function verifyStagingMutationPreflight(prefix, resolved, env) {
+function verifyStagingMutationPreflight(prefix, resolved, env, release) {
   const dbUser = resolved.services.db.environment.POSTGRES_USER;
   const markerTableExists = stageQuery(prefix, dbUser, "SELECT to_regclass('public.myorder_hotfix_migrations') IS NOT NULL");
   let p0Ready = false;
@@ -321,8 +392,61 @@ function verifyStagingMutationPreflight(prefix, resolved, env) {
     const escapedOrigin = expectedWooOrigin.replaceAll("'", "''");
     wooSafeTenantCount = Number(stageQuery(prefix, dbUser, `SELECT count(*) FROM public.admin_settings WHERE wc_store_url='${escapedOrigin}' AND wc_webhook_secret IS NOT NULL AND wc_consumer_key IS NOT NULL AND wc_consumer_secret IS NOT NULL`));
   }
-  const recognizedLineage = recognizedStagingLineage(prefix, env);
+  let recognizedLineage;
+  let migrationStatus;
+  if (!release) recognizedLineage = recognizedStagingLineage(prefix, env);
+  else if (release.action === "build") recognizedLineage = true; // images for this release do not exist yet; build mutates nothing
+  else { migrationStatus = releaseMigrationStatus(prefix, env); recognizedLineage = true; }
   validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooExternalEnabled, wooSafeTenantCount });
+  return migrationStatus;
+}
+
+function releaseMigrationStatus(prefix, env) {
+  // Runs the release's own validator against the staging ledger: it fails on an
+  // unrecognized or altered ledger and lists every APPLIED / PENDING migration.
+  const result = spawnSync("docker", [...prefix, ...pinnedRunArgs("migrate", "pnpm"), "--filter", "@workspace/db", "db:validate-migrations"], { encoding: "utf8", env, stdio: ["ignore", "pipe", "inherit"] });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error("Migration validator rejected the staging ledger for this release");
+  return classifyMigrationValidatorOutput(result.stdout);
+}
+
+function verifyReleaseImages(services, revision) {
+  const daemonId = run("docker", ["info", "--format", "{{.ID}}"], { capture: true }).trim();
+  for (const service of services) {
+    const raw = run("docker", ["image", "inspect", `myorder-${service}:${revision}`, "--format", "{{json .}}"], { capture: true });
+    validateReleaseImageMetadata({ daemonId, image: JSON.parse(raw), service, revision });
+  }
+}
+
+function verifyDeployedReleaseServices(prefix, services, revision) {
+  for (const service of services) {
+    const ids = run("docker", [...prefix, "ps", "--all", "--quiet", service], { capture: true }).trim().split(/\s+/).filter(Boolean);
+    if (ids.length !== 1) throw new Error(`Expected one staging ${service} container after deployment`);
+    validateDeployedReleaseContainer({ container: JSON.parse(run("docker", ["inspect", ids[0], "--format", "{{json .}}"], { capture: true })), service, revision });
+  }
+}
+
+function createReleaseBackup(prefix, dbUser, revision) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dir = path.join(STAGING_BACKUP_ROOT, `staging-release-${revision.slice(0, 12)}-${stamp}`);
+  mkdirSync(dir, { mode: 0o700 });
+  const backupPath = path.join(dir, "staging.dump");
+  const out = openSync(backupPath, "wx", 0o600);
+  try {
+    const dump = spawnSync("docker", [...prefix, "exec", "-T", "db", "pg_dump", "-X", "-U", dbUser, "-d", DATABASE.staging, "-Fc"], { stdio: ["ignore", out, "inherit"] });
+    if (dump.error) throw dump.error;
+    if (dump.status !== 0) throw new Error("Staging pre-migration backup failed");
+  } finally { closeSync(out); }
+  const input = openSync(backupPath, "r");
+  let restoreListOk = false;
+  try {
+    const list = spawnSync("docker", [...prefix, "exec", "-T", "db", "pg_restore", "--list"], { stdio: [input, "ignore", "inherit"] });
+    restoreListOk = !list.error && list.status === 0;
+  } finally { closeSync(input); }
+  const stat = lstatSync(backupPath);
+  validateReleaseBackupArtifact({ backupPath, size: stat.size, mode: stat.mode, isFile: stat.isFile(), isSymlink: stat.isSymbolicLink(), restoreListOk });
+  console.log(`STAGING_RELEASE_BACKUP=${backupPath}`);
+  return backupPath;
 }
 
 function main() {
@@ -353,7 +477,7 @@ function main() {
   if (action === "up" && (!services.length || services.some(service => !["db", "api", "platform", "nginx"].includes(service)))) throw new Error("up requires an explicit allowlisted service list");
   if (environment === "staging" && action === "up" && (services.length !== 2 || !services.includes("api") || !services.includes("platform"))) throw new Error("Pinned staging release up is restricted to the API and platform services");
   if ((action === "migrate" || action === "p0") && services.length) throw new Error(`${action} does not accept service arguments`);
-  if ((action === "bootstrap" || action === "build" || action === "config") && services.length) throw new Error(`${action} does not accept service arguments`);
+  if ((action === "bootstrap" || action === "build" || action === "config" || action === "migrations") && services.length) throw new Error(`${action} does not accept service arguments`);
 
   const project = PROJECT[environment];
   const composeFile = path.join(ROOT, "deploy", environment === "production" ? "docker-compose.yml" : "docker-compose.staging.yml");
@@ -368,9 +492,16 @@ function main() {
   delete composeEnv.MYORDER_MIGRATE_IMAGE;
   let resolved = JSON.parse(run("docker", [...prefix, "config", "--format", "json"], { capture: true, env: composeEnv }));
   validatePlan({ environment, root: ROOT, project, config: resolved, authorization, deploySha: process.env.DEPLOY_SHA });
+  const releaseMode = isVerifiedReleaseMode({ environment, deploySha: process.env.DEPLOY_SHA, mode: process.env.MYORDER_STAGING_RELEASE_MODE });
+  if (action === "migrations" && !releaseMode) throw new Error("The migrations status action is only available in verified-release mode");
+  if (releaseMode && !RELEASE_MODE_ACTIONS.has(action)) throw new Error(`Action ${action} is not available in verified-release mode`);
+  if (releaseMode && process.env.DEPLOY_SHA !== headSha) throw new Error("Verified-release mode requires the clean checkout to be exactly the release commit");
   let pins;
   let pinnedEnv;
-  if (environment === "staging" && (action === "up" || action === "migrate")) {
+  if (releaseMode && (action === "up" || action === "migrate" || action === "migrations")) {
+    verifyReleaseImages(action === "up" ? services : ["migrate"], process.env.DEPLOY_SHA);
+    pinnedEnv = composeEnv;
+  } else if (environment === "staging" && (action === "up" || action === "migrate")) {
     if (process.env.DEPLOY_SHA !== PINNED_CANDIDATE.sha || process.env.DEPLOY_TREE !== PINNED_CANDIDATE.tree) throw new Error("Pinned local images are approved only for the validated candidate commit/tree");
     pins = verifyPinnedArtifacts();
     pinnedEnv = { ...composeEnv, ...pins.composeEnvironment };
@@ -420,8 +551,35 @@ function main() {
     verifyStagingP0Patch(prefix, resolved);
     return;
   }
+  let migrationStatus;
   if (environment === "staging" && action !== "config") {
-    verifyStagingMutationPreflight(prefix, resolved, pinnedEnv ?? composeEnv);
+    migrationStatus = verifyStagingMutationPreflight(prefix, resolved, pinnedEnv ?? composeEnv, releaseMode ? { action } : undefined);
+  }
+
+  if (releaseMode) {
+    const revision = process.env.DEPLOY_SHA;
+    if (action === "config") { console.log(`STAGING_RELEASE_ELIGIBLE=${revision}`); return; }
+    if (action === "build") { run("docker", [...prefix, "build"]); verifyReleaseImages(RELEASE_IMAGE_SERVICES, revision); return; }
+    if (action === "migrations") {
+      console.log(`STAGING_MIGRATION_STATUS=${JSON.stringify({ revision, applied: migrationStatus.applied.length, journal: migrationStatus.journalCount, pending: migrationStatus.pending })}`);
+      return;
+    }
+    if (action === "migrate") {
+      validateReleaseMigrationPlan({ action, pending: migrationStatus.pending, confirmation: process.env.MYORDER_STAGING_MIGRATION_CONFIRMATION });
+      createReleaseBackup(prefix, resolved.services.db.environment.POSTGRES_USER, revision);
+      run("docker", [...prefix, ...pinnedRunArgs("migrate")], { env: pinnedEnv });
+      const after = releaseMigrationStatus(prefix, pinnedEnv);
+      if (after.pending.length) throw new Error(`Staging migrations still pending after migrate: ${after.pending.join(", ")}`);
+      console.log(`STAGING_MIGRATIONS_APPLIED=${migrationStatus.pending.join(",")}`);
+      return;
+    }
+    if (action === "up") {
+      validateReleaseMigrationPlan({ action, pending: migrationStatus.pending });
+      run("docker", [...prefix, ...pinnedUpArgs(services)], { env: pinnedEnv });
+      verifyDeployedReleaseServices(prefix, services, revision);
+      console.log(`STAGING_RELEASE_DEPLOYED=${revision}`);
+      return;
+    }
   }
 
   if (action === "config") return;
