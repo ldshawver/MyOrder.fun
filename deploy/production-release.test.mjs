@@ -1243,16 +1243,17 @@ test("candidate builder is frozen to the exact source selected for immutable ima
     "utf8",
   );
   const candidate = {
-    sha: "076d4d70161b0a3261518e90eb67a182a78cd3dd",
-    tree: "a7c3af656cab2186ec5a8b833d32eeda02a87137",
+    sha: "360f6747d7b319516bbf60d0ebfb0078c7b4183f",
+    tree: "32d26c8ad96d53263681bbd464c0e77266f3d11f",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));
   assert.match(workflow, new RegExp(`ref: ${candidate.sha}`));
   assert.equal(workflow.match(new RegExp(candidate.sha, "g"))?.length, 5);
-  // The separately reviewed release approval now binds these exact candidate
-  // images and their immutable registry digests.
-  assert.equal(candidate.sha, APPROVED_RELEASE.sha);
+  // Image construction is intentionally ahead of the separately reviewed
+  // controller approval. The controller must retain its existing immutable
+  // identity until the resulting image digests are verified and bound.
+  assert.notEqual(candidate.sha, APPROVED_RELEASE.sha);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
