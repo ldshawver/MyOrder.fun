@@ -54,12 +54,12 @@ describe("cash discount from live tenant settings", () => {
 });
 
 describe("prompt rendering with knowledge", async () => {
-  const { renderConciergePrompt, DEFAULT_AI_CONCIERGE_PROMPT, ADI_SAFETY_FOOTER } = await import("../../routes/ai");
+  const { renderConciergePrompt, DEFAULT_AI_CONCIERGE_PROMPT, ASSISTANT_SAFETY_FOOTER } = await import("../../routes/ai");
 
-  it("default prompt is ADI, not Zappy, and includes the facts", () => {
+  it("default prompt is Zappy, tenant-neutral, and includes the facts", () => {
     const out = renderConciergePrompt(DEFAULT_AI_CONCIERGE_PROMPT, { itemCount: 1, catalog: "x", knowledge: "FACTS-HERE" });
-    expect(out).toContain("You are ADI");
-    expect(out).not.toContain("Zappy");
+    expect(out).toContain("You are Zappy");
+    expect(out).not.toContain("MyOrder.fun");
     expect(out).toContain("FACTS-HERE");
     expect(out).not.toContain("{{knowledge}}");
   });
@@ -67,6 +67,6 @@ describe("prompt rendering with knowledge", async () => {
   it("a custom tenant prompt without {{knowledge}} still gets facts and the safety footer", () => {
     const out = renderConciergePrompt("Be super casual. Offer guest checkout!", { itemCount: 1, catalog: "x", knowledge: "FACTS-HERE" });
     expect(out).toContain("FACTS-HERE");
-    expect(out.endsWith(ADI_SAFETY_FOOTER)).toBe(true);
+    expect(out.endsWith(ASSISTANT_SAFETY_FOOTER)).toBe(true);
   });
 });

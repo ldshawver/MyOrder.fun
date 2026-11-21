@@ -1,10 +1,12 @@
-# ADI knowledge source registry — MyOrder.fun
+# Assistant knowledge source registry — MyOrder.fun (first tenant)
+
+Naming: **Zappy** is the customer-facing assistant and the Zappy Software POS brand. **ADI** is the AI/knowledge layer behind it. MyOrder.fun is the first tenant, so assistant wording says "this store", not a tenant name.
 
 Source of truth: `artifacts/api-server/src/lib/adiKnowledge.ts`. Only **verified**
-entries reach ADI as facts. Everything else is sent as an explicit "never state
+entries reach Zappy as facts. Everything else is sent as an explicit "never state
 this; refer the customer to …" rule. Verified 2026-11-20 by code inspection; owner: Luke.
 
-| Policy | Status | What ADI says | Authoritative source | Gap / owner action |
+| Policy | Status | What Zappy says | Authoritative source | Gap / owner action |
 |---|---|---|---|---|
 | Members-only access | ✅ Verified (code) | Approved members only; no guest checkout; CSR orders belong to the member | `lib/auth.ts`, `routes/orders.ts`, `routes/ai.ts` | Confirm in STAGING |
 | Pickup / delivery | ✅ Verified | Pickup always; delivery only when the shift enables personal or Uber Direct delivery; Uber fee + ETA quoted at checkout | `lib/shiftDeliveryMode.ts`, `routes/orders.ts` | — |

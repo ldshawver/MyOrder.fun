@@ -1,4 +1,4 @@
-// ADI knowledge source registry (MyOrder.fun).
+// Assistant knowledge source registry (ADI layer; customer-facing assistant is Zappy).
 //
 // Every business fact ADI may state lives here with its authoritative source,
 // owner, verification date and status. Only `verified` entries are given to
@@ -50,7 +50,7 @@ export function buildKnowledgeRegistry(opts: { cashDiscount?: CashDiscountSettin
       id: "members_only",
       topic: "Membership and access",
       status: "verified",
-      statement: "MyOrder.fun is members-only. Customers must be signed in with an approved member account to browse, chat with ADI, or place orders. There is no guest or anonymous checkout. Orders a CSR places on a member's behalf belong to that member's account.",
+      statement: "This store is members-only. Customers must be signed in with an approved member account to browse, chat with Zappy, or place orders. There is no guest or anonymous checkout. Orders a CSR places on a member's behalf belong to that member's account.",
       source: "artifacts/api-server/src/lib/auth.ts (requireAuth/requireApproved), routes/orders.ts, routes/ai.ts",
       owner: OWNER, verifiedOn: VERIFIED_ON, verifiedBy: BY_CODE,
       notes: "Production enforcement still to be confirmed in STAGING.",
@@ -76,7 +76,7 @@ export function buildKnowledgeRegistry(opts: { cashDiscount?: CashDiscountSettin
       id: "checkout_total",
       topic: "What you pay / PayPal",
       status: "verified",
-      statement: "MyOrder.fun does not add a PayPal fee or card surcharge. The checkout total is merchandise plus tax, plus any delivery fee and optional tip, and it is shown before you pay. Any savings for paying cash come only from the cash discount described above.",
+      statement: "This store does not add a PayPal fee or card surcharge. The checkout total is merchandise plus tax, plus any delivery fee and optional tip, and it is shown before you pay. Any savings for paying cash come only from the cash discount described above.",
       source: "artifacts/api-server/src/routes/orders.ts (checkout quote: merchandise + tax + delivery + tip), payments/service.ts",
       owner: OWNER, verifiedOn: VERIFIED_ON, verifiedBy: BY_CODE,
       notes: "Intended PayPal convenience fee is NOT implemented. California Civ. Code 1748.1 allows cash discounts offered to all buyers; SB 478 restricts add-on fees not included in the advertised price. Get legal review before adding any PayPal fee.",
@@ -104,9 +104,9 @@ export function buildKnowledgeRegistry(opts: { cashDiscount?: CashDiscountSettin
       id: "live_account_data",
       topic: "Your balance, order status and order history",
       status: "not_implemented",
-      statement: "ADI cannot yet see a specific customer's credit balance, order status, order history or delivery progress",
+      statement: "Zappy cannot yet see a specific customer's credit balance, order status, order history or delivery progress",
       referral: "the Orders page in the app (live status) or a store specialist",
-      source: "routes/ai.ts — no account/order tools are wired to ADI yet",
+      source: "routes/ai.ts — no account/order tools are wired to the assistant yet",
       owner: OWNER, verifiedOn: VERIFIED_ON, verifiedBy: BY_CODE,
     },
     {
