@@ -1021,11 +1021,11 @@ export default function NewOrder() {
           </CardContent>
         </Card>
 
-        {/* Optional Zappy suggestions */}
+        {/* Optional ADI suggestions */}
         <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-primary/5 border-primary/20 lg:col-span-2">
           <CardHeader className="pb-3 shrink-0 border-b border-primary/10">
             <CardTitle className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2 text-primary">
-              <Sparkles size={16} /> Zappy Suggestions
+              <Sparkles size={16} /> ADI Suggestions
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4">

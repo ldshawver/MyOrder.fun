@@ -86,7 +86,7 @@ function ZappyAvatar({ size = 36, mood = "idle" as ZappyMood }: { size?: number;
     >
       <img
         src={ZAPPY_AVATAR_IMAGE}
-        alt="Zappy"
+        alt="ADI"
         className="w-full h-full object-cover"
         style={{
           filter: "brightness(1.05) contrast(1.05)",
@@ -148,7 +148,7 @@ function ZappyHero({ size = 120, mood = "idle" as ZappyMood, animated = true }: 
       >
         <img
           src={useAnimatedHero ? ZAPPY_HERO_IMAGE : ZAPPY_AVATAR_IMAGE}
-          alt="Zappy"
+          alt="ADI"
           className="w-full h-full object-cover"
           style={{
             filter: "brightness(1.08) saturate(1.1)",
@@ -192,7 +192,7 @@ type IntroStep = { emoji: string; title: string; body: string; cta: string };
 const DEFAULT_STEPS: IntroStep[] = [
   {
     emoji: "⚡",
-    title: "Hey! I'm Zappy",
+    title: "Hey! I'm ADI",
     body: "Your personal shopping buddy for your tenant catalogue. No judgment, no awkwardness — just help finding what you need.",
     cta: "Let's go!",
   },
@@ -342,7 +342,7 @@ const ACTIONS = [
 // ─── Main Page ────────────────────────────────────────────────────────────────
 const INITIAL_MSG = `Hey! What's good 👋
 
-I'm Zappy — your personal order concierge. I know the whole menu inside and out.
+I'm ADI — your MyOrder.fun assistant. I know this store's menu inside and out.
 
 Ask me what's available, what's popular, need help building an order? I got you. Let's find something great 🛍️`;
 
@@ -480,7 +480,7 @@ export default function AiConcierge() {
           <ZappyHero size={72} mood={zappyMood} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-2xl font-black tracking-tight" data-testid="text-title">Zappy</h1>
+              <h1 className="text-2xl font-black tracking-tight" data-testid="text-title">ADI</h1>
               <motion.span
                 className="text-xs font-bold px-2.5 py-0.5 rounded-full"
                 style={{ background: "linear-gradient(135deg, rgba(59,130,246,0.25), rgba(139,92,246,0.2))", border: "1px solid rgba(96,165,250,0.3)", color: "#93C5FD" }}
@@ -734,7 +734,7 @@ export default function AiConcierge() {
                 >
                   <div className="px-4 pt-4 pb-2 shrink-0 flex items-center gap-2">
                     <div className="text-[10px] font-extrabold uppercase tracking-[0.2em]" style={{ color: "rgba(148,163,184,0.6)" }}>
-                      {isAiSuggested ? "Suggested by Zappy" : "⭐ Featured Picks"}
+                      {isAiSuggested ? "Suggested by ADI" : "⭐ Featured Picks"}
                     </div>
                     {!isAiSuggested && !isEmpty && (
                       <motion.div

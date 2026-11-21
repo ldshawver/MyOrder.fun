@@ -701,7 +701,7 @@ export default function AdminEditCatalog() {
               </DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground py-2">
-              This archives products with order/inventory history and only hard-deletes products with no history. The item disappears from catalog, inventory, checkout, CSR shift inventory, and Zappy after confirmation.
+              This archives products with order/inventory history and only hard-deletes products with no history. The item disappears from catalog, inventory, checkout, CSR shift inventory, and ADI after confirmation.
             </p>
             <div className="flex gap-2 pt-1">
               <Button
