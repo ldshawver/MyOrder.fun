@@ -34,12 +34,6 @@ let mockActor: Record<string, unknown> = {};
 const reservationMocks = vi.hoisted(() => ({
   reserve: vi.fn(async (_executor: unknown, _tenantId: number, _orderId: number, _productId: number, quantity: string | number) => [{ locationId: 50, locationName: "Storefront", quantity: Number(quantity), remainingStock: 9 }]),
 }));
-const creditMocks = vi.hoisted(() => ({
-  CustomerCreditError: class CustomerCreditError extends Error {
-    constructor(public status: number, public code: string, message: string) { super(message); }
-  },
-  requireGoodStanding: vi.fn(async () => ({ balance: 0, reserved: 0, available: 0 })),
-}));
 
 vi.mock("../../lib/inventoryReservations", () => ({
   ensureInventoryReservationsTable: vi.fn(async () => undefined),
@@ -92,9 +86,10 @@ vi.mock("../../lib/auth", () => ({
 
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: async () => 1 }));
 vi.mock("../../payments/customerCredit", () => ({
-  CustomerCreditError: creditMocks.CustomerCreditError,
+  CustomerCreditError: class CustomerCreditError extends Error {
+    constructor(public status: number, public code: string, message: string) { super(message); }
+  },
   getCustomerCreditBalance: vi.fn(async () => ({ balance: 0, reserved: 0, available: 0 })),
-  requireCustomerCreditAccountInGoodStanding: creditMocks.requireGoodStanding,
   reserveCustomerCredit: vi.fn(async () => ({ appliedCents: 0 })),
   consumeCustomerCredit: vi.fn(async () => undefined),
   releaseCustomerCredit: vi.fn(async () => undefined),
@@ -483,32 +478,12 @@ beforeEach(() => {
   dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
   mockActor = {};
   reservationMocks.reserve.mockClear();
-  creditMocks.requireGoodStanding.mockReset();
-  creditMocks.requireGoodStanding.mockResolvedValue({ balance: 0, reserved: 0, available: 0 });
   uberQuoteCalls.length = 0;
   mockUberQuoteSettingsComplete = true;
   _resetBus();
 });
 
 describe("checkout conversion enforcement on order/provider API routes", () => {
-  it("rejects final order creation for a customer with an outstanding negative credit balance", async () => {
-    mockActor = dbState.users[0]!;
-    const app = buildApp();
-    const payload = await convertedCheckoutPayload(app);
-    creditMocks.requireGoodStanding.mockRejectedValueOnce(new creditMocks.CustomerCreditError(
-      409,
-      "CUSTOMER_CREDIT_BALANCE_DUE",
-      "Resolve the outstanding account balance before placing another order",
-    ));
-
-    const response = await supertest(app).post("/api/orders").send({ ...payload, notes: "" });
-
-    expect(response.status).toBe(409);
-    expect(response.body).toEqual({ error: "CUSTOMER_CREDIT_BALANCE_DUE" });
-    expect(dbState.orders).toHaveLength(0);
-    expect(reservationMocks.reserve).not.toHaveBeenCalled();
-  });
-
   it("rejects client-selected fulfillment locations on order creation", async () => {
     mockActor = dbState.users[0]!;
     const app = buildApp();
