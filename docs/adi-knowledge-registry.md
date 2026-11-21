@@ -14,7 +14,7 @@ this; refer the customer to …" rule. Verified 2026-11-20 by code inspection; o
 | PayPal fee | ✅ Verified: **none charged** | No PayPal fee or surcharge; total = merchandise + tax + delivery + tip | `routes/orders.ts` checkout quote | Intended PayPal fee **not implemented**. In California a separate card/PayPal surcharge is restricted (SB 478; Civ. Code 1748.1 allows cash discounts). Legal review before adding one |
 | Customer credit | ✅ Verified | Prepaid store balance; apply up to available balance at checkout | `payments/customerCredit.ts` | — |
 | Negative balance = owed | ⚠️ Conflict | Not stated | Code forbids negative balances | Owner decision: keep prepaid-only, or build receivables |
-| Live balance / order status / history | ⛔ Not implemented | "I can't see that here — check the Orders page" | No ADI tools yet | Next increment: read-only member-scoped tools |
+| Own orders / status / credit | ✅ Verified (tools) | Looks up the signed-in member's own recent orders, one order's status, and available credit | `lib/zappyOrderTools.ts`, `lib/zappyChatLoop.ts` | Read-only; other customers always "not found" |
 | Lucifer Cruz shipping / tracking numbers | ❓ Unverified | Refers to Lucifer Cruz support | No carrier integration in MyOrder | Verify in the Lucifer Cruz shop |
 | CSR shift / cash drawer procedures | ❓ Unverified | Refers staff to manager | `docs/csr-delivery-closeout-accounting.md` not approved; ADI not role-aware | Approve doc + pass role |
 

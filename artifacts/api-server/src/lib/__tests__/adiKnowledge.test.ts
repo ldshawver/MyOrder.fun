@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { buildKnowledgeRegistry, formatCashDiscount, renderKnowledgeForPrompt } from "../adiKnowledge";
 
-vi.mock("@workspace/db", () => ({ db: { execute: vi.fn() }, catalogItemsTable: {}, adminSettingsTable: {} }));
+vi.mock("@workspace/db", () => ({ db: { execute: vi.fn() }, catalogItemsTable: {}, adminSettingsTable: {}, ordersTable: {}, orderItemsTable: {}, customerCreditAccountsTable: {} }));
 
 describe("ADI knowledge registry", () => {
   it("every entry records source, owner, verification date and status", () => {
@@ -26,7 +26,8 @@ describe("ADI knowledge registry", () => {
     expect(facts).not.toMatch(/tracking numbers/i);
     expect(gaps).toMatch(/tracking numbers/i);
     expect(gaps).toMatch(/Negative credit balances/);
-    expect(gaps).toMatch(/order status/);
+    expect(gaps).toMatch(/other customer/);
+    expect(facts).toContain("get_my_");
   });
 
   it("members-only fact never mentions guest checkout as available", () => {

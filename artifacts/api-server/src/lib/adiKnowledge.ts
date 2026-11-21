@@ -102,11 +102,19 @@ export function buildKnowledgeRegistry(opts: { cashDiscount?: CashDiscountSettin
     },
     {
       id: "live_account_data",
-      topic: "Your balance, order status and order history",
+      topic: "Your orders and credit",
+      status: "verified",
+      statement: "You can look up the signed-in customer's own recent orders, the live status of one of their orders, and their available Customer Credit with the get_my_* tools. Report only what the tools return.",
+      source: "lib/zappyOrderTools.ts (read-only, tenant + customer scoped), lib/zappyChatLoop.ts",
+      owner: OWNER, verifiedOn: VERIFIED_ON, verifiedBy: BY_CODE,
+    },
+    {
+      id: "other_accounts",
+      topic: "Other people's accounts",
       status: "not_implemented",
-      statement: "Zappy cannot yet see a specific customer's credit balance, order status, order history or delivery progress",
-      referral: "the Orders page in the app (live status) or a store specialist",
-      source: "routes/ai.ts — no account/order tools are wired to the assistant yet",
+      statement: "Any other customer's orders, balances or details",
+      referral: "a store specialist",
+      source: "By design: tools only ever read the signed-in customer's own records",
       owner: OWNER, verifiedOn: VERIFIED_ON, verifiedBy: BY_CODE,
     },
     {
