@@ -6,6 +6,8 @@ const creditsSource = readFileSync(join(process.cwd(), "src/routes/credits.ts"),
 const paymentsSource = readFileSync(join(process.cwd(), "src/routes/payments.ts"), "utf8");
 const feedbackSource = readFileSync(join(process.cwd(), "src/routes/feedback.ts"), "utf8");
 const indexSource = readFileSync(join(process.cwd(), "src/routes/index.ts"), "utf8");
+const ordersSource = readFileSync(join(process.cwd(), "src/routes/orders.ts"), "utf8");
+const customerCreditSource = readFileSync(join(process.cwd(), "src/payments/customerCredit.ts"), "utf8");
 
 describe("Customer Credit access safeguards", () => {
   it("allows an approved member to self-view Customer Credit without historical approver metadata", () => {
@@ -37,5 +39,20 @@ describe("Customer Credit access safeguards", () => {
   it("prevents other-user order credit application", () => {
     expect(paymentsSource).toContain("eq(ordersTable.customerId, actor.id)");
     expect(paymentsSource).toContain("eq(ordersTable.tenantId, actor.tenantId!)");
+  });
+
+  it("holds every new checkout when the customer's account has a negative balance", () => {
+    expect(customerCreditSource).toContain("requireCustomerCreditAccountInGoodStanding");
+    expect(customerCreditSource).toContain("CUSTOMER_CREDIT_BALANCE_DUE");
+    expect(customerCreditSource).toContain("account.balance < 0");
+    // The hold belongs to the authoritative order transaction, under its
+    // database lock and before persistence, rather than browser-facing quote
+    // or conversion previews.
+    expect(ordersSource.match(/requireCustomerCreditAccountInGoodStanding\(/g)).toHaveLength(1);
+    const orderRoute = ordersSource.slice(ordersSource.indexOf('router.post("/orders"'));
+    const accountHold = orderRoute.indexOf("requireCustomerCreditAccountInGoodStanding");
+    const createOrder = orderRoute.indexOf("tx.insert(ordersTable)");
+    expect(accountHold).toBeGreaterThan(-1);
+    expect(createOrder).toBeGreaterThan(accountHold);
   });
 });
