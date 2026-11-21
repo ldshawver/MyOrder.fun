@@ -11,6 +11,10 @@ export const logger = pino({
     "req.headers['paypal-transmission-sig']",
     "req.body.client_secret",
     "req.body.access_token",
+    "*.headers.authorization",
+    "*.headers.Authorization",
+    "*.apiKey",
+    "*.OPENAI_API_KEY",
   ],
   ...(isProduction
     ? {}

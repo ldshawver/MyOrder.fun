@@ -150,28 +150,52 @@ function mapCatalogItem(i: typeof catalogItemsTable.$inferSelect) {
   };
 }
 
-// Plain text completion — used by upsell and fallback
-async function callAI(systemPrompt: string, messages: Array<{ role: string; content: string }>): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("AI service not configured");
+// ── AI provider configuration ───────────────────────────────────────────────
+// The key is read server-side only, per call, and is never logged, returned to
+// clients, or included in error messages. When it is missing, Zappy skips the
+// provider call entirely and answers from the catalog fallback.
+export const ZAPPY_SOURCE_HEADER = "X-Zappy-Source";
+export class AiNotConfiguredError extends Error {
+  constructor() { super("AI service not configured"); this.name = "AiNotConfiguredError"; }
+}
+let warnedMissingKey = false;
+export function openAiApiKey(): string {
+  const key = process.env.OPENAI_API_KEY?.trim();
+  if (!key) {
+    if (!warnedMissingKey) {
+      warnedMissingKey = true;
+      logger.warn("OPENAI_API_KEY is not configured; Zappy is using catalog fallback replies");
+    }
+    throw new AiNotConfiguredError();
+  }
+  return key;
+}
 
+// Provider errors carry only the HTTP status — never the response body, which
+// can echo part of the key (e.g. OpenAI 401 "Incorrect API key provided").
+export async function postChatCompletion(body: Record<string, unknown>): Promise<unknown> {
+  const apiKey = openAiApiKey();
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "system", content: systemPrompt }, ...messages],
-      max_tokens: 800,
-      temperature: 0.7,
-    }),
+    body: JSON.stringify(body),
   });
-
   if (!response.ok) throw new Error(`AI API error: ${response.status}`);
-  const data = (await response.json()) as { choices: Array<{ message: { content: string } }> };
+  return response.json();
+}
+
+// Plain text completion — used by upsell and fallback
+async function callAI(systemPrompt: string, messages: Array<{ role: string; content: string }>): Promise<string> {
+  const data = (await postChatCompletion({
+    model: "gpt-4o-mini",
+    messages: [{ role: "system", content: systemPrompt }, ...messages],
+    max_tokens: 800,
+    temperature: 0.7,
+  })) as { choices: Array<{ message: { content: string } }> };
   return data.choices[0]?.message?.content ?? "";
 }
 
-type OpenAITool = {
+export type OpenAITool = {
   type: "function";
   function: { name: string; description: string; parameters: Record<string, unknown> };
 };
@@ -189,33 +213,23 @@ type OpenAIMessage = {
 };
 
 // Function-calling enabled completion — used by the chat endpoint
-async function callAIWithTools(
+export async function callAIWithTools(
   systemPrompt: string,
   messages: Array<Record<string, unknown>>,
   tools: OpenAITool[],
 ): Promise<OpenAIMessage> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("AI service not configured");
-
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "system", content: systemPrompt }, ...messages],
-      tools,
-      tool_choice: "auto",
-      max_tokens: 800,
-      temperature: 0.7,
-    }),
-  });
-
-  if (!response.ok) throw new Error(`AI API error: ${response.status}`);
-  const data = (await response.json()) as { choices: Array<{ message: OpenAIMessage }> };
+  const data = (await postChatCompletion({
+    model: "gpt-4o-mini",
+    messages: [{ role: "system", content: systemPrompt }, ...messages],
+    tools,
+    tool_choice: "auto",
+    max_tokens: 800,
+    temperature: 0.7,
+  })) as { choices: Array<{ message: OpenAIMessage }> };
   return data.choices[0]?.message ?? { role: "assistant", content: "" };
 }
 
-const CART_TOOLS: OpenAITool[] = [
+export const CART_TOOLS: OpenAITool[] = [
   {
     type: "function",
     function: {
@@ -325,6 +339,7 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
 
   type CartAction = { action: "add" | "remove" | "update_quantity"; catalogItemId: number; quantity?: number; itemName?: string };
   let reply: string;
+  let aiSource: "ai" | "fallback" = "ai";
   let suggestedItems: typeof catalogItemsTable.$inferSelect[];
   const cartActions: CartAction[] = [];
 
@@ -384,7 +399,8 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
     }
     suggestedItems = mentionedItems;
   } catch (err) {
-    logger.error({ err }, "AI chat failed");
+    aiSource = "fallback";
+    if (!(err instanceof AiNotConfiguredError)) logger.error({ err }, "AI chat failed");
 
     const lastUserMsg = [...chatMessages].reverse().find(m => m.role === "user")?.content?.toLowerCase() ?? "";
 
@@ -407,6 +423,7 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
   }
 
   const conversationId = `conv_${Date.now()}`;
+  res.setHeader(ZAPPY_SOURCE_HEADER, aiSource);
   res.json(AiConciergeChatResponse.parse({
     reply,
     suggestedItems: suggestedItems.map(mapCatalogItem),
