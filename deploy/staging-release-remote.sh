@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Runs ON the staging host, sent over the pinned SSH session by
+# .github/workflows/deploy-staging.yml. It only prepares a clean, registered
+# release worktree and then calls deploy/safe-compose.mjs (from that exact
+# release) in verified-release mode. All environment, database, network,
+# container and image checks stay in safe-compose.mjs.
+#
+# Usage: staging-release-remote.sh <preflight|deploy|migrate-and-deploy> <sha> <tree> <source-repo> <env-file> [migration-confirmation]
+set -euo pipefail
+umask 077
+
+ACTION="${1:-}"; SHA="${2:-}"; TREE="${3:-}"; SOURCE_REPO="${4:-}"; ENV_FILE="${5:-}"; MIGRATION_CONFIRMATION="${6:-}"
+WORKTREES_ROOT="/home/serveradmin/worktrees"
+LOCAL_HEALTH_URL="http://127.0.0.1:28081/api/healthz"
+
+fail() { echo "::error::$*" >&2; exit 1; }
+
+case "$ACTION" in preflight|deploy|migrate-and-deploy) ;; *) fail "Unknown action";; esac
+[[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || fail "Release SHA must be a full 40-character commit SHA"
+[[ "$TREE" =~ ^[0-9a-f]{40}$ ]] || fail "Release tree must be a full 40-character tree SHA"
+[[ "$SOURCE_REPO" =~ ^/[A-Za-z0-9._/-]+$ ]] || fail "Staging source repository path is invalid"
+[[ "$ENV_FILE" =~ ^/[A-Za-z0-9._/-]+$ ]] || fail "Staging environment file path is invalid"
+case "$SOURCE_REPO$ENV_FILE" in *..*) fail "Paths must not contain ..";; esac
+case "$SOURCE_REPO" in /opt/alavont|/opt/alavont/*) fail "Refusing to use the production checkout";; esac
+case "$ENV_FILE" in /opt/alavont/*) fail "Refusing to use a production environment file";; esac
+if [ "$ACTION" = "migrate-and-deploy" ] && [ "$MIGRATION_CONFIRMATION" != "APPLY_STAGING_MIGRATIONS" ]; then fail "migrate-and-deploy requires the explicit migration confirmation"; fi
+if [ "$ACTION" != "migrate-and-deploy" ] && [ -n "$MIGRATION_CONFIRMATION" ]; then fail "A migration confirmation is only accepted with migrate-and-deploy"; fi
+
+# ── Protected staging environment file (contents are never read or printed here)
+[ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || fail "Staging environment file is missing or is not a regular file"
+[ "$(stat -c %u "$ENV_FILE")" = "$(id -u)" ] || fail "Staging environment file must be owned by the deploy user"
+mode="$(stat -c %a "$ENV_FILE")"
+case "$mode" in 600|400) ;; *) fail "Staging environment file mode is $mode; it must be 600 or 400";; esac
+
+# ── Source repository and exact release checkout
+git -C "$SOURCE_REPO" rev-parse --git-dir >/dev/null 2>&1 || fail "Staging source repository is not a Git repository"
+origin="$(git -C "$SOURCE_REPO" remote get-url origin | tr 'A-Z' 'a-z')"
+[[ "$origin" =~ github\.com[:/]ldshawver/myorder\.fun(\.git)?$ ]] || fail "Staging source repository origin is not ldshawver/MyOrder.fun"
+git -C "$SOURCE_REPO" fetch --quiet --no-tags origin "$SHA" || fail "Could not fetch the release commit from origin"
+[ "$(git -C "$SOURCE_REPO" rev-parse "$SHA^{commit}")" = "$SHA" ] || fail "Release commit is unavailable"
+[ "$(git -C "$SOURCE_REPO" rev-parse "$SHA^{tree}")" = "$TREE" ] || fail "Release tree does not match the selected commit"
+
+WT="$WORKTREES_ROOT/staging-release-${SHA:0:12}"
+if [ -e "$WT" ]; then
+  git -C "$SOURCE_REPO" worktree list --porcelain | grep -qxF "worktree $WT" || fail "Existing $WT is not a registered worktree of the staging source repository"
+else
+  git -C "$SOURCE_REPO" worktree add --quiet --detach "$WT" "$SHA"
+fi
+cd "$WT"
+[ "$(git rev-parse HEAD)" = "$SHA" ] || fail "Release worktree HEAD is not the release commit"
+[ "$(git rev-parse 'HEAD^{tree}')" = "$TREE" ] || fail "Release worktree tree does not match"
+[ -z "$(git status --porcelain=v1)" ] || fail "Release worktree is not clean"
+grep -q 'RELEASE_MODE_VALUE = "verified-release"' deploy/safe-compose.mjs || fail "This release predates verified-release staging tooling; update it from main"
+
+export DEPLOY_SHA="$SHA" DEPLOY_TREE="$TREE" MYORDER_STAGING_ENV_FILE="$ENV_FILE" MYORDER_STAGING_RELEASE_MODE="verified-release"
+unset MYORDER_STAGING_MIGRATION_CONFIRMATION MYORDER_API_IMAGE MYORDER_PLATFORM_IMAGE MYORDER_MIGRATE_IMAGE PRODUCTION_DEPLOY_CONFIRMATION
+guard() { node deploy/safe-compose.mjs staging "$@"; }
+
+previous="$(curl -fsS --max-time 10 "$LOCAL_HEALTH_URL" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).sha||"unknown"))}catch{process.stdout.write("unknown")}})' || true)"
+echo "STAGING_PREVIOUS_SHA=${previous:-unknown}"
+
+echo "== Guard: release eligibility (read-only)"
+guard config
+echo "== Guard: build release images from the clean checkout"
+guard build
+echo "== Guard: compare release migrations with the staging ledger (read-only)"
+status_line="$(guard migrations | grep '^STAGING_MIGRATION_STATUS=' | tail -1)"
+[ -n "$status_line" ] || fail "Migration status is unavailable"
+echo "$status_line"
+pending="$(printf '%s' "${status_line#STAGING_MIGRATION_STATUS=}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).pending.join(",")))')"
+
+if [ "$ACTION" = "preflight" ]; then
+  echo "STAGING_PREFLIGHT_OK=$SHA pending_migrations=${pending:-none}"
+  exit 0
+fi
+
+if [ -n "$pending" ]; then
+  [ "$ACTION" = "migrate-and-deploy" ] || fail "Release needs pending staging migrations ($pending). Review them, then rerun with action migrate-and-deploy and the migration confirmation."
+  echo "== Guard: backup, then apply pending staging migrations: $pending"
+  MYORDER_STAGING_MIGRATION_CONFIRMATION="$MIGRATION_CONFIRMATION" guard migrate
+else
+  [ "$ACTION" != "migrate-and-deploy" ] || fail "No pending staging migrations; rerun with action deploy"
+fi
+
+echo "== Guard: start release api and platform"
+guard up api platform
+
+echo "== Verify staging health and release identity"
+for _ in $(seq 1 30); do
+  body="$(curl -fsS --max-time 5 "$LOCAL_HEALTH_URL" 2>/dev/null || true)"
+  if printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.exit(j.status==="ok"&&j.sha===process.argv[1]?0:1)}catch{process.exit(1)}})' "$SHA"; then
+    echo "STAGING_DEPLOYED_SHA=$SHA previous=${previous:-unknown}"
+    exit 0
+  fi
+  sleep 4
+done
+fail "Staging did not report healthy with sha $SHA. Previous release was ${previous:-unknown}; see deploy/STAGING-RELEASE.md for recovery."

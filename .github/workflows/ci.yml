@@ -123,6 +123,8 @@ jobs:
         run: node --test deploy/production-release.test.mjs
       - name: Run guarded staging feature release tests
         run: node --test deploy/staging-feature-release.test.mjs
+      - name: Run guarded staging release workflow and Compose guard tests
+        run: node --test deploy/safe-compose.test.mjs deploy/safe-compose-release.test.mjs deploy/staging-deploy-workflow.test.mjs
 
 
   checkout-conversion-proof:
