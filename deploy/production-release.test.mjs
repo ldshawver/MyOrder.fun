@@ -1169,14 +1169,14 @@ test("missing production authorization is rejected by the executable entrypoint"
 });
 
 test("production rollback baseline matches the verified current production images", () => {
-  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:dfd8f1ec4231a3c9eeede4001ef4504d7060443f9fb0efa8ea3ccd5d048c37d1");
-  assert.equal(PRODUCTION_BASELINE.apiRevision, "733d266eca5073df7ab73abe4e003b0b76215107");
-  assert.equal(PRODUCTION_BASELINE.apiReference, "ghcr.io/ldshawver/myorder-api@sha256:dfd8f1ec4231a3c9eeede4001ef4504d7060443f9fb0efa8ea3ccd5d048c37d1");
-  assert.equal(PRODUCTION_BASELINE.apiProvenance, "registry-manifest-and-runtime-label-verified; diagnostic-run=44794727707");
-  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:706d56895fc04b6c485351961b42ba79214abf27156f03251a2e01fb15efd381");
-  assert.equal(PRODUCTION_BASELINE.platformRevision, "733d266eca5073df7ab73abe4e003b0b76215107");
-  assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:706d56895fc04b6c485351961b42ba79214abf27156f03251a2e01fb15efd381");
-  assert.equal(PRODUCTION_BASELINE.platformProvenance, "registry-manifest-and-runtime-label-verified; diagnostic-run=44794727707");
+  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:9a514e57e6b5fda4ac01b6e16646faa74a00c9b8278106c88de7cce4cdca0c2a");
+  assert.equal(PRODUCTION_BASELINE.apiRevision, "076d4d70161b0a3261518e90eb67a182a78cd3dd");
+  assert.equal(PRODUCTION_BASELINE.apiReference, "ghcr.io/ldshawver/myorder-api@sha256:9a514e57e6b5fda4ac01b6e16646faa74a00c9b8278106c88de7cce4cdca0c2a");
+  assert.equal(PRODUCTION_BASELINE.apiProvenance, "runtime-identity-verified; diagnostic-run=44890381114");
+  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:525ff7db45b52a26f49b8cc26b3100975405f9ac6175ca262c8a7a2ba9e9ca1f");
+  assert.equal(PRODUCTION_BASELINE.platformRevision, "076d4d70161b0a3261518e90eb67a182a78cd3dd");
+  assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:525ff7db45b52a26f49b8cc26b3100975405f9ac6175ca262c8a7a2ba9e9ca1f");
+  assert.equal(PRODUCTION_BASELINE.platformProvenance, "runtime-identity-verified; diagnostic-run=44890381114");
   assert.notEqual(PRODUCTION_BASELINE.apiImage, APPROVED_RELEASE.manifests.api);
   assert.notEqual(PRODUCTION_BASELINE.apiRevision, APPROVED_RELEASE.revisions.api);
   assert.notEqual(PRODUCTION_BASELINE.platformImage, APPROVED_RELEASE.manifests.platform);
