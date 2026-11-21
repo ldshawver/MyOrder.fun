@@ -71,7 +71,7 @@ import {
 } from "../lib/inventoryReservations";
 import { z } from "zod";
 import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
-import { consumeCustomerCredit, getCustomerCreditBalance, releaseCustomerCredit, reserveCustomerCredit, requireCustomerCreditAccountInGoodStanding, CustomerCreditError } from "../payments/customerCredit";
+import { consumeCustomerCredit, getCustomerCreditBalance, releaseCustomerCredit, reserveCustomerCredit, CustomerCreditError } from "../payments/customerCredit";
 import { deductPaidOrderInventory } from "../payments/inventory";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { checkoutPaymentMethods } from "../payments/checkoutMethods";
@@ -1307,7 +1307,6 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         replayed = true;
         return concurrentOrder;
       }
-      await requireCustomerCreditAccountInGoodStanding(tx, houseTenantId, actor.id);
       if (pickupLocation && pickupSchedule) {
         // Hold the schedule row stable until the order and its immutable
         // snapshot commit. Admin edits wait for this transaction, and a
