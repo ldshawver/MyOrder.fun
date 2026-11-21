@@ -173,7 +173,7 @@ export default function PendingPage({ status = "pending", userEmail, onCheckStat
             >
               {isRejected
                 ? "Your account application was not approved. If you believe this is an error, please contact us for assistance."
-                : "Your account has been created and is currently awaiting approval from an administrator. You will be notified once your access is granted."}
+                : "You are already signed in. Once an administrator approves your account, continue below to refresh your access—there is no need to sign out or register again."}
             </p>
           </div>
 
@@ -215,7 +215,7 @@ export default function PendingPage({ status = "pending", userEmail, onCheckStat
                 onClick={handleCheckStatus}
                 disabled={isChecking}
               >
-                {isChecking ? "Checking..." : "Check my status"}
+                {isChecking ? "Checking..." : "Continue after approval"}
               </Button>
               {checkResult === "still_pending" && (
                 <p
@@ -239,7 +239,7 @@ export default function PendingPage({ status = "pending", userEmail, onCheckStat
             <div className="flex flex-col gap-3 border-t border-red-950/40 pt-4 text-left">
               <p className="text-xs leading-relaxed text-muted-foreground">Finish the access request interrupted during registration. If your profile picture was not saved, choose it again.</p>
               <label className="text-xs text-muted-foreground" htmlFor="recovery-profile-image">Profile picture if requested</label>
-              <input id="recovery-profile-image" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setRecoveryFile(event.target.files?.[0] ?? null)} className="text-xs text-muted-foreground file:mr-2 file:rounded file:border-0 file:bg-[#8b0000] file:px-2 file:py-1 file:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#dc143c]" />
+              <input id="recovery-profile-image" type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/heic,image/heif" onChange={(event) => setRecoveryFile(event.target.files?.[0] ?? null)} className="text-xs text-muted-foreground file:mr-2 file:rounded file:border-0 file:bg-[#8b0000] file:px-2 file:py-1 file:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#dc143c]" />
               <Button type="button" size="sm" onClick={() => void resumeRegistration()} disabled={recoveryBusy} className="bg-[#8b0000] text-white hover:bg-[#a00020] focus-visible:ring-[#dc143c]">{recoveryBusy ? "Finishing…" : "Finish registration setup"}</Button>
               {recoveryMessage && <p role="status" aria-live="polite" className="text-xs text-muted-foreground">{recoveryMessage}</p>}
             </div>
