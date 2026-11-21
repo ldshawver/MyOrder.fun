@@ -548,6 +548,61 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     expect(sales.rows).toHaveLength(1);
   }, 60_000);
 
+  it("blocks checkout for a customer with a negative account balance without creating an order", async () => {
+    const items = [{ catalogItemId, quantity: 1 }];
+    const confirmation = {
+      acceptedAllSalesFinal: true,
+      confirmedAt: new Date().toISOString(),
+      legalDisclaimerText: "All sales are final. Confirm before checkout.",
+      paymentMethod: "cash",
+    };
+
+    // Obtain a valid conversion before the account becomes delinquent.  The
+    // final order transaction must still reject it after taking the account
+    // lock, rather than trusting the earlier conversion state.
+    const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+    expect(converted.status, converted.text).toBe(200);
+    await db.transaction(tx => adjustCustomerCredit(tx, {
+      tenantId,
+      customerId,
+      actorUserId: csrId,
+      amountCents: -1,
+      reason: "Disposable delinquent-account fixture",
+      idempotencyKey: "tax-e2e-negative-credit-hold",
+    }));
+
+    const quote = await as("customer").post("/api/checkout/quote").send({
+      items,
+      paymentMethod: "cash",
+      deliveryMethod: "pickup",
+    });
+    expect(quote.status, quote.text).toBe(200);
+
+    const retriedConversion = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+    expect(retriedConversion.status, retriedConversion.text).toBe(200);
+
+    const created = await as("customer").post("/api/orders").send({
+      orderType: "WALK_IN",
+      items,
+      checkoutConversionToken: converted.body.checkoutConversionToken,
+      checkoutConversionSnapshot: converted.body,
+      checkoutConfirmation: confirmation,
+      deliveryMethod: "pickup",
+    });
+    expect(created.status).toBe(409);
+    expect(created.body.error).toBe("CUSTOMER_CREDIT_BALANCE_DUE");
+    const [account] = await db.select().from(customerCreditAccountsTable).where(and(
+      eq(customerCreditAccountsTable.tenantId, tenantId),
+      eq(customerCreditAccountsTable.customerId, customerId),
+    ));
+    expect(account).toMatchObject({ balance: "-0.01", reservedBalance: "0.00" });
+    const residue = await db.execute(sql`SELECT
+      (SELECT count(*)::int FROM orders WHERE tenant_id = ${tenantId} AND customer_id = ${customerId}) AS orders,
+      (SELECT count(*)::int FROM inventory_reservations r JOIN orders o ON o.id = r.order_id WHERE o.tenant_id = ${tenantId}) AS reservations,
+      (SELECT count(*)::int FROM inventory_movements WHERE tenant_id = ${tenantId}) AS movements`);
+    expect(residue.rows[0]).toMatchObject({ orders: 0, reservations: 0, movements: 0 });
+  }, 60_000);
+
   it("rejects both a cash quote and order when no effective tax configuration exists", async () => {
     const [taxConfig] = await db.select().from(taxConfigurationsTable).where(eq(taxConfigurationsTable.tenantId, tenantId));
     expect(taxConfig).toBeDefined();

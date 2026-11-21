@@ -25,6 +25,24 @@ export async function getCustomerCreditBalance(tx: Tx, tenantId: number, custome
   return { balance: cents(account.balance), reserved: cents(account.reservedBalance), available: cents(account.balance) - cents(account.reservedBalance) };
 }
 
+/**
+ * A negative account balance is debt, not spendable customer credit.  Keep
+ * this check in the server-side checkout transaction so every payment method
+ * observes the same lock and a concurrent credit adjustment cannot race a new
+ * order into existence.
+ */
+export async function requireCustomerCreditAccountInGoodStanding(tx: Tx, tenantId: number, customerId: number) {
+  const account = await getCustomerCreditBalance(tx, tenantId, customerId);
+  if (account.balance < 0) {
+    throw new CustomerCreditError(
+      409,
+      "CUSTOMER_CREDIT_BALANCE_DUE",
+      "Resolve the outstanding account balance before placing another order",
+    );
+  }
+  return account;
+}
+
 export async function adjustCustomerCredit(tx: Tx, input: { tenantId: number; customerId: number; actorUserId: number; amountCents: number; reason: string; idempotencyKey: string }) {
   if (!Number.isInteger(input.amountCents) || input.amountCents === 0) throw new CustomerCreditError(400, "INVALID_CREDIT_AMOUNT", "Customer Credit adjustment must be a non-zero cent amount");
   if (!input.reason.trim()) throw new CustomerCreditError(400, "CREDIT_REASON_REQUIRED", "A reason is required");
