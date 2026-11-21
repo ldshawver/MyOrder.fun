@@ -46,9 +46,43 @@ export function renderConciergePrompt(
     .replaceAll("{{cart_context}}", vars.cart_context ?? "");
 }
 
-async function loadConciergePromptTemplate(): Promise<string> {
+// Chat input guardrails: bound token spend and limit how much client-supplied
+// (and therefore forgeable) conversation history reaches the model.
+export const AI_CHAT_MAX_MESSAGES = 20;
+export const AI_CHAT_MAX_MESSAGE_CHARS = 2000;
+export const AI_CHAT_MAX_CART_LINES = 50;
+
+export function boundChatMessages<T extends { role: string; content: string }>(messages: T[]): T[] {
+  return messages
+    .slice(-AI_CHAT_MAX_MESSAGES)
+    .map(m => ({ ...m, content: String(m.content ?? "").slice(0, AI_CHAT_MAX_MESSAGE_CHARS) }));
+}
+
+// Build the cart section of the system prompt from SERVER catalog data only.
+// Client-sent cart names/prices are untrusted (prompt-injection vector into
+// the system prompt, and could misstate prices), so only catalogItemId and
+// quantity are honoured; unknown or out-of-tenant ids are dropped.
+export function buildServerCartContext(
+  incomingCart: Array<{ catalogItemId: number; quantity: number }>,
+  catalog: Array<{ id: number; name: string; alavontName?: string | null; price: unknown }>,
+): string {
+  const byId = new Map(catalog.map(i => [i.id, i]));
+  const lines: string[] = [];
+  for (const c of incomingCart.slice(0, AI_CHAT_MAX_CART_LINES)) {
+    const item = byId.get(c.catalogItemId);
+    const qty = Number.isInteger(c.quantity) ? c.quantity : NaN;
+    if (!item || !(qty >= 1 && qty <= 99)) continue;
+    const price = parseFloat(String(item.price));
+    lines.push(`- ${item.alavontName ?? item.name} x${qty} ($${(price * qty).toFixed(2)})`);
+  }
+  return lines.length ? `CURRENT CART (${lines.length} item types):\n${lines.join("\n")}` : "";
+}
+
+async function loadConciergePromptTemplate(tenantId: number): Promise<string> {
   try {
-    const [row] = await db.select({ p: adminSettingsTable.aiConciergePrompt }).from(adminSettingsTable).limit(1);
+    // admin_settings is one row PER TENANT — always scope by tenant so one
+    // tenant's custom prompt never reaches another tenant's customers.
+    const [row] = await db.select({ p: adminSettingsTable.aiConciergePrompt }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
     const stored = row?.p?.trim();
     return stored && stored.length > 0 ? stored : DEFAULT_AI_CONCIERGE_PROMPT;
   } catch (err) {
@@ -250,12 +284,10 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
     .join("\n");
 
   // Build cart context section if the request includes cart items
-  const incomingCart = body.data.cart ?? [];
-  const cartContext = incomingCart.length > 0
-    ? `CURRENT CART (${incomingCart.length} item types):\n${incomingCart.map(c => `- ${c.name ?? "Item"} x${c.quantity} ($${((c.price ?? 0) * c.quantity).toFixed(2)})`).join("\n")}`
-    : "";
+  const cartContext = buildServerCartContext(body.data.cart ?? [], availableItems);
+  const chatMessages = boundChatMessages(body.data.messages);
 
-  const promptTemplate = await loadConciergePromptTemplate();
+  const promptTemplate = await loadConciergePromptTemplate(tenantId);
   const systemPrompt = renderConciergePrompt(promptTemplate, {
     itemCount: availableItems.length,
     catalog: catalogContext,
@@ -268,7 +300,7 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
   const cartActions: CartAction[] = [];
 
   try {
-    const aiMessage = await callAIWithTools(systemPrompt, body.data.messages, CART_TOOLS);
+    const aiMessage = await callAIWithTools(systemPrompt, chatMessages, CART_TOOLS);
 
     // Process any tool calls
     if (aiMessage.tool_calls?.length) {
@@ -320,7 +352,7 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
   } catch (err) {
     logger.error({ err }, "AI chat failed");
 
-    const lastUserMsg = [...body.data.messages].reverse().find(m => m.role === "user")?.content?.toLowerCase() ?? "";
+    const lastUserMsg = [...chatMessages].reverse().find(m => m.role === "user")?.content?.toLowerCase() ?? "";
 
     if (availableItems.length === 0) {
       reply = "Looks like the catalog is empty right now — check back soon and we'll have everything loaded up for you! 🛍️";
