@@ -55,18 +55,18 @@ export const APPROVED_RELEASE = Object.freeze({
   }),
 });
 export const PRODUCTION_BASELINE = Object.freeze({
-  // Read-only diagnostic run 44794727707 recorded the exact immutable images
-  // and source revision currently serving production. These were the previously
-  // approved 733d266 release, so preserve them as the rollback pair for the next
-  // release instead of retaining the superseded local-image baseline.
-  apiImage: "sha256:dfd8f1ec4231a3c9eeede4001ef4504d7060443f9fb0efa8ea3ccd5d048c37d1",
-  apiRevision: "733d266eca5073df7ab73abe4e003b0b76215107",
-  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:dfd8f1ec4231a3c9eeede4001ef4504d7060443f9fb0efa8ea3ccd5d048c37d1",
-  apiProvenance: "registry-manifest-and-runtime-label-verified; diagnostic-run=44794727707",
-  platformImage: "sha256:706d56895fc04b6c485351961b42ba79214abf27156f03251a2e01fb15efd381",
-  platformRevision: "733d266eca5073df7ab73abe4e003b0b76215107",
-  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:706d56895fc04b6c485351961b42ba79214abf27156f03251a2e01fb15efd381",
-  platformProvenance: "registry-manifest-and-runtime-label-verified; diagnostic-run=44794727707",
+  // Read-only diagnostic run 44890381114 observed the immutable references,
+  // image IDs, and runtime revision labels actually serving production. Preserve
+  // this verified live pair as rollback targets; the prior 733d266 record was
+  // stale and must not be used to bypass the runtime-identity guard.
+  apiImage: "sha256:9a514e57e6b5fda4ac01b6e16646faa74a00c9b8278106c88de7cce4cdca0c2a",
+  apiRevision: "076d4d70161b0a3261518e90eb67a182a78cd3dd",
+  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:9a514e57e6b5fda4ac01b6e16646faa74a00c9b8278106c88de7cce4cdca0c2a",
+  apiProvenance: "runtime-identity-verified; diagnostic-run=44890381114",
+  platformImage: "sha256:525ff7db45b52a26f49b8cc26b3100975405f9ac6175ca262c8a7a2ba9e9ca1f",
+  platformRevision: "076d4d70161b0a3261518e90eb67a182a78cd3dd",
+  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:525ff7db45b52a26f49b8cc26b3100975405f9ac6175ca262c8a7a2ba9e9ca1f",
+  platformProvenance: "runtime-identity-verified; diagnostic-run=44890381114",
   nginxImage: "sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a",
   nginxReference: "nginx:alpine",
   databaseImage: "sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229",
