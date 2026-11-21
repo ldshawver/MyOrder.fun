@@ -214,6 +214,15 @@ describe("checkoutNormalizer", () => {
       expect(line.customer_safe_image).toBe("https://safe.example/product.jpg");
     });
 
+    it("keeps merchantCategory ahead of the mapped Lucifer Cruz fallback", async () => {
+      makeDbMock(makeSampleLocalMappedItem({
+        merchantCategory: "Safe customer category",
+        luciferCruzCategory: "Adult",
+      }));
+      const [line] = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }], undefined, true, 1, true);
+      expect(line.customer_safe_category).toBe("Safe customer category");
+    });
+
     it("throws when all branded checkout name fallbacks are empty", async () => {
       makeDbMock(makeSampleLocalMappedItem({ customerSafeName: null }));
       await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }])).rejects.toThrow(
