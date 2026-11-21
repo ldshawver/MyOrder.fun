@@ -129,8 +129,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         },
         {
           href: "/ai-concierge",
-          label: "ADI Assistant",
-          mobileLabel: "ADI",
+          label: "Zappy Concierge",
+          mobileLabel: "Zappy",
           icon: MessageSquare,
           roles: ALL_ROLES,
           mobileShow: true,

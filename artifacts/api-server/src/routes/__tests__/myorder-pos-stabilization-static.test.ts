@@ -266,7 +266,7 @@ describe("receipts and deploy workflow", () => {
     expect(receipts).toContain("<RegisteredPrintAdmin mode={activeTab} />");
     const checkout = platform("pages/new-order.tsx");
     expect(checkout).toContain("grid grid-cols-1 lg:grid-cols-2 gap-6 items-start");
-    expect(checkout).toContain("Optional ADI suggestions");
+    expect(checkout).toContain("Optional Zappy suggestions");
     expect(checkout).not.toContain("Receipt Cart");
   });
 

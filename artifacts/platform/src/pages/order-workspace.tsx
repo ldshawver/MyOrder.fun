@@ -23,7 +23,7 @@ export default function OrderWorkspace() {
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">MyOrder</p>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Your ordering workspace</h1>
-          <p className="text-sm text-muted-foreground mt-1">Browse, ask ADI, review your cart, and follow your order in one place.</p>
+          <p className="text-sm text-muted-foreground mt-1">Browse, ask Zappy, review your cart, and follow your order in one place.</p>
         </div>
         <Link href="/catalog" className="hidden sm:inline-flex items-center gap-2 rounded-xl border border-border/50 px-4 py-2 text-sm font-semibold hover:bg-muted/30">
           <BookOpen size={16} /> Catalogue
@@ -44,8 +44,8 @@ export default function OrderWorkspace() {
           {cart.length > 0 && <div className="text-xs text-muted-foreground">{cart.map(item => <div key={item.id} className="truncate">{item.quantity} × {item.name}</div>)}</div>}
         </aside>
 
-        <section className="min-w-0 glass-card rounded-2xl overflow-hidden" aria-label="ADI ordering assistant">
-          <div className="px-5 py-3 border-b border-border/40 flex items-center gap-2"><Sparkles size={16} className="text-primary" /><span className="font-semibold">ADI</span><span className="text-xs text-muted-foreground">Product discovery and suggestions</span></div>
+        <section className="min-w-0 glass-card rounded-2xl overflow-hidden" aria-label="Zappy ordering assistant">
+          <div className="px-5 py-3 border-b border-border/40 flex items-center gap-2"><Sparkles size={16} className="text-primary" /><span className="font-semibold">Zappy</span><span className="text-xs text-muted-foreground">Product discovery and suggestions</span></div>
           <div className="max-h-[720px] overflow-y-auto p-1"><AiConcierge /></div>
         </section>
 

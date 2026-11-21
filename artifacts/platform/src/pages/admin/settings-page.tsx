@@ -1351,7 +1351,7 @@ export default function AdminSettingsPage() {
             <div>
               <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-1">AI Concierge System Prompt</div>
               <div className="text-[11px] text-muted-foreground leading-relaxed">
-                Controls how ADI (the customer-facing AI assistant) introduces itself and what rules it follows. Leave blank to use the built-in default prompt.
+                Controls how Zappy (the customer-facing AI order helper) introduces itself and what rules it follows. Leave blank to use the built-in default prompt.
               </div>
             </div>
 
