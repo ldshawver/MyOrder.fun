@@ -1,0 +1,50 @@
+name: Zappy live eval (staging key)
+
+# Manually runs the Zappy evaluation against the real model using the
+# restricted STAGING OpenAI key and synthetic data only (no database, no
+# customer records). Never runs on push or pull_request.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zappy-live-eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    name: Real-model Zappy evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.26.1"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build workspace libraries
+        run: pnpm run typecheck:libs
+
+      - name: Run live evaluation
+        env:
+          ZAPPY_LIVE_EVAL: "1"
+          OPENAI_API_KEY: ${{ secrets.STAGING_OPENAI_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${OPENAI_API_KEY:-}" ] || { echo "::error::Missing staging environment secret STAGING_OPENAI_API_KEY"; exit 1; }
+          pnpm --filter @workspace/api-server exec vitest run src/routes/__tests__/zappy.live-eval.test.ts

@@ -69,7 +69,10 @@ services:
       # Stable staging-only key for tenant credentials at rest. It must be
       # managed outside source control and must not be changed between deploys.
       SETTINGS_ENC_KEY: ${SETTINGS_ENC_KEY:-}
-      OPENAI_API_KEY: ""
+      # Zappy AI: a separate, restricted staging key from the protected staging
+      # env file. Server-side only (never a build arg or VITE_ variable). Empty
+      # or missing means Zappy answers from the catalog fallback.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:?PAYMENT_PROVIDER is required}
       PAYMENT_MODE: ${PAYMENT_MODE:?PAYMENT_MODE is required}
       PAYPAL_ENVIRONMENT: ${PAYPAL_ENVIRONMENT:?PAYPAL_ENVIRONMENT is required}
