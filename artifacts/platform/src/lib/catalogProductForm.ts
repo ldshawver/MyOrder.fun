@@ -78,6 +78,9 @@ export function createCatalogProductPayload(form: CatalogProductDraft): Record<s
     isTaxable: form.isTaxable !== false,
     isFeatured: form.isFeatured === true,
     isSaleFeatured: form.isSaleFeatured === true,
+    // This affects the server-authoritative price.  It is deliberately
+    // independent from isSaleFeatured, which is display-only.
+    activeSale: form.activeSale === true,
     parLevel: optionalNumber(form, "parLevel"),
     moq: optionalNumber(form, "moq") ?? 0,
     preferredReorderQuantity: optionalNumber(form, "preferredReorderQuantity") ?? 0,

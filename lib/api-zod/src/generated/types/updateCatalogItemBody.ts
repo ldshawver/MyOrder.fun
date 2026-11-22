@@ -24,6 +24,7 @@ export interface UpdateCatalogItemBody {
   mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  activeSale?: boolean;
   tags?: string[];
   internalName?: string | null;
   internalDescription?: string | null;

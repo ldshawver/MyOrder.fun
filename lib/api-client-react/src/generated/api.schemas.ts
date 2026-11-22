@@ -216,6 +216,7 @@ export interface CatalogItem {
   metadata?: CatalogItemMetadata;
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  activeSale?: boolean;
   alavontName?: string | null;
   alavontDescription?: string | null;
   alavontCategory?: string | null;
@@ -281,6 +282,7 @@ export interface CreateCatalogItemBody {
   mediaGallery?: CreateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  activeSale?: boolean;
   tags?: string[];
   internalName?: string | null;
   internalDescription?: string | null;
@@ -353,6 +355,7 @@ export interface UpdateCatalogItemBody {
   mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  activeSale?: boolean;
   tags?: string[];
   internalName?: string | null;
   internalDescription?: string | null;

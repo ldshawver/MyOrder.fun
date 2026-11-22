@@ -59,7 +59,8 @@ type CatalogProduct = {
   preferredReorderQuantity: number | string | null;
   stockQuantity: number | null;
   lifecycleStatus?: CatalogLifecycleStatus;
-  metadata?: { complianceReason?: string | null; complianceHold?: boolean } | null;
+  metadata?: { complianceReason?: string | null; complianceHold?: boolean; activeSale?: boolean } | null;
+  activeSale?: boolean;
 };
 
 const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolean; isTaxable: boolean; isWooManaged: boolean } = {
@@ -143,6 +144,7 @@ function EditDialog({
     isTaxable: item?.isTaxable !== false,
     isFeatured: item?.isFeatured === true,
     isSaleFeatured: item?.isSaleFeatured === true,
+    activeSale: item?.activeSale === true || item?.metadata?.activeSale === true,
     parLevel: fieldVal(item?.parLevel),
     moq: fieldVal(item?.moq),
     preferredReorderQuantity: fieldVal(item?.preferredReorderQuantity),
@@ -319,6 +321,7 @@ function EditDialog({
           {!isWoo && (
             <div>
               <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Availability</div>
+              <p className="mb-2 text-xs text-muted-foreground">Sale Price is charged only when “Use Sale Price at checkout” is enabled. The sale marker is visual only.</p>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -344,6 +347,10 @@ function EditDialog({
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.isSaleFeatured)} onChange={e => setForm(f => ({ ...f, isSaleFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
                 <span className="text-sm">Sale (show sale marker only)</span>
+              </label>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={Boolean(form.activeSale)} onChange={e => setForm(f => ({ ...f, activeSale: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <span className="text-sm">Use Sale Price at checkout</span>
               </label>
             </div>
           )}

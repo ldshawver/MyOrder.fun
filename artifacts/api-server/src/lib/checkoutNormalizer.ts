@@ -165,6 +165,35 @@ function generatedSafeMerchantSku(catalogItemId: number): string {
   return `LC-${catalogItemId}`;
 }
 
+/**
+ * Pricing is server-owned.  `metadata.activeSale` is the explicit operator
+ * switch for charging `compareAtPrice`; `isSaleFeatured` remains a
+ * presentation-only badge and must never change a checkout total.
+ */
+export function resolveEffectiveCatalogUnitPrice(input: {
+  price: string | number;
+  regularPrice?: string | number | null;
+  compareAtPrice?: string | number | null;
+  metadata?: unknown;
+}): number {
+  const regular = input.regularPrice == null || String(input.regularPrice).trim() === ""
+    ? input.price
+    : input.regularPrice;
+  const regularCents = dollarsToCents(regular);
+  const activeSale = input.metadata != null
+    && typeof input.metadata === "object"
+    && !Array.isArray(input.metadata)
+    && (input.metadata as Record<string, unknown>).activeSale === true;
+
+  if (!activeSale) return regularCents / 100;
+  if (input.compareAtPrice == null || String(input.compareAtPrice).trim() === "") {
+    throw new Error("Active sale requires a sale price");
+  }
+  const saleCents = dollarsToCents(input.compareAtPrice);
+  if (saleCents > regularCents) throw new Error("Sale price cannot exceed regular price");
+  return saleCents / 100;
+}
+
 export async function normalizeCheckoutCart(
   rawLines: CartLineInputType[],
   receiptMode?: string,
@@ -292,7 +321,17 @@ export async function normalizeCheckoutCart(
         );
       }
     }
-    const unit_price = resolveEmployeeUnitPrice(ci.price as string, ci.homiePrice as string | null, employeePricing?.isCurrentEmployee === true);
+    let retailUnitPrice: number;
+    try {
+      retailUnitPrice = resolveEffectiveCatalogUnitPrice(ci);
+    } catch (error) {
+      throw new CheckoutMappingError(
+        line.catalogItemId,
+        "invalid_sale_price_configuration",
+        error instanceof Error ? error.message : "Invalid sale price configuration",
+      );
+    }
+    const unit_price = resolveEmployeeUnitPrice(retailUnitPrice, ci.homiePrice as string | null, employeePricing?.isCurrentEmployee === true);
     const line_subtotal = parseFloat((unit_price * line.quantity).toFixed(2));
 
     const normalizedLine: NormalizedCartLine = {

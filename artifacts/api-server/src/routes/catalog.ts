@@ -52,10 +52,12 @@ const createCatalogItemRequest = CreateCatalogItemBody.extend({
   alavontImageUrl: nullableBlankHttpUrl,
   luciferCruzImageUrl: nullableBlankHttpUrl,
   showCatalogueStockIndicator: z.boolean().optional(),
+  activeSale: z.boolean().optional(),
   commissionEligibility: z.enum(["eligible", "membership", "excluded", "unclassified"]).optional(),
 });
 const updateCatalogItemRequest = UpdateCatalogItemBody.strict().extend({
   showCatalogueStockIndicator: z.boolean().optional(),
+  activeSale: z.boolean().optional(),
   commissionEligibility: z.enum(["eligible", "membership", "excluded", "unclassified"]).optional(),
 }).strict();
 const catalogDisplayUpdateSchema = z.object({
@@ -222,6 +224,7 @@ function mapItem(
     lifecycleStatus: alavontOnly ? undefined : getCatalogLifecycleStatus(i),
     isFeatured: i.isFeatured ?? false,
     isSaleFeatured: i.isSaleFeatured ?? false,
+    activeSale: metadata.activeSale === true,
     internalName: alavontOnly ? null : (i.internalName ?? null),
     internalDescription: alavontOnly ? null : (i.internalDescription ?? null),
     internalCategory: alavontOnly ? null : (i.internalCategory ?? null),
@@ -663,7 +666,7 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
   if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required" }); return; }
   // price is number in the Zod schema but string in the db schema (numeric precision);
   // use double-cast to satisfy drizzle's strict insert overloads
-  const { costBasis, showCatalogueStockIndicator, ...createData } = body.data;
+  const { costBasis, showCatalogueStockIndicator, activeSale, ...createData } = body.data;
   const [row] = await db.insert(catalogItemsTable).values({
     ...(createData as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
     tenantId,
@@ -683,7 +686,10 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
     costBasis: costBasis != null ? String(costBasis) : undefined,
     isAvailable: body.data.isAvailable ?? true,
-    metadata: { showCatalogueStockIndicator: showCatalogueStockIndicator ?? true },
+    metadata: {
+      showCatalogueStockIndicator: showCatalogueStockIndicator ?? true,
+      ...(activeSale === undefined ? {} : { activeSale }),
+    },
     stockQuantity: "0",
     inventoryAmount: "0",
   } as unknown as typeof catalogItemsTable.$inferInsert).returning();
@@ -857,15 +863,19 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     return;
   }
 
-  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, parLevel, moq, preferredReorderQuantity, showCatalogueStockIndicator, ...restBodyData } = body.data;
+  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, parLevel, moq, preferredReorderQuantity, showCatalogueStockIndicator, activeSale, ...restBodyData } = body.data;
   if (stockQuantity !== undefined) {
     res.status(409).json({ error: "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction", use: "/api/admin/bootstrap-inventory" });
     return;
   }
   const updateData: Partial<typeof catalogItemsTable.$inferInsert> = restBodyData as Partial<typeof catalogItemsTable.$inferInsert>;
-  if (showCatalogueStockIndicator !== undefined) {
+  if (showCatalogueStockIndicator !== undefined || activeSale !== undefined) {
     const metadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata) ? existing.metadata as Record<string, unknown> : {};
-    updateData.metadata = { ...metadata, showCatalogueStockIndicator };
+    updateData.metadata = {
+      ...metadata,
+      ...(showCatalogueStockIndicator === undefined ? {} : { showCatalogueStockIndicator }),
+      ...(activeSale === undefined ? {} : { activeSale }),
+    };
   }
   if (price !== undefined) updateData.price = String(price);
   if (compareAtPrice !== undefined) updateData.compareAtPrice = compareAtPrice != null ? String(compareAtPrice) : null;

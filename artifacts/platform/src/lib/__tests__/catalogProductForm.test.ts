@@ -41,6 +41,13 @@ describe("catalog product submission", () => {
     });
   });
 
+  it("keeps sale-price activation separate from the sale marker", () => {
+    expect(createCatalogProductPayload({ ...valid, activeSale: true, isSaleFeatured: false })).toMatchObject({
+      activeSale: true,
+      isSaleFeatured: false,
+    });
+  });
+
   it("omits optional blank non-nullable fields from a minimal create request", () => {
     const payload = createCatalogProductPayload({ ...valid, description: " ", imageUrl: "", sku: "" });
     const requestBody = JSON.parse(JSON.stringify(payload));
