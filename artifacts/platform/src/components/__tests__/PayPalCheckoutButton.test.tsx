@@ -49,7 +49,7 @@ describe("PayPal Wallet checkout", () => {
     const createPayPalOneTimePaymentSession = vi.fn().mockReturnValue({ start: vi.fn() });
     window.paypal = { createInstance: vi.fn().mockResolvedValue({ findEligibleMethods, createPayPalOneTimePaymentSession }) };
     await renderButton();
-    expect(window.paypal.createInstance).toHaveBeenCalledWith({ clientId: "public-test-client", components: ["paypal-payments", "venmo-payments", "paypal-guest-payments", "applepay-payments", "googlepay-payments"], pageType: "checkout" });
+    expect(window.paypal.createInstance).toHaveBeenCalledWith({ clientId: "public-test-client", components: ["paypal-payments", "venmo-payments", "card-fields", "applepay-payments", "googlepay-payments"], pageType: "checkout" });
     expect(findEligibleMethods).toHaveBeenCalledWith({ currencyCode: "USD", countryCode: "US" });
     expect(host.querySelector("paypal-button[type=pay]")).not.toBeNull();
     expect(createPayPalOneTimePaymentSession).toHaveBeenCalledTimes(1);
@@ -109,6 +109,33 @@ describe("PayPal Wallet checkout", () => {
     expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/capture"))).toBe(false);
     await act(async () => { await onApprove?.({ orderId: "PROVIDER-43" }); });
     expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/capture"))).toBe(true);
+    expect(onCaptured).toHaveBeenCalledWith(43);
+  });
+
+  it("renders hosted SDK v6 card fields and creates a provider order only when the buyer submits them", async () => {
+    const onCaptured = vi.fn();
+    const createCardFieldsComponent = vi.fn<(input: { type: "number" | "expiry" | "cvv" }) => HTMLElement>(() => document.createElement("iframe"));
+    const submit = vi.fn(async (providerOrderId: string) => ({ state: "succeeded" as const, data: { orderId: providerOrderId } }));
+    const cardSession = { createCardFieldsComponent, submit };
+    window.paypal = { createInstance: vi.fn(async () => ({
+      findEligibleMethods: async () => ({ isEligible: (method: string) => method === "advanced_cards" }),
+      createPayPalOneTimePaymentSession: () => ({ start: async () => {} }),
+      createCardFieldsOneTimePaymentSession: () => cardSession,
+    })) };
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(
+      url === "/api/payments/config" ? { enabled: true, mode: "sandbox", clientId: "public-client", currency: "USD" }
+        : url.endsWith("/capture") ? { status: "captured" } : { attemptId: 21, providerOrderId: "CARD-ORDER-43" },
+    ), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const script = document.createElement("script"); script.dataset.myorderPaypalSdk = "v6"; document.head.append(script);
+    await act(async () => { root.render(<PayPalCheckoutButton orderId={43} getToken={async () => "test-token"} onCaptured={onCaptured} />); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(host.querySelector('[data-testid="paypal-card-fields"]')).not.toBeNull();
+    expect(createCardFieldsComponent).toHaveBeenCalledTimes(3);
+    expect(createCardFieldsComponent.mock.calls.map(call => call[0].type)).toEqual(["number", "expiry", "cvv"]);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/payments/paypal/orders/43"))).toBe(false);
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="paypal-card-submit"]')?.click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(submit).toHaveBeenCalledWith("CARD-ORDER-43");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/capture"))).toBe(true);
     expect(onCaptured).toHaveBeenCalledWith(43);
   });
 
