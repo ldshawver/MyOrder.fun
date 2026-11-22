@@ -175,7 +175,11 @@ export class PaymentService {
         await tx.transaction(async finalizeTx => {
           await input.finalize(order, finalizeTx);
           const creditCents = dollarsToCents(order.customerCreditApplied);
-          if (creditCents > 0) await consumeCustomerCredit(finalizeTx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.customerId, orderId: order.id, amountCents: creditCents, idempotencyKey: `consume:capture:${attempt.id}` });
+          if (creditCents > 0) {
+            // Guest checkout never receives authenticated-customer credit.
+            if (order.customerId == null) throw new PaymentServiceError(409, "GUEST_CREDIT_FORBIDDEN", "Guest orders cannot use customer credit");
+            await consumeCustomerCredit(finalizeTx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.customerId, orderId: order.id, amountCents: creditCents, idempotencyKey: `consume:capture:${attempt.id}` });
+          }
           // The order tender remains compatible with existing settlement and
           // return logic. The exact verified provider source is durably stored
           // on the payment attempt for reporting.
@@ -399,7 +403,10 @@ export class PaymentService {
       await tx.update(paymentAttemptsTable).set({ state: "failed", reconciliationState: "resolved", failureClass: "provider_created_abandoned" }).where(and(eq(paymentAttemptsTable.id, attempt.id), eq(paymentAttemptsTable.tenantId, input.tenantId)));
       const reservationReleased = await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
       const creditCents = dollarsToCents(order.customerCreditApplied);
-      if (creditCents > 0) await releaseCustomerCredit(tx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.actorUserId, orderId: order.id, amountCents: creditCents, idempotencyKey: `release:abandoned:${attempt.id}`, reason: "Abandoned sandbox PayPal checkout" });
+      if (creditCents > 0) {
+        if (order.customerId == null) throw new PaymentServiceError(409, "GUEST_CREDIT_FORBIDDEN", "Guest orders cannot use customer credit");
+        await releaseCustomerCredit(tx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.actorUserId, orderId: order.id, amountCents: creditCents, idempotencyKey: `release:abandoned:${attempt.id}`, reason: "Abandoned sandbox PayPal checkout" });
+      }
       const now = new Date();
       await tx.update(ordersTable).set({ status: "cancelled", fulfillmentStatus: "cancelled", cancelledAt: now, cancelledByUserId: input.actorUserId, customerCreditApplied: creditCents > 0 ? "0.00" : order.customerCreditApplied, remainingTenderAmount: creditCents > 0 ? order.total : order.remainingTenderAmount, updatedAt: now }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, input.tenantId)));
       await tx.insert(auditLogsTable).values({ tenantId: input.tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "PAYPAL_CREATED_ORDER_ABANDONED", resourceType: "order", resourceId: String(order.id), metadata: { attemptId: attempt.id, reservationReleased, providerState: "CREATED" } });

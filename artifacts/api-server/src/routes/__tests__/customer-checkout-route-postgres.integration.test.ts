@@ -173,11 +173,27 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
       labName: "Checkout Item",
     }).returning();
     catalogItemId = item.id;
+    // The disposable fixture uses `drizzle-kit push` plus a best-effort
+    // historical replay.  0070's SQL-only trigger is not installed after
+    // its CREATE TABLE collision, so seed the same canonical relationship
+    // explicitly instead of assuming an implicit test-only trigger.
+    const product = await pool.query<{ id: number }>(
+      "INSERT INTO catalogue_products(tenant_id,name,inventory_model,location_evaluation,active) VALUES($1,$2,'SEPARATE_VARIANTS','PER_LOCATION',true) RETURNING id",
+      [tenantId, item.name],
+    );
+    const inventoryItem = await pool.query<{ id: number }>(
+      "INSERT INTO inventory_items(tenant_id,catalog_item_id,base_unit) VALUES($1,$2,'each') RETURNING id",
+      [tenantId, item.id],
+    );
+    await pool.query(
+      "INSERT INTO catalogue_options(tenant_id,product_id,catalog_item_id,inventory_item_id,label,consumption_quantity,sort_order,active) VALUES($1,$2,$3,$4,'Standard',1,0,true)",
+      [tenantId, product.rows[0]!.id, item.id, inventoryItem.rows[0]!.id],
+    );
     const [location] = await db.insert(inventoryLocationsTable).values({ tenantId, type: "storefront", name: "Front", displayOrder: 1 }).returning();
     pickupLocationId = location.id;
     await db.insert(inventoryBalancesTable).values({ tenantId, productId: item.id, locationId: location.id, quantityOnHand: "3", parLevel: "1" });
-    // The database derives the storefront catalogue product/option and its
-    // inventory item from the catalogue row; checkout requires them active.
+    // Checkout requires an active tenant-scoped product/option and inventory
+    // item, regardless of how the catalogue row was created.
     const option = await pool.query("SELECT 1 FROM catalogue_options co JOIN catalogue_products cp ON cp.id = co.product_id WHERE co.tenant_id = $1 AND co.catalog_item_id = $2 AND co.active AND cp.active AND co.inventory_item_id IS NOT NULL", [tenantId, item.id]);
     if (option.rowCount !== 1) throw new Error("Expected an active storefront catalogue option for the checkout fixture item");
     // Pickup open all day, every day, so immediate pickup is always valid.

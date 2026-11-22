@@ -12,6 +12,12 @@ describe("order event authorization and recovery", () => {
     expect(shouldDeliver(client(11, "user"), ev)).toBe(false);
   });
 
+  it("never delivers a guest order event to an authenticated customer", () => {
+    const guest = { type: "order.updated" as const, orderId: 4, tenantId: 1, customerId: null, assignedCsrUserId: 20, fulfillmentStatus: "submitted", status: "confirmed", estimatedReadyAt: null, acceptedAt: null, etaAdjustedBySupervisor: false, routeSource: "active_csr", reason: "created" };
+    expect(shouldDeliver(client(10, "user"), guest)).toBe(false);
+    expect(shouldDeliver(client(20, "csr"), guest)).toBe(true);
+  });
+
   it("isolates CSR events to assigned orders and the general queue", () => {
     const assigned = { type: "order.updated" as const, orderId: 1, tenantId: 1, customerId: 10, assignedCsrUserId: 20, fulfillmentStatus: "ready", status: "ready", estimatedReadyAt: null, acceptedAt: null, etaAdjustedBySupervisor: false, routeSource: "active_csr", reason: "ready" };
     const general = { ...assigned, orderId: 2, assignedCsrUserId: null };

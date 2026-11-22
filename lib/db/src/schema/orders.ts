@@ -14,13 +14,17 @@ import {
 import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
+import { guestOrderIdentitiesTable } from "./guestOrders";
 import { catalogItemsTable } from "./catalog";
 import { generalQueueCashSessionsTable, inventoryLocationsTable, labTechShiftsTable } from "./shifts";
 
 export const ordersTable = pgTable("orders", {
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
-  customerId: integer("customer_id").notNull().references(() => usersTable.id),
+  // Exactly one of customerId and guestIdentityId is required by the database
+  // constraint in migration 0084. Existing authenticated orders are unchanged.
+  customerId: integer("customer_id").references(() => usersTable.id),
+  guestIdentityId: integer("guest_identity_id").references(() => guestOrderIdentitiesTable.id),
   status: text("status").notNull().default("pending"),
   paymentStatus: text("payment_status").notNull().default("unpaid"),
   paymentMethod: text("payment_method").default("cash"), // "cash" | "card" | "comp"
@@ -109,6 +113,8 @@ export const ordersTable = pgTable("orders", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
   tenantIdUnique: unique("orders_tenant_id_id_unique").on(table.tenantId, table.id),
+  guestIdentityUnique: unique("orders_guest_identity_unique").on(table.guestIdentityId),
+  guestIdentityTenant: foreignKey({ name: "orders_guest_identity_tenant_fk", columns: [table.tenantId, table.guestIdentityId], foreignColumns: [guestOrderIdentitiesTable.tenantId, guestOrderIdentitiesTable.id] }),
   tenantPickupLocation: foreignKey({ name: "orders_tenant_pickup_location_fk", columns: [table.tenantId, table.pickupLocationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
 }));
 

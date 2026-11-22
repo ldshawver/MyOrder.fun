@@ -860,7 +860,7 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
     itemMap[item.catalogItemId].revenue += moneyNumber(requiredMoneyCents(item.totalPrice, `orderItem.${item.id}.totalPrice`));
   }
 
-  const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
+  const customerMap: Record<string, { customerId: number | null; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
   const paymentTotalsCents: Record<string, bigint> = {
     cash: 0n, card: 0n, paypal: 0n, paypal_card: 0n, customer_credit: 0n, split: 0n, comp: 0n, other: 0n,
   };
@@ -878,13 +878,14 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
       paymentTotalsCents.other += orderTotal;
     }
 
-    if (!customerMap[order.customerId]) {
-      const [u] = await executor
+    const customerKey = order.customerId == null ? `guest:${order.guestIdentityId ?? order.id}` : String(order.customerId);
+    if (!customerMap[customerKey]) {
+      const [u] = order.customerId == null ? [] : await executor
         .select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
         .from(usersTable)
         .where(eq(usersTable.id, order.customerId))
         .limit(1);
-      customerMap[order.customerId] = {
+      customerMap[customerKey] = {
         customerId: order.customerId,
         name: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() : "Unknown",
         orderCount: 0,
@@ -892,8 +893,8 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
         paymentMethod: method,
       };
     }
-    customerMap[order.customerId].orderCount++;
-    customerMap[order.customerId].total += moneyNumber(orderTotal);
+    customerMap[customerKey].orderCount++;
+    customerMap[customerKey].total += moneyNumber(orderTotal);
   }
 
   const paymentTotals = Object.fromEntries(

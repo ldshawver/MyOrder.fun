@@ -64,7 +64,7 @@ test("unknown, missing, reordered and fabricated historical rows fail", () => {
   assert.throws(() => validateAppliedLineage(local, fabricatedId));
 });
 
-test("49-row staging permits only the ordered 0077 through 0083 continuation", () => {
+test("49-row staging permits only the ordered 0077 through 0084 continuation", () => {
   const before = [...staging];
   for (const index of [39, 40, 41, 42, 46, 47, 48, 49, 50]) {
     before.push({ id: before.length + 1, hash: local[index].hash, created_at: String(local[index].when) });
@@ -73,7 +73,7 @@ test("49-row staging permits only the ordered 0077 through 0083 continuation", (
   const verified = validateAppliedLineage(local, before);
   const pending = local.map((_: unknown, index: number) => index)
     .filter((index: number) => !verified.appliedJournalIndices.has(index));
-  assert.deepEqual(pending, [51, 52, 53, 54, 55, 56, 57]);
+  assert.deepEqual(pending, [51, 52, 53, 54, 55, 56, 57, 58]);
   assert.equal(local[51].tag, "0077_catalogue_inventory_reconciliation");
   assert.equal(local[52].tag, "0078_inventory_history_baseline_repair");
   assert.equal(local[53].tag, "0079_verified_zero_opening_counts");
@@ -81,6 +81,7 @@ test("49-row staging permits only the ordered 0077 through 0083 continuation", (
   assert.equal(local[55].tag, "0081_csr_inventory_accountability");
   assert.equal(local[56].tag, "0082_location_pickup_scheduling");
   assert.equal(local[57].tag, "0083_uber_quote_authoritative_settings");
+  assert.equal(local[58].tag, "0084_guest_order_identity");
   assert.deepEqual(historicalStagingInventory.forwardIndices.slice(before.length - 40), pending);
 
   const reconciliation = { id: 50, hash: local[51].hash, created_at: String(local[51].when) };
@@ -90,9 +91,9 @@ test("49-row staging permits only the ordered 0077 through 0083 continuation", (
   assert.deepEqual(
     local.map((_: unknown, index: number) => index)
       .filter((index: number) => !reconciliationVerified.appliedJournalIndices.has(index)),
-    [52, 53, 54, 55, 56, 57],
+    [52, 53, 54, 55, 56, 57, 58],
   );
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterReconciliation.length - 40), [52, 53, 54, 55, 56, 57]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterReconciliation.length - 40), [52, 53, 54, 55, 56, 57, 58]);
 
   const repair = { id: 51, hash: local[52].hash, created_at: String(local[52].when) };
   const afterRepair = [...afterReconciliation, repair];
@@ -100,34 +101,39 @@ test("49-row staging permits only the ordered 0077 through 0083 continuation", (
   assert.deepEqual(
     local.map((_: unknown, index: number) => index)
       .filter((index: number) => !validateAppliedLineage(local, afterRepair).appliedJournalIndices.has(index)),
-    [53, 54, 55, 56, 57],
+    [53, 54, 55, 56, 57, 58],
   );
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterRepair.length - 40), [53, 54, 55, 56, 57]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterRepair.length - 40), [53, 54, 55, 56, 57, 58]);
 
   const zeroOpening = { id: 52, hash: local[53].hash, created_at: String(local[53].when) };
   const afterZeroOpening = [...afterRepair, zeroOpening];
-  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterZeroOpening).appliedJournalIndices.has(index)), [54, 55, 56, 57]);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterZeroOpening.length - 40), [54, 55, 56, 57]);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterZeroOpening).appliedJournalIndices.has(index)), [54, 55, 56, 57, 58]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterZeroOpening.length - 40), [54, 55, 56, 57, 58]);
 
   const accounting = { id: 53, hash: local[54].hash, created_at: String(local[54].when) };
   const afterAccounting = [...afterZeroOpening, accounting];
-  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterAccounting).appliedJournalIndices.has(index)), [55, 56, 57]);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterAccounting.length - 40), [55, 56, 57]);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterAccounting).appliedJournalIndices.has(index)), [55, 56, 57, 58]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterAccounting.length - 40), [55, 56, 57, 58]);
 
   const accountability = { id: 54, hash: local[55].hash, created_at: String(local[55].when) };
   const afterAccountability = [...afterAccounting, accountability];
-  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterAccountability).appliedJournalIndices.has(index)), [56, 57]);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterAccountability.length - 40), [56, 57]);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterAccountability).appliedJournalIndices.has(index)), [56, 57, 58]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterAccountability.length - 40), [56, 57, 58]);
 
   const pickupScheduling = { id: 55, hash: local[56].hash, created_at: String(local[56].when) };
   const afterPickupScheduling = [...afterAccountability, pickupScheduling];
-  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterPickupScheduling).appliedJournalIndices.has(index)), [57]);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterPickupScheduling.length - 40), [57]);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterPickupScheduling).appliedJournalIndices.has(index)), [57, 58]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterPickupScheduling.length - 40), [57, 58]);
 
   const uberQuoteSettings = { id: 56, hash: local[57].hash, created_at: String(local[57].when) };
   const afterUberQuoteSettings = [...afterPickupScheduling, uberQuoteSettings];
-  assert.equal(validateAppliedLineage(local, afterUberQuoteSettings).appliedJournalIndices.size, local.length);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterUberQuoteSettings.length - 40), []);
+  assert.equal(validateAppliedLineage(local, afterUberQuoteSettings).appliedJournalIndices.size, local.length - 1);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterUberQuoteSettings.length - 40), [58]);
+
+  const guestOrderIdentity = { id: 57, hash: local[58].hash, created_at: String(local[58].when) };
+  const afterGuestOrderIdentity = [...afterUberQuoteSettings, guestOrderIdentity];
+  assert.equal(validateAppliedLineage(local, afterGuestOrderIdentity).appliedJournalIndices.size, local.length);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterGuestOrderIdentity.length - 40), []);
 
   assert.throws(() => validateAppliedLineage(local, [...before, { ...reconciliation, hash: "0".repeat(64) }]));
   assert.throws(() => validateAppliedLineage(local, [...before, { ...reconciliation, created_at: String(local[51].when + 1) }]));
@@ -146,4 +152,6 @@ test("49-row staging permits only the ordered 0077 through 0083 continuation", (
   assert.throws(() => validateAppliedLineage(local, [...afterAccountability, { ...pickupScheduling, created_at: String(local[56].when + 1) }]));
   assert.throws(() => validateAppliedLineage(local, [...afterPickupScheduling, { ...uberQuoteSettings, hash: "0".repeat(64) }]));
   assert.throws(() => validateAppliedLineage(local, [...afterPickupScheduling, { ...uberQuoteSettings, created_at: String(local[57].when + 1) }]));
+  assert.throws(() => validateAppliedLineage(local, [...afterUberQuoteSettings, { ...guestOrderIdentity, hash: "0".repeat(64) }]));
+  assert.throws(() => validateAppliedLineage(local, [...afterUberQuoteSettings, { ...guestOrderIdentity, created_at: String(local[58].when + 1) }]));
 });
