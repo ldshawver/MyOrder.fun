@@ -1,0 +1,95 @@
+name: Build staging rollback candidate images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-candidate:
+    name: Build immutable staging rollback images
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # This environment must contain only the non-production publishable key.
+    environment: staging
+    env:
+      SOURCE_SHA: 762086c77d19290e423b9368dd78dc1dcbeb560b
+      SOURCE_TREE: 41a580fe185fbf8def1e95b581ddb981c26d9be1
+      CLERK_PROXY_URL: https://staging.myorder.fun/api/__clerk
+      API_IMAGE_TAG: ghcr.io/ldshawver/myorder-api:staging-rollback-762086c77d19290e423b9368dd78dc1dcbeb560b-${{ github.run_id }}-${{ github.run_attempt }}
+      MIGRATE_IMAGE_TAG: ghcr.io/ldshawver/myorder-migrate:staging-rollback-762086c77d19290e423b9368dd78dc1dcbeb560b-${{ github.run_id }}-${{ github.run_attempt }}
+      PLATFORM_IMAGE_TAG: ghcr.io/ldshawver/myorder-platform:staging-rollback-762086c77d19290e423b9368dd78dc1dcbeb560b-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout frozen rollback source
+        uses: actions/checkout@v4
+        with:
+          ref: 762086c77d19290e423b9368dd78dc1dcbeb560b
+          fetch-depth: 1
+
+      - name: Verify exact staging source and credential scope
+        env:
+          STAGING_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_CLERK_PUBLISHABLE_KEY }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          case "$STAGING_CLERK_PUBLISHABLE_KEY" in pk_test_*) ;; *) exit 1;; esac
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build immutable images
+        env:
+          STAGING_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_CLERK_PUBLISHABLE_KEY }}
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg "DEPLOY_SHA=$SOURCE_SHA" --tag "$API_IMAGE_TAG" \
+            --file deploy/Dockerfile.api .
+          docker buildx build --platform linux/amd64 --load \
+            --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+            --label "com.myorder.deploy-sha=$SOURCE_SHA" \
+            --tag "$MIGRATE_IMAGE_TAG" --file deploy/Dockerfile.migrate .
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg "DEPLOY_SHA=$SOURCE_SHA" \
+            --secret id=clerk_publishable_key,env=STAGING_CLERK_PUBLISHABLE_KEY \
+            --secret id=clerk_proxy_url,env=CLERK_PROXY_URL \
+            --tag "$PLATFORM_IMAGE_TAG" --file deploy/Dockerfile.platform .
+
+      - name: Verify browser bundle and image metadata
+        env:
+          STAGING_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_CLERK_PUBLISHABLE_KEY }}
+        run: |
+          set -euo pipefail
+          docker run --rm --env STAGING_CLERK_PUBLISHABLE_KEY --entrypoint sh "$PLATFORM_IMAGE_TAG" -eu -c '
+            grep -RFl -- "$STAGING_CLERK_PUBLISHABLE_KEY" /usr/share/nginx/html >/dev/null
+            ! grep -Rqs "pk_live_" /usr/share/nginx/html
+            grep -Rqs "https://staging.myorder.fun/api/__clerk" /usr/share/nginx/html
+          '
+          for image in "$API_IMAGE_TAG" "$MIGRATE_IMAGE_TAG" "$PLATFORM_IMAGE_TAG"; do
+            test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "linux/amd64"
+            test "$(docker image inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' "$image")" = "$SOURCE_SHA"
+            test "$(docker image inspect --format '{{index .Config.Labels \"com.myorder.deploy-sha\"}}' "$image")" = "$SOURCE_SHA"
+          done
+
+      - name: Publish images and report immutable identities
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          for service in api migrate platform; do
+            case "$service" in
+              api) image="$API_IMAGE_TAG" ;;
+              migrate) image="$MIGRATE_IMAGE_TAG" ;;
+              platform) image="$PLATFORM_IMAGE_TAG" ;;
+            esac
+            docker push "$image" 2>&1 | tee "$RUNNER_TEMP/$service-push.log"
+            digest="$(sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' "$RUNNER_TEMP/$service-push.log" | tail -n 1)"
+            test -n "$digest"
+            echo "${service}_image=ghcr.io/ldshawver/myorder-${service}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+            echo "${service}_config_id=$(docker image inspect --format '{{.Id}}' "$image")" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "No staging deployment is performed by this workflow." >> "$GITHUB_STEP_SUMMARY"
