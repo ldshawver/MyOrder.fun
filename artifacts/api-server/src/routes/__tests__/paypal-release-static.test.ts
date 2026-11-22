@@ -38,10 +38,14 @@ describe("PayPal release security structure", () => {
     expect(route).not.toContain("const event = parsedEvent.data");
   });
   it("does not load PayPal SDK until server configuration enables it", () => { expect(frontend).toContain("!config.enabled"); expect(frontend.indexOf("!config.enabled")).toBeLessThan(frontend.indexOf("document.createElement")); expect(frontend).not.toContain("paypalme"); });
-  it("uses the v6 official Wallet element with only the publishable client ID and automatic presentation", () => {
+  it("uses the v6 official Wallet and hosted card fields with only the publishable client ID", () => {
     expect(frontend).toContain('tag: "paypal-button"');
     expect(frontend).toContain("createPayPalOneTimePaymentSession");
-    expect(frontend).toContain('createInstance({ clientId: config.clientId, components: ["paypal-payments", "venmo-payments", "paypal-guest-payments", "applepay-payments", "googlepay-payments"], pageType: "checkout" })');
+    expect(frontend).toContain('createInstance({ clientId: config.clientId, components: ["paypal-payments", "venmo-payments", "card-fields", "applepay-payments", "googlepay-payments"], pageType: "checkout" })');
+    expect(frontend).toContain('methods.isEligible("advanced_cards")');
+    expect(frontend).toContain("createCardFieldsOneTimePaymentSession");
+    expect(frontend).toContain("session.submit(providerOrder.providerOrderId)");
+    expect(frontend).not.toContain("createPayPalGuestOneTimePaymentSession");
     expect(frontend).toContain("createApplePayOneTimePaymentSession");
     expect(frontend).toContain("createGooglePayOneTimePaymentSession");
     expect(frontend).toContain('methods.isEligible("applepay")');

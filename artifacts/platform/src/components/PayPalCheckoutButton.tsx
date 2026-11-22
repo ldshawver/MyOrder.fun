@@ -4,8 +4,13 @@ type Config = { enabled: boolean; mode: "disabled" | "sandbox" | "live"; clientI
 type Eligible = { isEligible(method: string): boolean; getDetails?(method: string): { productCode?: string; countryCode?: string; config?: unknown } };
 type PresentationMode = "auto";
 type WalletSession = { start(options: { presentationMode: PresentationMode }, order: Promise<{ orderId: string }>): Promise<void>; hasReturned?(): boolean; resume?(): Promise<void> };
-type Method = "paypal" | "paylater" | "venmo" | "card";
+type Method = "paypal" | "paylater" | "venmo";
 type WalletOrderInfo = { amount: string; currency: string; countryCode: string };
+type CardFieldsResult = { state: "succeeded" | "canceled"; data?: { orderId?: string } };
+type CardFieldsSession = {
+  createCardFieldsComponent(options: { type: "number" | "expiry" | "cvv"; placeholder?: string; style?: { input?: { fontSize?: string } } }): HTMLElement;
+  submit(orderId: string): Promise<CardFieldsResult>;
+};
 type ApplePaySessionApi = {
   config(): Promise<{ merchantCapabilities: string[]; supportedNetworks: string[] }>;
   validateMerchant(options: { validationUrl: string }): Promise<{ merchantSession: unknown }>;
@@ -46,7 +51,7 @@ type Sdk = {
   createPayPalOneTimePaymentSession(options: { onApprove(data: { orderId: string }): Promise<void>; onCancel(): void; onError(error?: unknown): void }): WalletSession;
   createPayLaterOneTimePaymentSession?(options: { onApprove(data: { orderId: string }): Promise<void>; onCancel(): void; onError(error?: unknown): void }): WalletSession;
   createVenmoOneTimePaymentSession?(options: { onApprove(data: { orderId: string }): Promise<void>; onCancel(): void; onError(error?: unknown): void }): WalletSession;
-  createPayPalGuestOneTimePaymentSession?(options: { onApprove(data: { orderId: string }): Promise<void>; onComplete(): void; onCancel(): void; onError(error?: unknown): void; onWarn(): void }): Promise<WalletSession>;
+  createCardFieldsOneTimePaymentSession?(): CardFieldsSession;
   createApplePayOneTimePaymentSession?(): Promise<ApplePaySessionApi>;
   createGooglePayOneTimePaymentSession?(): GooglePaySessionApi;
 };
@@ -211,6 +216,26 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
     } catch { setMessage("PayPal checkout could not start; no payment was confirmed."); }
     finally { busyRef.current = false; setBusy(false); }
   }, [createProviderOrder, disabled]);
+  const submitCardFields = useCallback(async (session: CardFieldsSession) => {
+    if (busyRef.current || disabled) return;
+    busyRef.current = true; setBusy(true); setMessage(null);
+    try {
+      // Selecting a card must not create a provider order. PayPal only gets
+      // one after the buyer submits hosted fields and any 3DS challenge.
+      const providerOrder = await createProviderOrder();
+      const result = await session.submit(providerOrder.providerOrderId);
+      if (result.state === "canceled") {
+        await cancelAfterBuyerCancellation();
+        return;
+      }
+      if (result.state !== "succeeded" || result.data?.orderId !== providerOrder.providerOrderId) {
+        throw new Error("Card approval requires reconciliation");
+      }
+      await capture(providerOrder.providerOrderId);
+    } catch {
+      setMessage("Card payment could not be confirmed. Check order status before retrying.");
+    } finally { busyRef.current = false; setBusy(false); }
+  }, [cancelAfterBuyerCancellation, capture, createProviderOrder, disabled]);
 
   useEffect(() => {
     let disposed = false;
@@ -226,7 +251,7 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
       if (!script) { script = document.createElement("script"); script.dataset.myorderPaypalSdk = "v6"; script.src = config.mode === "sandbox" ? "https://www.sandbox.paypal.com/web-sdk/v6/core" : "https://www.paypal.com/web-sdk/v6/core"; script.async = true; document.head.appendChild(script); }
       if (!window.paypal) await new Promise<void>((resolve, reject) => { script!.addEventListener("load", () => resolve(), { once: true }); script!.addEventListener("error", () => reject(new Error("PayPal SDK unavailable")), { once: true }); });
       if (disposed || !window.paypal) return;
-      const sdk = await window.paypal.createInstance({ clientId: config.clientId, components: ["paypal-payments", "venmo-payments", "paypal-guest-payments", "applepay-payments", "googlepay-payments"], pageType: "checkout" });
+      const sdk = await window.paypal.createInstance({ clientId: config.clientId, components: ["paypal-payments", "venmo-payments", "card-fields", "applepay-payments", "googlepay-payments"], pageType: "checkout" });
       const methods = await sdk.findEligibleMethods({ currencyCode: config.currency ?? "USD", countryCode: config.countryCode ?? "US", ...(Number.isFinite(eligibilityAmount) ? { amount: Number(eligibilityAmount).toFixed(2) } : {}) });
       if (disposed) return;
       const options = { onApprove: (data: { orderId: string }) => capture(data.orderId), onCancel: () => { void cancelAfterBuyerCancellation(); }, onError: () => setMessage("PayPal reported an error. Checkout remains pending for safe recovery; do not retry automatically.") };
@@ -234,13 +259,6 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
         { method: "paypal", tag: "paypal-button", label: "Pay with PayPal", create: () => sdk.createPayPalOneTimePaymentSession(options) },
         { method: "paylater", tag: "paypal-pay-later-button", label: "Pay Later", create: () => sdk.createPayLaterOneTimePaymentSession?.(options) },
         { method: "venmo", tag: "venmo-button", label: "Pay with Venmo", create: () => sdk.createVenmoOneTimePaymentSession?.(options) },
-        { method: "card", tag: "paypal-basic-card-button", label: "Pay with card", create: () => sdk.createPayPalGuestOneTimePaymentSession?.({
-          ...options,
-          // v6 guest checkout requires completion handling even though only
-          // onApprove is allowed to initiate the server-verified capture.
-          onComplete: () => setMessage("Card approval completed. Verifying the payment and order status…"),
-          onWarn: () => setMessage("Please complete the card form in PayPal's secure window."),
-        }) },
       ];
       const container = walletContainer.current;
       container?.replaceChildren();
@@ -254,7 +272,6 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
         container.appendChild(row);
       };
       for (const method of supported) {
-        if (method.method === "card") continue;
         if (!container || !methods.isEligible(method.method)) {
           if (method.method === "venmo") unavailable("digital-option-venmo", "Venmo", "not available in this browser");
           continue;
@@ -278,24 +295,36 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
         container.appendChild(button);
         eligibleCount++;
       }
-      const cardMethod = supported.find(method => method.method === "card");
-      const cardSession = methods.isEligible("card") ? await cardMethod?.create() : undefined;
+      const cardSession = methods.isEligible("advanced_cards") ? sdk.createCardFieldsOneTimePaymentSession?.() : undefined;
       if (cardSession && container) {
-        sessions.current.card = cardSession;
-        for (const card of [
-          { id: "digital-option-debit", label: "Debit card", aria: "Pay with debit card" },
-          { id: "digital-option-credit", label: "Credit card", aria: "Pay with credit card" },
-        ]) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.dataset.testid = card.id;
-          button.className = "w-full rounded-sm border border-border/60 bg-background px-3 py-2 text-left text-sm font-semibold";
-          button.setAttribute("aria-label", card.aria);
-          button.textContent = card.label;
-          button.addEventListener("click", () => { void startWallet("card"); });
-          container.appendChild(button);
-          eligibleCount++;
+        const cardForm = document.createElement("section");
+        cardForm.dataset.testid = "paypal-card-fields";
+        cardForm.className = "space-y-2 rounded-sm border border-border/60 p-3";
+        const title = document.createElement("p");
+        title.className = "text-sm font-semibold";
+        title.textContent = "Credit or debit card";
+        cardForm.appendChild(title);
+        const fields = [
+          { type: "number" as const, placeholder: "Card number", testId: "paypal-card-number" },
+          { type: "expiry" as const, placeholder: "MM/YY", testId: "paypal-card-expiry" },
+          { type: "cvv" as const, placeholder: "CVV", testId: "paypal-card-cvv" },
+        ];
+        for (const field of fields) {
+          const fieldContainer = document.createElement("div");
+          fieldContainer.dataset.testid = field.testId;
+          fieldContainer.className = "min-h-11 rounded-sm border border-border bg-background px-2";
+          fieldContainer.appendChild(cardSession.createCardFieldsComponent({ type: field.type, placeholder: field.placeholder, style: { input: { fontSize: "16px" } } }));
+          cardForm.appendChild(fieldContainer);
         }
+        const submit = document.createElement("button");
+        submit.type = "button";
+        submit.dataset.testid = "paypal-card-submit";
+        submit.className = "w-full rounded-sm border border-border/60 bg-background px-3 py-2 text-sm font-semibold";
+        submit.textContent = "Pay by card";
+        submit.addEventListener("click", () => { void submitCardFields(cardSession); });
+        cardForm.appendChild(submit);
+        container.appendChild(cardForm);
+        eligibleCount++;
       } else {
         unavailable("digital-option-debit", "Debit card", "not enabled for this PayPal account");
         unavailable("digital-option-credit", "Credit card", "not enabled for this PayPal account");
@@ -371,7 +400,7 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
     }
     start().catch(() => { if (!disposed) { setWalletEligible(false); setMessage("Online PayPal checkout is unavailable."); } });
     return () => { disposed = true; };
-  }, [authHeaders, cancelAfterBuyerCancellation, capture, createProviderOrder, eligibilityAmount, orderId, readWalletOrderInfo, startApplePay, startGooglePay, startWallet]);
+  }, [authHeaders, cancelAfterBuyerCancellation, capture, createProviderOrder, eligibilityAmount, orderId, readWalletOrderInfo, startApplePay, startGooglePay, startWallet, submitCardFields]);
 
   return <div className="space-y-3" aria-busy={busy}>
     <div ref={walletContainer} data-testid="paypal-wallet-container" aria-label="PayPal Wallet" />
