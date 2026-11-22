@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, asc, eq, ilike, inArray, or, sql } from "drizzle-orm";
-import { catalogItemsTable, db, tenantsTable } from "@workspace/db";
+import { catalogItemsTable, db, tenantsTable, usersTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
 import { publicCatalogEligibility } from "../lib/catalogEligibility";
 import { logger } from "../lib/logger";
@@ -66,6 +66,41 @@ router.get("/speed-order/catalog", requirePermission("speed_order.pin"), async (
     )).orderBy(asc(catalogItemsTable.name)).limit(40);
     res.json({ items: found.flatMap(row => { const item = speedOrderSellableItem(row); return item ? [item] : []; }).slice(0, 20) });
   } catch (error) { logger.error({ error, tenantId }, "Speed Order catalog search failed"); res.status(500).json({ error: "Could not search the catalog" }); }
+});
+
+/**
+ * Member selection is intentionally separate from checkout.  The endpoint
+ * returns only eligible same-tenant members and never changes order
+ * ownership; the later shared checkout call must still bind its capability to
+ * the selected member rather than to the CSR actor.
+ */
+router.get("/speed-order/members", requirePermission("speed_order.use"), async (req, res): Promise<void> => {
+  const tenantId = req.authorizedTenantId!;
+  if (!(await hasPermission(req.dbUser!, "customers.view", tenantId))) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  if (Object.keys(req.query).some(key => key !== "q")) {
+    res.status(400).json({ error: "Invalid member search" });
+    return;
+  }
+  const query = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 80) : "";
+  const pattern = `%${query.replace(/[\\%_]/g, "")}%`;
+  const members = await db.select({ id: usersTable.id, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
+    .from(usersTable)
+    .where(and(
+      eq(usersTable.tenantId, tenantId),
+      eq(usersTable.status, "approved"),
+      eq(usersTable.isActive, true),
+      sql`lower(${usersTable.role}) IN ('user', 'customer')`,
+      query ? or(ilike(usersTable.firstName, pattern), ilike(usersTable.lastName, pattern), ilike(usersTable.email, pattern)) : undefined,
+    ))
+    .orderBy(asc(usersTable.lastName), asc(usersTable.firstName), asc(usersTable.id))
+    .limit(25);
+  res.json({ members: members.map(member => ({
+    id: member.id,
+    name: [member.firstName, member.lastName].filter(Boolean).join(" ") || member.email || `Member ${member.id}`,
+  })) });
 });
 
 router.put("/speed-order/pins", requirePermission("speed_order.pin"), async (req, res): Promise<void> => {
