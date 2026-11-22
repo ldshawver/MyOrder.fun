@@ -29,6 +29,7 @@ export interface CatalogItem {
   metadata?: CatalogItemMetadata;
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  activeSale?: boolean;
   alavontName?: string | null;
   alavontDescription?: string | null;
   alavontCategory?: string | null;

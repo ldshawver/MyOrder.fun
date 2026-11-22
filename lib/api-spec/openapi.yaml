@@ -1585,6 +1585,8 @@ components:
           type: boolean
         isSaleFeatured:
           type: boolean
+        activeSale:
+          type: boolean
         alavontName:
           type: string
           nullable: true
@@ -1716,6 +1718,8 @@ components:
         isFeatured:
           type: boolean
         isSaleFeatured:
+          type: boolean
+        activeSale:
           type: boolean
         tags:
           type: array
@@ -1880,6 +1884,8 @@ components:
         isFeatured:
           type: boolean
         isSaleFeatured:
+          type: boolean
+        activeSale:
           type: boolean
         tags:
           type: array
