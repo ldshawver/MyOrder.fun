@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Durable CJ provider fulfillment event foundation (2026-11-23)
+
+- Added forward-only migration `0087_cj_fulfillment_events.sql` and matching Drizzle schema for tenant/order/group-bound CJ provider order identities.
+- Added a tenant-scoped, payload-hashed provider-event inbox with a unique provider event identity, immutable receipt timestamps, and explicit processing state needed for replay-safe event handling.
+- Persisted bounded CJ provider and reconciliation states plus indexed reconciliation work. Composite foreign keys prevent an event or provider order from crossing tenant, parent-order, or server-created fulfillment-group boundaries.
+- This increment establishes persistence only. Authenticated webhook ingestion, state transition policy, parent-status derivation, and provider polling reconciliation remain open; no credential-backed CJ behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `cj-fulfillment-schema-static` — 1 file, 1 test passed, covering tenant/order/group isolation, provider-order uniqueness, event idempotency, payload binding, and reconciliation state persistence.
+- `pnpm run typecheck:libs` — passed.
+- Focused ESLint on the regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Staff fulfillment-group authority and derived parent lifecycle (2026-11-23)
 
 - Added a tenant/order/group-scoped staff transition path for server-created fulfillment groups. It row-locks the target group, applies the canonical lifecycle graph, derives the parent lifecycle from every child group, and persists the group and parent changes atomically.
@@ -248,7 +262,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, and staff transition ownership are implemented. Next add authenticated, idempotent CJ provider events and reconciliation without permitting staff impersonation.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, and staff transition ownership are implemented. Durable CJ provider identity, event-inbox, and reconciliation storage are now implemented; next add authenticated event ingestion and transition/reconciliation logic without permitting staff impersonation.
 2. PostgreSQL validation for durable checkout quotes: `DATABASE_URL` resolves to the correctly named `myorder_agent_test`, but the refreshed target is an empty PostgreSQL 17 database without `users`, `tenants`, or `orders`, rather than the documented disposable migrated baseline. Migration 0084 therefore was not applied. Provision the repository baseline on this disposable database before adding tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.

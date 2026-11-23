@@ -428,6 +428,13 @@
       "when": 1795420800000,
       "tag": "0086_carrier_quotes",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1795424400000,
+      "tag": "0087_cj_fulfillment_events",
+      "breakpoints": true
     }
   ]
 }
