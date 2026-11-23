@@ -110,7 +110,7 @@ export async function dispatchPendingUberDelivery(tenantId: number, orderId: num
   if (!fulfillment || fulfillment.providerDeliveryId || !RETRYABLE.has(fulfillment.requestState)) return;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.fulfillmentStatus, "ready"))).limit(1);
   const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(eq(uberDeliveryQuotesTable.id, fulfillment.quoteId), eq(uberDeliveryQuotesTable.tenantId, tenantId))).limit(1);
-  const [customer] = order ? await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, phone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1) : [];
+  const [customer] = order ? await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, phone: usersTable.contactPhone }).from(usersTable).where(and(eq(usersTable.tenantId, tenantId), eq(usersTable.id, order.customerId))).limit(1) : [];
   const [pickup, config] = await Promise.all([getUberDirectPickupContact(tenantId), getUberDirectRuntimeConfig(tenantId)]);
   const customerName = `${customer?.firstName ?? ""} ${customer?.lastName ?? ""}`.trim();
   if (!order || !order.readyAt || !await isUberDeliveryFullySettled(order) || !quote || !pickup || !config || !customerName || !customer?.phone) {
