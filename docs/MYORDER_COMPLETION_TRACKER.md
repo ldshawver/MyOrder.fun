@@ -1,10 +1,40 @@
 # MyOrder.fun completion tracker
 
 Last refreshed: 2026-11-23 UTC  
-Authoritative baseline inspected: `origin/main` at `c6ddc67` after `git fetch --prune origin`  
-Development branch: `codex/supervised-development`
+Authoritative baseline inspected: `origin/main` at `0fd1901`
+Development branch: `release/all-owner-requests-20261123`
 
 ## Verified increments
+
+### Owner-request integration release candidate (2026-11-23)
+
+- Added a mobile-first, tenant-scoped 3x3 Speed Order screen for CSR, supervisor, admin, and global-admin sessions. Customers have neither a route nor a navigation link.
+- The screen loads the server-ranked tenant top nine and the existing same-tenant eligible-member search. The browser sends only catalog item IDs and quantities; catalog eligibility, member eligibility, tenant, price, inventory, tax, cash availability, pickup schedule, routing, and totals remain server-derived.
+- Speed Order deliberately supports only configured cash tender and configured pickup. It reuses authenticated member conversion, durable checkout quote, order creation, and accountable cash-closeout paths. It does not restore guest checkout or claim PayPal, courier, carrier, or customer-credit delegation.
+- The selected approved active customer is the checkout/order owner. Delegation is accepted only from an authenticated actor with both `speed_order.use` and `customers.view`, only for a customer in the actor's authorized tenant, and only on the established checkout endpoints. A separate `SPEED_ORDER_CREATED` audit records the staff actor.
+- Loading, empty-top-nine, no-member, pickup-unavailable, error/retry, server-review, cash-tender, and completed-order states are represented for phone use. A failed cash closeout preserves the already-created order and the checkout replay token so retry does not duplicate it.
+- Reconciliation evidence: onboarding branch content is present in this branch; PR #291 (`9a40566`) is the newer explicit sale-price implementation already on main; the stale shift-payout branch diverges before the current contractor inventory-accountability, immutable adjustment, closeout, and PostgreSQL constraint coverage. No stale sale-price or payout implementation was merged or substituted.
+- The existing Expo font/readability increase and Expo-ticket-only automatic printing remain unchanged; work/prep ticket behavior was not broadened.
+
+Owner-request validation matrix:
+
+| Owner workflow | Implemented / repository-tested | Configured-environment validation | Post-launch external-provider validation |
+| --- | --- | --- | --- |
+| Customer catalog, cart, checkout, safe naming, pickup/delivery restrictions, server totals | Existing implementation and regression suites; final full gates recorded below | Validate tenant catalog, tax, pickup schedule, delivery configuration, and real device layout in supervised staging | PayPal, Uber Direct, carrier, Woo/CJ credentials and provider responses only where configured |
+| Speed Order top nine, member selection, pickup cash order, role/tenant isolation | Implemented here; focused API/UI regressions plus full gates | Exercise CSR register/shift and supervisor flows with staging tenant members and inventory | None for the supported Speed Order cash/pickup path; no provider-backed Speed Order claim |
+| CSR shift start, routing, accountable cash closeout, inventory/par/restock | Existing current-main implementation and tests, including newer contractor inventory accountability | Validate real tenant boxes, locations, starting cash, counts, and supervisor discrepancy workflow | Hardware/register operational rehearsal after launch as scheduled by owner |
+| Receipts, reprints, Expo ticket readability and Expo-only automatic printing | Existing print tests; this integration does not alter print routing | Validate configured printer profiles and Expo device output in staging | Physical printer/hardware output after launch; not claimed locally |
+| Supervisor closeout and reports | Existing implementation and test evidence | Validate authorized tenant staff and configured shifts in staging | Operational accounting review after real transactions |
+| Catalog upload/edit and explicit sale pricing | Existing implementation; PR #291 retained, stale branch not merged | Validate representative tenant import and edited sale item in staging | External Woo/CJ publication only with configured credentials |
+| Account approval and onboarding/profile completion | Integrated branch and existing focused tests | Validate Clerk email/profile/approval flow with staging identities | Email delivery/identity-provider behavior after deployment |
+| Global role and tenant isolation | Existing authorization tests plus focused Speed Order boundary tests | Multi-tenant staging accounts and audit review | Ongoing production monitoring; no unsupported provider claim |
+
+Local evidence for this increment before the final broad gate:
+
+- `pnpm --filter @workspace/api-server typecheck` and `pnpm --filter @workspace/platform typecheck` — passed.
+- Focused ESLint for API server and platform — passed with zero warnings.
+- Focused Speed Order Vitest — 3 files, 10 tests passed (top-nine policy, member-checkout boundary, and staff UI wiring).
+- No deployment, migration, provider call, shared database mutation, or physical hardware test was performed.
 
 ### Local release-candidate gates and immediate-pickup quote binding (2026-11-23)
 

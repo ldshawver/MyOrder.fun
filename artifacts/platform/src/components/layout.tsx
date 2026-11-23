@@ -154,6 +154,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       roles: SHIFT_ROLES,
       defaultOpen: true,
       items: [
+        { href: "/staff/speed-order", label: "Speed Order", icon: Zap, roles: SHIFT_ROLES },
         { href: "/staff/orders", label: "Orders", icon: ListTodo, roles: SHIFT_ROLES },
         { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES },
         {
