@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal represented-money shape contract (2026-11-23)
+
+- Required provider-represented order, capture, embedded-capture, and optional refund amounts to use a bounded non-negative decimal shape with at most two fractional digits and an uppercase three-letter currency code.
+- Malformed numeric strings and currency codes now fail closed before entering local payment state or durable refund reconciliation. Valid but mismatched refund amounts remain preserved for the existing durable reconciliation path.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox or live behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 42 tests passed, including malformed order, capture, and refund monetary representations.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the PayPal provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PayPal non-empty provider identity contract (2026-11-23)
 
 - Required represented OAuth tokens and PayPal order, capture, related-order, and refund identities to contain non-whitespace data before they can enter local persistence or reconciliation.
