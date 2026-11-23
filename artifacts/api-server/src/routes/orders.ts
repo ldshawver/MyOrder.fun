@@ -27,6 +27,7 @@ import {
   orderTaxSnapshotsTable,
   uberDeliveryQuotesTable,
   uberDeliveryFulfillmentsTable,
+  checkoutQuotesTable,
 } from "@workspace/db";
 import {
   ListOrdersQueryParams,
@@ -82,7 +83,7 @@ import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancel
 import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { allocateOrderLineRefundTax } from "../lib/refundAccounting";
-import { createCheckoutTaxQuoteToken, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError, verifyCheckoutTaxQuoteToken } from "../lib/checkoutConversionGate";
+import { CHECKOUT_TAX_QUOTE_TTL_MS, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
 import { requireOrderCatalogForSale, OrderCatalogUnavailableError } from "../lib/orderCatalogEligibility";
 import { CartItemUnavailableError, requireCartLinesAvailable, WooAvailabilityProviderError } from "../lib/cartAvailability";
 import { groupSpecialReservationDemands, loadCheckoutSpecialComponents, specialComponentSnapshot, syncCatalogStockForInventoryItem } from "../lib/specialComponents";
@@ -133,6 +134,7 @@ class InsufficientInventoryError extends Error {
 }
 class OptionSelectionError extends Error {}
 class CheckoutReplayConflictError extends Error {}
+class CheckoutQuoteConsumedError extends Error {}
 class PickupScheduleChangedError extends Error {}
 type OptionCheckoutRequest = Request & { selectedOptionByCatalog?: Map<number, number> };
 
@@ -754,7 +756,25 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const dueCents = totalCents - creditCents;
     if (tender === "customer_credit" && dueCents !== 0) { res.status(422).json({ error: "CUSTOMER_CREDIT_INCOMPLETE" }); return; }
     const amount = (cents: number) => Number(centsToDollars(cents));
-    const checkoutTaxQuoteToken = createCheckoutTaxQuoteToken({ tenantId, userId: actor.id, cartFingerprint: checkoutFingerprint(lines), locationId: checkoutLocationId, taxConfigurationId: taxSettings.taxConfigurationId, taxRate: taxSettings.taxRate, taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase), taxCents });
+    const checkoutTaxQuoteToken = `cq_${randomUUID()}`;
+    await db.insert(checkoutQuotesTable).values({
+      id: checkoutTaxQuoteToken,
+      tenantId,
+      customerId: actor.id,
+      cartFingerprint: checkoutFingerprint(lines),
+      locationId: checkoutLocationId,
+      taxConfigurationId: taxSettings.taxConfigurationId,
+      quoteSnapshot: {
+        taxRate: taxSettings.taxRate,
+        taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase),
+        taxCents,
+        paymentMethod: tender,
+        deliveryMethod,
+        deliveryQuoteId: parsed.data.deliveryQuoteId ?? null,
+        pickupAt: pickup?.pickupAt ?? null,
+      },
+      expiresAt: new Date(Date.now() + CHECKOUT_TAX_QUOTE_TTL_MS),
+    });
     res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, pickup, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
   } catch (error) {
     const pickupCode = error instanceof Error && error.message.startsWith("PICKUP_") ? error.message : null;
@@ -1119,16 +1139,30 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     throw error;
   }
   const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: checkoutTaxSettings.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: checkoutTaxSettings.taxJurisdiction, taxConfigurationId: checkoutTaxSettings.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
-  if (!verifyCheckoutTaxQuoteToken(body.data.checkoutConfirmation?.checkoutTaxQuoteToken, {
-    tenantId: houseTenantId,
-    userId: actor.id,
-    cartFingerprint: checkoutFingerprint(normalizedLines),
-    locationId: checkoutLocationId,
-    taxConfigurationId: checkoutTaxSettings.taxConfigurationId,
-    taxRate: checkoutTaxSettings.taxRate,
-    taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase),
-    taxCents: dollarsToCents(financial.taxCollected),
-  })) {
+  const submittedCheckoutQuoteId = body.data.checkoutConfirmation?.checkoutTaxQuoteToken;
+  const [trustedCheckoutQuote] = typeof submittedCheckoutQuoteId === "string" ? await db.select().from(checkoutQuotesTable).where(and(
+    eq(checkoutQuotesTable.id, submittedCheckoutQuoteId),
+    eq(checkoutQuotesTable.tenantId, houseTenantId),
+    eq(checkoutQuotesTable.customerId, actor.id),
+    eq(checkoutQuotesTable.status, "quoted"),
+    gt(checkoutQuotesTable.expiresAt, new Date()),
+  )).limit(1) : [];
+  const quoteSnapshot = trustedCheckoutQuote?.quoteSnapshot as {
+    taxRate?: unknown; taxableBaseCents?: unknown; taxCents?: unknown; paymentMethod?: unknown;
+    deliveryMethod?: unknown; deliveryQuoteId?: unknown; pickupAt?: unknown;
+  } | undefined;
+  const quoteMatches = trustedCheckoutQuote
+    && trustedCheckoutQuote.cartFingerprint === checkoutFingerprint(normalizedLines)
+    && trustedCheckoutQuote.locationId === checkoutLocationId
+    && trustedCheckoutQuote.taxConfigurationId === checkoutTaxSettings.taxConfigurationId
+    && quoteSnapshot?.taxRate === checkoutTaxSettings.taxRate
+    && quoteSnapshot?.taxableBaseCents === dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase)
+    && quoteSnapshot?.taxCents === dollarsToCents(financial.taxCollected)
+    && quoteSnapshot?.paymentMethod === tender
+    && quoteSnapshot?.deliveryMethod === requestedDeliveryMethod
+    && quoteSnapshot?.deliveryQuoteId === ((body.data.deliveryQuote as { quoteId?: string } | null | undefined)?.quoteId ?? null)
+    && (body.data.pickupAt == null || quoteSnapshot?.pickupAt === pickupSelection?.pickupAt.toISOString());
+  if (!quoteMatches) {
     res.status(409).json({ error: "CHECKOUT_QUOTE_STALE" });
     return;
   }
@@ -1324,6 +1358,16 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         pickupSelection = validatePickupSelection(pickupSchedule, body.data.pickupAt, now);
         pickupSnapshot = pickupScheduleSnapshot(pickupSchedule, pickupLocation, pickupSelection);
       }
+      const consumedCheckoutQuote = await tx.update(checkoutQuotesTable).set({ status: "consumed", consumedAt: now })
+        .where(and(
+          eq(checkoutQuotesTable.id, trustedCheckoutQuote.id),
+          eq(checkoutQuotesTable.tenantId, houseTenantId),
+          eq(checkoutQuotesTable.customerId, actor.id),
+          eq(checkoutQuotesTable.status, "quoted"),
+          gt(checkoutQuotesTable.expiresAt, now),
+        ))
+        .returning({ id: checkoutQuotesTable.id });
+      if (!consumedCheckoutQuote.length) throw new CheckoutQuoteConsumedError();
       if (trustedUberQuote) {
         const consumed = await tx.update(uberDeliveryQuotesTable).set({ status: "consumed", consumedAt: now })
           .where(and(eq(uberDeliveryQuotesTable.id, trustedUberQuote.id), eq(uberDeliveryQuotesTable.status, "quoted")))
@@ -1697,6 +1741,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     });
   } catch (err) {
     if (err instanceof CheckoutReplayConflictError) { res.status(409).json({ error: err.message }); return; }
+    if (err instanceof CheckoutQuoteConsumedError) { res.status(409).json({ error: "CHECKOUT_QUOTE_STALE" }); return; }
     if (err instanceof PickupScheduleChangedError) { res.status(409).json({ error: "PICKUP_SCHEDULE_CHANGED" }); return; }
     if (err instanceof CustomerCreditError) { res.status(err.status).json({ error: err.code }); return; }
     if (err instanceof UberQuoteConsumedError) {
