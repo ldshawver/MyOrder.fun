@@ -37,6 +37,18 @@ describe("PayPal provider", () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "CREATED", purchase_units: [unit] }));
     await expect(new PayPalProvider(config, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).rejects.toMatchObject({ failureClass: "invalid_response" });
   });
+  it("rejects ambiguous extra purchase units and captures", async () => {
+    const unit = { reference_id: "7", amount: { value: "10.80", currency_code: "USD" } };
+    const createFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "CREATED", purchase_units: [unit, unit] }));
+    await expect(new PayPalProvider(config, createFetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).rejects.toMatchObject({ failureClass: "invalid_response" });
+
+    const capture = { id: "CAP1", status: "COMPLETED", amount: { value: "10.80", currency_code: "USD" } };
+    const captureFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "COMPLETED", purchase_units: [{ payments: { captures: [capture, { ...capture, id: "CAP2" }] } }] }));
+    await expect(new PayPalProvider(config, captureFetcher as typeof fetch).captureOrder("ORDER1", "capture-key")).rejects.toMatchObject({ failureClass: "invalid_response" });
+
+    const lookupFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "COMPLETED", purchase_units: [{ amount: unit.amount, payments: { captures: [capture, { ...capture, id: "CAP2" }] } }] }));
+    await expect(new PayPalProvider(config, lookupFetcher as typeof fetch).getOrder("ORDER1")).rejects.toMatchObject({ failureClass: "invalid_response" });
+  });
   it.each([
     ["venmo", { venmo: {} }, "venmo"],
     ["Apple Pay", { apple_pay: {} }, "apple_pay"],
