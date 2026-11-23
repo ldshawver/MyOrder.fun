@@ -34,4 +34,15 @@ describe("Lucifer Direct carrier quote authority", () => {
     expect(orders).toContain("requireConfiguredCarrierQuoteAdapter()");
     expect(orders).not.toContain("provider: parsed.data");
   });
+
+  it("binds and consumes the scoped carrier quote in the order transaction", async () => {
+    const orders = await readFile(new URL("artifacts/api-server/src/routes/orders.ts", root), "utf8");
+    expect(orders).toContain('eq(carrierQuotesTable.customerId, actor.id)');
+    expect(orders).toContain('quote.cartFingerprint !== checkoutFingerprint(carrierLines)');
+    expect(orders).toContain('destination?.address !== body.data.shippingAddress?.trim()');
+    expect(orders).toContain('tx.update(carrierQuotesTable).set({ status: "consumed", consumedAt: now })');
+    expect(orders).toContain('group.method === "carrier" ? trustedCarrierQuote?.feeCents ?? 0 : 0');
+    expect(orders).toContain('group.method === "carrier" ? trustedCarrierQuote?.id ?? null');
+    expect(orders).toContain('? trustedCarrierQuote!.destinationSnapshot');
+  });
 });

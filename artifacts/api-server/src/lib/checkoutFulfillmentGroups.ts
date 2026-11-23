@@ -1,7 +1,7 @@
 import type { NormalizedCartLine } from "./checkoutNormalizer";
 
 export type CheckoutFulfillmentProvider = "alavont" | "lucifer_direct" | "cj";
-export type CheckoutFulfillmentMethod = "pickup" | "uber_direct" | "csr_delivery" | "standard_shipping";
+export type CheckoutFulfillmentMethod = "pickup" | "uber_direct" | "csr_delivery" | "carrier" | "standard_shipping";
 
 export interface CheckoutFulfillmentGroupPlan {
   key: string;
@@ -28,14 +28,17 @@ export interface CheckoutFulfillmentGroupChoice {
  */
 export function planCheckoutFulfillmentGroups(
   lines: NormalizedCartLine[],
-  selectedLocalMethod: Exclude<CheckoutFulfillmentMethod, "standard_shipping">,
+  selectedLocalMethod: Exclude<CheckoutFulfillmentMethod, "standard_shipping" | "carrier">,
+  luciferDirectMethod: Exclude<CheckoutFulfillmentMethod, "standard_shipping"> = selectedLocalMethod,
 ): CheckoutFulfillmentGroupPlan[] {
   const groups = new Map<string, CheckoutFulfillmentGroupPlan>();
   for (const [lineIndex, line] of lines.entries()) {
     const provider: CheckoutFulfillmentProvider = line.source_type === "woo"
       ? "cj"
       : line.merchant_brand === "alavont" ? "alavont" : "lucifer_direct";
-    const method: CheckoutFulfillmentMethod = provider === "cj" ? "standard_shipping" : selectedLocalMethod;
+    const method: CheckoutFulfillmentMethod = provider === "cj"
+      ? "standard_shipping"
+      : provider === "lucifer_direct" ? luciferDirectMethod : selectedLocalMethod;
     const key = `${provider}:${method}`;
     const group = groups.get(key) ?? { key, provider, method, lineIndexes: [] };
     group.lineIndexes.push(lineIndex);

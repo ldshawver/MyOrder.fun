@@ -15,4 +15,5 @@ export const CreateOrderBodyDeliveryMethod = {
   uber_direct: 'uber_direct',
   uber_courier: 'uber_courier',
   csr_delivery: 'csr_delivery',
+  carrier: 'carrier',
 } as const;

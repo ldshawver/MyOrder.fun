@@ -29,6 +29,7 @@ import {
   uberDeliveryQuotesTable,
   uberDeliveryFulfillmentsTable,
   checkoutQuotesTable,
+  carrierQuotesTable,
 } from "@workspace/db";
 import {
   ListOrdersQueryParams,
@@ -507,8 +508,9 @@ const CheckoutQuoteBody = z.object({
   paymentMethod: z.enum(["cash", "paypal", "paypal_card", "customer_credit"]),
   customerCreditAmount: z.number().finite().nonnegative().refine(value => /^\d+(?:\.\d{1,2})?$/.test(String(value)), "Customer Credit must use whole cents").optional(),
   tipAmount: z.number().finite().nonnegative().optional(),
-  deliveryMethod: z.enum(["pickup", "manual_delivery", "csr_delivery", "uber_direct"]).default("pickup"),
+  deliveryMethod: z.enum(["pickup", "manual_delivery", "csr_delivery", "uber_direct", "carrier"]).default("pickup"),
   deliveryQuoteId: z.string().min(1).optional(),
+  carrierQuoteId: z.string().min(1).optional(),
   pickupLocationId: z.number().int().positive().optional(),
   pickupAt: z.string().datetime().optional(),
   shippingAddress: z.string().trim().min(8).max(1000).optional(),
@@ -725,18 +727,21 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       res.status(422).json({ error: "PAYMENT_METHOD_UNAVAILABLE" }); return;
     }
     if (processor === "paypal" && !(await loadTenantPaymentConfig(tenantId)).enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
-    const deliveryResolution = resolveCustomerFulfillment(parsed.data.deliveryMethod, await activeShiftDeliveryMode(tenantId));
+    const deliveryResolution = parsed.data.deliveryMethod === "carrier"
+      ? { method: "pickup" as const }
+      : resolveCustomerFulfillment(parsed.data.deliveryMethod, await activeShiftDeliveryMode(tenantId));
     if ("error" in deliveryResolution) { res.status(422).json({ error: deliveryResolution.error }); return; }
     const deliveryMethod = deliveryResolution.method;
-    const fulfillmentGroupPlans = planCheckoutFulfillmentGroups(lines, deliveryMethod);
-    const hasShippingGroup = fulfillmentGroupPlans.some(group => group.method === "standard_shipping");
+    const fulfillmentGroupPlans = planCheckoutFulfillmentGroups(lines, deliveryMethod, parsed.data.deliveryMethod === "carrier" ? "carrier" : deliveryMethod);
+    const hasPickupGroup = fulfillmentGroupPlans.some(group => group.method === "pickup" || group.method === "uber_direct");
+    const requiresAddress = fulfillmentGroupPlans.some(group => group.method !== "pickup");
     if (tender === "cash" && !checkoutGroupsAllowCash(fulfillmentGroupPlans)) {
       res.status(422).json({ error: "CASH_UNAVAILABLE_FOR_SHIPPING" }); return;
     }
     const { targetLocationId } = await resolveCheckoutRouting(tenantId);
     let pickup: { locationId: number; pickupAt: string; mode: "immediate" | "scheduled"; timeZone: string } | null = null;
     let checkoutLocationId = targetLocationId;
-    if (deliveryMethod === "pickup" || deliveryMethod === "uber_direct") {
+    if (hasPickupGroup) {
       const location = await resolvePickupLocation(tenantId, parsed.data.pickupLocationId);
       const schedule = await loadPickupSchedule(tenantId, location.id);
       const selection = validatePickupSelection(schedule, parsed.data.pickupAt);
@@ -745,10 +750,10 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     } else if (parsed.data.pickupLocationId != null || parsed.data.pickupAt != null) {
       res.status(422).json({ error: "PICKUP_SELECTION_NOT_ALLOWED" }); return;
     }
-    if (deliveryMethod === "pickup" && !hasShippingGroup && parsed.data.shippingAddress) {
+    if (!requiresAddress && parsed.data.shippingAddress) {
       res.status(422).json({ error: "PICKUP_ADDRESS_NOT_ALLOWED" }); return;
     }
-    if ((deliveryMethod !== "pickup" || hasShippingGroup) && !parsed.data.shippingAddress) {
+    if (requiresAddress && !parsed.data.shippingAddress) {
       res.status(422).json({ error: "DELIVERY_ADDRESS_REQUIRED" }); return;
     }
     const fulfillmentGroups = snapshotCheckoutFulfillmentGroups(fulfillmentGroupPlans, {
@@ -761,6 +766,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const merchandiseCents = dollarsToCents(financial.taxableSubtotal) + dollarsToCents(financial.nonTaxableSubtotal);
     let deliveryFeeCents = 0;
     let deliveryEta: string | null = null;
+    let trustedCarrierQuote: typeof carrierQuotesTable.$inferSelect | null = null;
     if (deliveryMethod === "csr_delivery" || deliveryMethod === "uber_direct") {
       const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(
         eq(uberDeliveryQuotesTable.id, parsed.data.deliveryQuoteId ?? ""),
@@ -775,6 +781,25 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       if (!quote.dropoffEta) { res.status(409).json({ error: "Delivery quote is missing provider ETA; request a fresh quote" }); return; }
       deliveryFeeCents = quote.feeCents;
       deliveryEta = quote.dropoffEta.toISOString();
+    }
+    if (parsed.data.deliveryMethod === "carrier") {
+      const carrierLines = luciferDirectCarrierLines(lines);
+      const [quote] = await db.select().from(carrierQuotesTable).where(and(
+        eq(carrierQuotesTable.id, parsed.data.carrierQuoteId ?? ""),
+        eq(carrierQuotesTable.tenantId, tenantId),
+        eq(carrierQuotesTable.customerId, actor.id),
+        eq(carrierQuotesTable.status, "quoted"),
+        gt(carrierQuotesTable.expiresAt, new Date()),
+      )).limit(1);
+      const destination = quote?.destinationSnapshot as { address?: unknown } | undefined;
+      if (!quote || quote.cartFingerprint !== checkoutFingerprint(carrierLines)
+        || destination?.address !== parsed.data.shippingAddress?.trim()) {
+        res.status(422).json({ error: "CARRIER_QUOTE_UNAVAILABLE" }); return;
+      }
+      trustedCarrierQuote = quote;
+      deliveryFeeCents += quote.feeCents;
+    } else if (parsed.data.carrierQuoteId) {
+      res.status(422).json({ error: "CARRIER_QUOTE_NOT_ALLOWED" }); return;
     }
     const tipCents = dollarsToCents(normalizeCheckoutTip(parsed.data.tipAmount));
     const taxCents = dollarsToCents(financial.taxCollected);
@@ -800,6 +825,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
         paymentMethod: tender,
         deliveryMethod,
         deliveryQuoteId: parsed.data.deliveryQuoteId ?? null,
+        carrierQuoteId: trustedCarrierQuote?.id ?? null,
         pickupAt: pickup?.pickupAt ?? null,
         fulfillmentGroups,
       },
@@ -1155,14 +1181,19 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
   const requestedCreditAmount = (body.data.checkoutConfirmation as { customerCreditAmount?: number } | undefined)?.customerCreditAmount;
   const { routing, targetLocationId } = await resolveCheckoutRouting(houseTenantId);
-  const deliveryResolution = resolveCustomerFulfillment(body.data.deliveryMethod ?? "pickup", await activeShiftDeliveryMode(houseTenantId));
+  const deliveryResolution = body.data.deliveryMethod === "carrier"
+    ? { method: "pickup" as const }
+    : resolveCustomerFulfillment(body.data.deliveryMethod ?? "pickup", await activeShiftDeliveryMode(houseTenantId));
   if ("error" in deliveryResolution) {
     res.status(422).json({ error: deliveryResolution.error });
     return;
   }
   const requestedDeliveryMethod = deliveryResolution.method;
-  const fulfillmentGroupPlans = planCheckoutFulfillmentGroups(normalizedLines, requestedDeliveryMethod);
-  const hasShippingGroup = fulfillmentGroupPlans.some(group => group.method === "standard_shipping");
+  const submittedCarrierQuoteId = (body.data as { carrierQuoteId?: string }).carrierQuoteId;
+  const usesCarrier = typeof submittedCarrierQuoteId === "string";
+  const fulfillmentGroupPlans = planCheckoutFulfillmentGroups(normalizedLines, requestedDeliveryMethod, usesCarrier ? "carrier" : requestedDeliveryMethod);
+  const hasPickupGroup = fulfillmentGroupPlans.some(group => group.method === "pickup" || group.method === "uber_direct");
+  const requiresAddress = fulfillmentGroupPlans.some(group => group.method !== "pickup");
   if (tender === "cash" && !checkoutGroupsAllowCash(fulfillmentGroupPlans)) {
     res.status(422).json({ error: "CASH_UNAVAILABLE_FOR_SHIPPING" });
     return;
@@ -1172,7 +1203,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   let pickupSchedule: Awaited<ReturnType<typeof loadPickupSchedule>> | null = null;
   let pickupSelection: ReturnType<typeof validatePickupSelection> | null = null;
   let pickupSnapshot: ReturnType<typeof pickupScheduleSnapshot> | null = null;
-  if (requestedDeliveryMethod === "pickup" || requestedDeliveryMethod === "uber_direct") {
+  if (hasPickupGroup) {
     try {
       pickupLocation = await resolvePickupLocation(houseTenantId, body.data.pickupLocationId);
       pickupSchedule = await loadPickupSchedule(houseTenantId, pickupLocation.id);
@@ -1189,11 +1220,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: "PICKUP_SELECTION_NOT_ALLOWED" });
     return;
   }
-  if (requestedDeliveryMethod === "pickup" && !hasShippingGroup && body.data.shippingAddress?.trim()) {
+  if (!requiresAddress && body.data.shippingAddress?.trim()) {
     res.status(422).json({ error: "PICKUP_ADDRESS_NOT_ALLOWED" });
     return;
   }
-  if ((requestedDeliveryMethod !== "pickup" || hasShippingGroup) && !body.data.shippingAddress?.trim()) {
+  if (requiresAddress && !body.data.shippingAddress?.trim()) {
     res.status(422).json({ error: "DELIVERY_ADDRESS_REQUIRED" });
     return;
   }
@@ -1218,7 +1249,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   )).limit(1) : [];
   const quoteSnapshot = trustedCheckoutQuote?.quoteSnapshot as {
     taxRate?: unknown; taxableBaseCents?: unknown; taxCents?: unknown; paymentMethod?: unknown;
-    deliveryMethod?: unknown; deliveryQuoteId?: unknown; pickupAt?: unknown; fulfillmentGroups?: unknown;
+    deliveryMethod?: unknown; deliveryQuoteId?: unknown; carrierQuoteId?: unknown; pickupAt?: unknown; fulfillmentGroups?: unknown;
   } | undefined;
   const quotedFulfillmentGroups = snapshotCheckoutFulfillmentGroups(fulfillmentGroupPlans, {
     pickup: pickupSelection && pickupLocation ? { locationId: pickupLocation.id, pickupAt: pickupSelection.pickupAt.toISOString() } : null,
@@ -1234,6 +1265,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     && quoteSnapshot?.paymentMethod === tender
     && quoteSnapshot?.deliveryMethod === requestedDeliveryMethod
     && quoteSnapshot?.deliveryQuoteId === ((body.data.deliveryQuote as { quoteId?: string } | null | undefined)?.quoteId ?? null)
+    && quoteSnapshot?.carrierQuoteId === (submittedCarrierQuoteId ?? null)
     && JSON.stringify(quoteSnapshot?.fulfillmentGroups) === JSON.stringify(quotedFulfillmentGroups)
     && (body.data.pickupAt == null || quoteSnapshot?.pickupAt === pickupSelection?.pickupAt.toISOString());
   if (!quoteMatches) {
@@ -1281,6 +1313,23 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: "A delivery quote is only valid for quoted delivery." });
     return;
   }
+  let trustedCarrierQuote: typeof carrierQuotesTable.$inferSelect | null = null;
+  if (usesCarrier) {
+    const carrierLines = luciferDirectCarrierLines(normalizedLines);
+    const [quote] = await db.select().from(carrierQuotesTable).where(and(
+      eq(carrierQuotesTable.id, submittedCarrierQuoteId),
+      eq(carrierQuotesTable.tenantId, houseTenantId),
+      eq(carrierQuotesTable.customerId, actor.id),
+      eq(carrierQuotesTable.status, "quoted"),
+      gt(carrierQuotesTable.expiresAt, new Date()),
+    )).limit(1);
+    const destination = quote?.destinationSnapshot as { address?: unknown } | undefined;
+    if (!quote || quote.cartFingerprint !== checkoutFingerprint(carrierLines)
+      || destination?.address !== body.data.shippingAddress?.trim()) {
+      res.status(422).json({ error: "CARRIER_QUOTE_UNAVAILABLE" }); return;
+    }
+    trustedCarrierQuote = quote;
+  }
   if (trustedUberQuote && !trustedUberQuote.dropoffEta) {
     res.status(422).json({ error: "The stored delivery quote has no verified ETA. Request a fresh quote." });
     return;
@@ -1292,7 +1341,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     dropoffEta: trustedUberQuote.dropoffEta!.toISOString(), duration: trustedUberQuote.durationSeconds,
     pickupDuration: trustedUberQuote.pickupDurationSeconds,
   } : null;
-  const deliveryFee = trustedUberQuote ? trustedUberQuote.feeCents / 100 : 0;
+  const deliveryFee = (trustedUberQuote?.feeCents ?? 0) / 100 + (trustedCarrierQuote?.feeCents ?? 0) / 100;
   let tipAmount: number;
   try {
     tipAmount = normalizeCheckoutTip(checkoutConfirmation?.tipAmount);
@@ -1448,6 +1497,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           .returning({ id: uberDeliveryQuotesTable.id });
         if (!consumed.length) throw new UberQuoteConsumedError();
       }
+      if (trustedCarrierQuote) {
+        const consumed = await tx.update(carrierQuotesTable).set({ status: "consumed", consumedAt: now })
+          .where(and(
+            eq(carrierQuotesTable.id, trustedCarrierQuote.id),
+            eq(carrierQuotesTable.tenantId, houseTenantId),
+            eq(carrierQuotesTable.customerId, actor.id),
+            eq(carrierQuotesTable.status, "quoted"),
+            gt(carrierQuotesTable.expiresAt, now),
+          )).returning({ id: carrierQuotesTable.id });
+        if (!consumed.length) throw new CheckoutQuoteConsumedError();
+      }
       const [createdOrder] = await tx.insert(ordersTable).values({
         tenantId: houseTenantId,
         customerId: actor.id,
@@ -1499,17 +1559,20 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       }).returning();
 
       const groupIdByLineIndex = new Map<number, number>();
-      const feeGroup = fulfillmentGroupPlans.find(group => group.provider !== "cj") ?? fulfillmentGroupPlans[0];
+      const feeGroup = fulfillmentGroupPlans.find(group => group.method === "uber_direct" || group.method === "csr_delivery") ?? fulfillmentGroupPlans[0];
       for (const group of fulfillmentGroupPlans) {
         const merchandiseCents = group.lineIndexes.reduce((sum, index) => {
           const allocation = lineTaxAllocations[index]!;
           return sum + allocation.grossCents - allocation.discountCents;
         }, 0);
         const groupTaxCents = group.lineIndexes.reduce((sum, index) => sum + lineTaxAllocations[index]!.taxCents, 0);
-        const groupFeeCents = group === feeGroup ? dollarsToCents(deliveryFee) + dollarsToCents(tipAmount) : 0;
+        const groupFeeCents = (group === feeGroup ? (trustedUberQuote?.feeCents ?? 0) + dollarsToCents(tipAmount) : 0)
+          + (group.method === "carrier" ? trustedCarrierQuote?.feeCents ?? 0 : 0);
         const destinationSnapshot = group.method === "pickup"
           ? { type: "pickup", locationId: pickupLocation?.id ?? null, locationName: pickupLocation?.name ?? null, pickupAt: pickupSelection?.pickupAt.toISOString() ?? null }
-          : { type: "customer_address", address: trustedUberQuote ? formatUberAddress(trustedUberQuote.dropoffAddress as UberAddress) : body.data.shippingAddress };
+          : group.method === "carrier"
+            ? trustedCarrierQuote!.destinationSnapshot
+            : { type: "customer_address", address: trustedUberQuote ? formatUberAddress(trustedUberQuote.dropoffAddress as UberAddress) : body.data.shippingAddress };
         const [persistedGroup] = await tx.insert(orderFulfillmentGroupsTable).values({
           tenantId: houseTenantId,
           orderId: createdOrder.id,
@@ -1521,13 +1584,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
             : { type: "inventory_location", locationId: checkoutLocationId, locationName: pickupLocation?.name ?? null },
           method: group.method,
           destinationSnapshot,
-          quoteId: group.method === "uber_direct" || group.method === "csr_delivery" ? deliveryQuote?.quoteId ?? null : null,
-          quoteSnapshot: group.method === "uber_direct" || group.method === "csr_delivery" ? deliveryQuote : null,
+          quoteId: group.method === "carrier" ? trustedCarrierQuote?.id ?? null : (group.method === "uber_direct" || group.method === "csr_delivery" ? deliveryQuote?.quoteId ?? null : null),
+          quoteSnapshot: group.method === "carrier" ? { provider: trustedCarrierQuote?.provider, providerQuoteId: trustedCarrierQuote?.providerQuoteId, service: trustedCarrierQuote?.serviceSnapshot, feeCents: trustedCarrierQuote?.feeCents, currency: trustedCarrierQuote?.currency, expiresAt: trustedCarrierQuote?.expiresAt.toISOString() } : (group.method === "uber_direct" || group.method === "csr_delivery" ? deliveryQuote : null),
           merchandiseSubtotal: centsToDollars(merchandiseCents),
           fee: centsToDollars(groupFeeCents),
           tax: centsToDollars(groupTaxCents),
           total: centsToDollars(merchandiseCents + groupFeeCents + groupTaxCents),
-          currency: deliveryQuote?.currency ?? "usd",
+          currency: group.method === "carrier" ? trustedCarrierQuote?.currency ?? "usd" : deliveryQuote?.currency ?? "usd",
           taxSnapshot: { taxConfigurationId: checkoutTaxSettings.taxConfigurationId, taxRate: checkoutTaxSettings.taxRate, jurisdiction: checkoutTaxSettings.taxJurisdiction, taxCents: groupTaxCents },
           status: "submitted",
         }).returning({ id: orderFulfillmentGroupsTable.id });

@@ -43,6 +43,18 @@ describe("server-created checkout fulfillment groups", () => {
     expect(() => luciferDirectCarrierLines([lines[0]!])).toThrow("CARRIER_GROUP_UNAVAILABLE");
   });
 
+  it("assigns carrier only to Lucifer Direct while preserving Alavont pickup", () => {
+    expect(planCheckoutFulfillmentGroups([
+      line({ catalog_item_id: 10 }),
+      line({ catalog_item_id: 20, merchant_brand: "lucifer_cruz" }),
+      line({ catalog_item_id: 30, source_type: "woo" }),
+    ], "pickup", "carrier")).toEqual([
+      { key: "alavont:pickup", provider: "alavont", method: "pickup", lineIndexes: [0] },
+      { key: "lucifer_direct:carrier", provider: "lucifer_direct", method: "carrier", lineIndexes: [1] },
+      { key: "cj:standard_shipping", provider: "cj", method: "standard_shipping", lineIndexes: [2] },
+    ]);
+  });
+
   it("snapshots a distinct trusted destination for every server-created group", () => {
     const groups = planCheckoutFulfillmentGroups([
       line({}),

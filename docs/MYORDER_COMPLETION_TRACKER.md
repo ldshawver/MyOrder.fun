@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Atomic Lucifer Direct carrier quote checkout binding (2026-11-23)
+
+- Checkout quote creation now accepts an opaque carrier quote only for the server-derived Lucifer Direct group and revalidates tenant, customer, active lifecycle, expiry, trusted group cart fingerprint, and normalized destination address before including its fee in server totals.
+- Carrier selection changes only the Lucifer Direct group; Alavont retains its existing pickup behavior and CJ remains customer-free standard shipping. Cash remains unavailable whenever the resulting cart contains carrier or shipping fulfillment.
+- Order creation repeats the authority checks, requires the durable checkout snapshot to bind the same carrier quote and group plan, and atomically consumes the carrier quote beside the checkout quote, inventory/order work, and group persistence. A concurrent or replayed non-idempotent consumption cannot dispatch the same quote twice.
+- The immutable carrier group stores the trusted full destination, durable quote identity, provider/service/fee/currency/expiry snapshot, and server-derived group amounts. No production carrier or credential-backed validation is claimed.
+
+Evidence:
+
+- Focused Vitest: `checkoutFulfillmentGroups` and `carrier-quotes-schema-static` — 2 files, 8 tests passed, covering carrier assignment only to Lucifer Direct, trusted mixed-cart grouping, cash policy, scoped quote validation, transactional consumption, and immutable group quote/destination persistence contracts.
+- `pnpm run typecheck:libs` and `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the group planner, order route, and regressions with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Authenticated Lucifer Direct carrier quote path (2026-11-23)
 
 - Added a customer-checkout-authenticated carrier quote endpoint that re-normalizes the tenant catalog cart and selects only the server-derived Lucifer Direct group before invoking the carrier service.
@@ -219,7 +233,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, and the authenticated fail-closed Lucifer Direct carrier quote path are implemented. Next bind and atomically consume only eligible Lucifer Direct carrier quotes during checkout, then derive parent status from child groups and restrict staff/provider transitions by group ownership.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, and authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption are implemented. Next derive parent status from child groups and restrict staff/provider transitions by group ownership.
 2. PostgreSQL validation for durable checkout quotes: `DATABASE_URL` resolves to the correctly named `myorder_agent_test`, but the refreshed target is an empty PostgreSQL 17 database without `users`, `tenants`, or `orders`, rather than the documented disposable migrated baseline. Migration 0084 therefore was not applied. Provision the repository baseline on this disposable database before adding tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
