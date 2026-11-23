@@ -75,7 +75,14 @@ export class PayPalProvider implements PaymentProvider {
   private async token(): Promise<string> {
     if (this.accessToken && this.accessToken.expiresAt > Date.now() + 30_000) return this.accessToken.value;
     const auth = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64");
-    const response = await this.fetchImpl(`${this.config.apiOrigin}/v1/oauth2/token`, { method: "POST", headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" }, body: "grant_type=client_credentials", signal: AbortSignal.timeout(10_000) });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.config.apiOrigin}/v1/oauth2/token`, { method: "POST", headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" }, body: "grant_type=client_credentials", signal: AbortSignal.timeout(10_000) });
+    } catch {
+      // Authentication happens before a payment mutation is sent, so its
+      // transport failure is retryable and never an ambiguous payment outcome.
+      throw new PayPalProviderError("provider_error", "PayPal authentication failed");
+    }
     if (!response.ok) throw new PayPalProviderError("provider_error", "PayPal authentication failed");
     const body = await boundedJson(response) as { access_token?: string; expires_in?: number };
     if (!body.access_token) throw new PayPalProviderError("invalid_response", "PayPal authentication response invalid");
@@ -89,11 +96,15 @@ export class PayPalProvider implements PaymentProvider {
   }
 
   private async request(path: string, init: RequestInit, requestId?: string): Promise<Json> {
+    const accessToken = await this.token();
     let response: Response;
     try {
-      response = await this.fetchImpl(`${this.config.apiOrigin}${path}`, { ...init, headers: { Authorization: `Bearer ${await this.token()}`, "Content-Type": "application/json", Accept: "application/json", ...(requestId ? { "PayPal-Request-Id": requestId } : {}), ...(init.headers ?? {}) }, signal: AbortSignal.timeout(15_000) });
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "TimeoutError") throw new PayPalProviderError("unknown_outcome", "PayPal request timed out");
+      response = await this.fetchImpl(`${this.config.apiOrigin}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", Accept: "application/json", ...(requestId ? { "PayPal-Request-Id": requestId } : {}), ...(init.headers ?? {}) }, signal: AbortSignal.timeout(15_000) });
+    } catch {
+      // Once a mutating request is handed to the transport, a rejection cannot
+      // prove that PayPal did not accept it. Durable reconciliation and the
+      // PayPal-Request-Id must govern any retry.
+      if (requestId) throw new PayPalProviderError("unknown_outcome", "PayPal request outcome is unknown");
       throw new PayPalProviderError("provider_error", "PayPal request failed");
     }
     const body = await boundedJson(response);

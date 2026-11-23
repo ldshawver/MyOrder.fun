@@ -47,6 +47,17 @@ describe("PayPal provider", () => {
   });
   it("rejects invalid provider responses", async () => { const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "bad" })); await expect(new PayPalProvider(config, fetcher as typeof fetch).getOrder("bad")).rejects.toMatchObject({ failureClass: "invalid_response" }); });
   it("classifies provider declines", async () => { const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({}, 422)); await expect(new PayPalProvider(config, fetcher as typeof fetch).captureOrder("ORDER1", "key")).rejects.toMatchObject({ failureClass: "declined" }); });
+  it("treats a transport failure after sending a mutation as an unknown outcome", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockRejectedValueOnce(new TypeError("connection reset"));
+    await expect(new PayPalProvider(config, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).rejects.toMatchObject({ failureClass: "unknown_outcome" });
+  });
+  it("keeps authentication and read-only transport failures retryable", async () => {
+    const authFailure = vi.fn().mockRejectedValueOnce(new TypeError("connection refused"));
+    await expect(new PayPalProvider(config, authFailure as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).rejects.toMatchObject({ failureClass: "provider_error" });
+
+    const lookupFailure = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockRejectedValueOnce(new TypeError("connection reset"));
+    await expect(new PayPalProvider(config, lookupFailure as typeof fetch).getOrder("ORDER1")).rejects.toMatchObject({ failureClass: "provider_error" });
+  });
   it("rejects oversized provider responses before parsing them", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(new Response("x", { headers: { "content-length": String(1024 * 1024 + 1) } }));
     await expect(new PayPalProvider(config, fetcher as typeof fetch).getOrder("ORDER1")).rejects.toMatchObject({ failureClass: "invalid_response" });
