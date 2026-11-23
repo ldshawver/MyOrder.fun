@@ -312,7 +312,7 @@ describe("customer catalogue visibility", () => {
 
     expect(response.status, response.text).toBe(200);
     expect(response.body.items.map((item: { id: number; lifecycleStatus: string }) => [item.id, item.lifecycleStatus]))
-      .toEqual([[1, "customer_visible"], [2, "customer_visible"], [3, "compliance_hold"], [4, "archived"]]);
+      .toEqual([[1, "customer_visible"], [2, "unavailable_hidden"], [3, "compliance_hold"], [4, "archived"]]);
     expect(response.body.items.find((item: { id: number }) => item.id === 4)?.isAvailable).toBe(true);
   });
 

@@ -559,7 +559,7 @@ describe("admin/POS/security cleanup regressions", () => {
     expect(orders).toContain('csrDeliveryDistanceMiles > 2');
     expect(orders).toContain('CSR personal delivery is only available within 2 miles');
     expect(orders).toContain('explicitDeliveryMethod === "uber_direct" || isCsrDelivery');
-    expect(orders).toContain('deliveryFee = trustedUberQuote ? trustedUberQuote.feeCents / 100 : 0');
+    expect(orders).toContain('const deliveryFee = (trustedUberQuote?.feeCents ?? 0) / 100 + (trustedCarrierQuote?.feeCents ?? 0) / 100');
     expect(orders).not.toContain('BigInt(dollarsToCents(subtotal)) * 3n');
   });
 

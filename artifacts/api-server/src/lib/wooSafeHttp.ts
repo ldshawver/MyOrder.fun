@@ -60,7 +60,13 @@ export async function resolvePublicWooAddress(hostname: string, resolver = looku
 }
 
 /** DNS is checked at connect time and the checked address is pinned for TLS. Redirects are rejected. */
-export async function fetchWooSafely(storeUrl: string, path: string, consumerKey: string, consumerSecret: string, transport: typeof request = request): Promise<Response> {
+export type WooSafeRequest = {
+  method?: "GET" | "POST";
+  body?: string;
+  headers?: Readonly<Record<string, string>>;
+};
+
+export async function fetchWooSafely(storeUrl: string, path: string, consumerKey: string, consumerSecret: string, transport: typeof request = request, init: WooSafeRequest = {}): Promise<Response> {
   if (!isWooCommerceExternalIntegrationEnabled()) throw new Error("External WooCommerce integration is disabled");
   const origin = assertWooHttpsOrigin(storeUrl);
   const url = new URL(path, origin);
@@ -68,8 +74,8 @@ export async function fetchWooSafely(storeUrl: string, path: string, consumerKey
   const authorization = `Basic ${Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64")}`;
   return new Promise<Response>((resolve, reject) => {
     const req = transport(url, {
-      method: "GET", timeout: TIMEOUT_MS,
-      headers: { Authorization: authorization, Accept: "application/json" },
+      method: init.method ?? "GET", timeout: TIMEOUT_MS,
+      headers: { ...(init.headers ?? {}), Authorization: authorization, Accept: "application/json" },
       lookup: (hostname, options, callback) => {
         resolvePublicWooAddress(hostname).then(
           result => {
@@ -110,6 +116,6 @@ export async function fetchWooSafely(storeUrl: string, path: string, consumerKey
     });
     req.on("timeout", () => req.destroy(new Error("WooCommerce request timed out")));
     req.on("error", reject);
-    req.end();
+    req.end(init.body);
   });
 }

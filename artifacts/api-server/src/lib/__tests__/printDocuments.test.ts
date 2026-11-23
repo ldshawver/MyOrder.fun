@@ -116,11 +116,16 @@ describe("thermal documents", () => {
   });
 
   it("expo tickets carry order number, fulfilment and items but no prices", () => {
-    const text = plain(buildExpoTicket(SAMPLE_RECEIPT_DATA));
+    const ticket = buildExpoTicket(SAMPLE_RECEIPT_DATA);
+    const text = plain(ticket);
     expect(text).toContain("#SAMPLE-0001");
     expect(text).toContain("2 x Sample Product");
     expect(text).toContain("Sample Option");
     expect(text).not.toMatch(/\$\d/);
+    expect(ticket.filter((line) => line.kind === "text").every((line) => line.size === "tall" || line.size === "large")).toBe(true);
+    const encoded = encodeReceiptEscPos(fitReceiptLines(ticket, 48));
+    expect(encoded).toContain("\x1d!\x01");
+    expect(encoded).toContain("\x1d!\x11");
   });
 
   it("work tickets list items with check boxes and no prices or customer", () => {

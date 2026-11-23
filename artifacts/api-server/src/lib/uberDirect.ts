@@ -383,7 +383,7 @@ export async function createUberDelivery(input: {
     pickup_action: input.pickupAction ?? getUberPickupAction(),
   };
   let res: Response;
-  try { res = await fetch(`${UBER_API_BASE_URL}/v1/customers/${config.customerId}/deliveries`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "Idempotency-Key": input.externalOrderReference }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20_000) }); }
+  try { res = await fetch(`${UBER_API_BASE_URL}/v1/customers/${encodeURIComponent(config.customerId)}/deliveries`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "Idempotency-Key": input.externalOrderReference }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20_000) }); }
   catch { throw new UberDirectApiError(502, "Uber Direct delivery service is unavailable.", "delivery_unavailable"); }
   const data = await parseUberResponse(res);
   if (!res.ok || !data || typeof data !== "object" || typeof (data as { id?: unknown }).id !== "string" || !(data as { id: string }).id.trim()) {

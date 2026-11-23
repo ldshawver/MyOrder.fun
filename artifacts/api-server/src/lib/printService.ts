@@ -782,16 +782,18 @@ export async function enqueueOrderPrintJobs(order: {
 
   if (controls.autoPrintOrders) {
     const { loadReceiptData } = await import("./print/receiptPipeline");
-    const { buildExpoTicket, buildWorkTicket } = await import("./print/documents");
+    const { buildExpoTicket } = await import("./print/documents");
     // Customer receipts use the configured safe-name mode. Staff tickets must
     // always show the Alavont product identity needed for fulfillment.
     const ticketData = await loadReceiptData(tenantId, order.id, "alavont_only");
     const expoFallback = routeContext.locationId && routeContext.shiftId
       ? () => resolveExpoPrinter({ tenantId, locationId: routeContext.locationId!, shiftId: routeContext.shiftId! })
       : undefined;
+    // Order placement produces only the affected workflow's Expo ticket. Work
+    // tickets remain available as an explicit document type, but are not a
+    // second automatic preparation print for the same order.
     const tickets = [
       { documentType: "EXPO" as const, jobType: "expo_ticket", build: buildExpoTicket, legacyFallback: expoFallback },
-      { documentType: "WORK" as const, jobType: "order_ticket", build: buildWorkTicket, legacyFallback: undefined },
     ];
     for (const ticket of ticketData ? tickets : []) {
       const result = await queueDocumentPrint({

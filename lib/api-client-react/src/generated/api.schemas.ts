@@ -686,6 +686,7 @@ export const CreateOrderBodyDeliveryMethod = {
   uber_direct: 'uber_direct',
   uber_courier: 'uber_courier',
   csr_delivery: 'csr_delivery',
+  carrier: 'carrier',
 } as const;
 
 export type CreateOrderBodyOrderType = typeof CreateOrderBodyOrderType[keyof typeof CreateOrderBodyOrderType] | null;
@@ -709,6 +710,8 @@ export interface CreateOrderBody {
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
+  /** @minLength 1 */
+  carrierQuoteId?: string;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
   /** @minimum 1 */
   pickupLocationId?: number;
