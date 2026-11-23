@@ -5,9 +5,10 @@ const root = new URL("../../../../../", import.meta.url);
 
 describe("mixed-cart fulfillment group persistence", () => {
   it("binds immutable tenant/order groups and their lines without rewriting history", async () => {
-    const [schema, migration] = await Promise.all([
+    const [schema, migration, orderRoute] = await Promise.all([
       readFile(new URL("lib/db/src/schema/orders.ts", root), "utf8"),
       readFile(new URL("lib/db/drizzle/0085_order_fulfillment_groups.sql", root), "utf8"),
+      readFile(new URL("artifacts/api-server/src/routes/orders.ts", root), "utf8"),
     ]);
 
     expect(schema).toContain('pgTable("order_fulfillment_groups"');
@@ -20,5 +21,9 @@ describe("mixed-cart fulfillment group persistence", () => {
     expect(migration).toContain('CHECK ("method" IN (\'pickup\', \'uber_direct\', \'csr_delivery\', \'carrier\', \'standard_shipping\'))');
     expect(migration).toContain('"fulfillment_group_id" integer');
     expect(migration).not.toContain('"fulfillment_group_id" integer NOT NULL');
+    expect(orderRoute).toContain("planCheckoutFulfillmentGroups(normalizedLines, requestedDeliveryMethod)");
+    expect(orderRoute).toContain("tx.insert(orderFulfillmentGroupsTable)");
+    expect(orderRoute).toContain("fulfillmentGroupId: groupIdByLineIndex.get(lineIndex)");
+    expect(orderRoute).toContain('error: "CASH_UNAVAILABLE_FOR_SHIPPING"');
   });
 });

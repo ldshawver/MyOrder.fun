@@ -10,6 +10,7 @@ import {
   db,
   ordersTable,
   orderItemsTable,
+  orderFulfillmentGroupsTable,
   orderNotesTable,
   usersTable,
   notificationsTable,
@@ -77,6 +78,7 @@ import { deductPaidOrderInventory } from "../payments/inventory";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { checkoutPaymentMethods } from "../payments/checkoutMethods";
 import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
+import { checkoutGroupsAllowCash, planCheckoutFulfillmentGroups } from "../lib/checkoutFulfillmentGroups";
 
 import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
@@ -1098,6 +1100,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
   const requestedDeliveryMethod = deliveryResolution.method;
+  const fulfillmentGroupPlans = planCheckoutFulfillmentGroups(normalizedLines, requestedDeliveryMethod);
+  const hasShippingGroup = fulfillmentGroupPlans.some(group => group.method === "standard_shipping");
+  if (tender === "cash" && !checkoutGroupsAllowCash(fulfillmentGroupPlans)) {
+    res.status(422).json({ error: "CASH_UNAVAILABLE_FOR_SHIPPING" });
+    return;
+  }
   let checkoutLocationId = targetLocationId;
   let pickupLocation: { id: number; name: string } | null = null;
   let pickupSchedule: Awaited<ReturnType<typeof loadPickupSchedule>> | null = null;
@@ -1120,11 +1128,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: "PICKUP_SELECTION_NOT_ALLOWED" });
     return;
   }
-  if (requestedDeliveryMethod === "pickup" && body.data.shippingAddress?.trim()) {
+  if (requestedDeliveryMethod === "pickup" && !hasShippingGroup && body.data.shippingAddress?.trim()) {
     res.status(422).json({ error: "PICKUP_ADDRESS_NOT_ALLOWED" });
     return;
   }
-  if (requestedDeliveryMethod !== "pickup" && !body.data.shippingAddress?.trim()) {
+  if ((requestedDeliveryMethod !== "pickup" || hasShippingGroup) && !body.data.shippingAddress?.trim()) {
     res.status(422).json({ error: "DELIVERY_ADDRESS_REQUIRED" });
     return;
   }
@@ -1424,6 +1432,42 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         cashDiscountSnapshot,
       }).returning();
 
+      const groupIdByLineIndex = new Map<number, number>();
+      const feeGroup = fulfillmentGroupPlans.find(group => group.provider !== "cj") ?? fulfillmentGroupPlans[0];
+      for (const group of fulfillmentGroupPlans) {
+        const merchandiseCents = group.lineIndexes.reduce((sum, index) => {
+          const allocation = lineTaxAllocations[index]!;
+          return sum + allocation.grossCents - allocation.discountCents;
+        }, 0);
+        const groupTaxCents = group.lineIndexes.reduce((sum, index) => sum + lineTaxAllocations[index]!.taxCents, 0);
+        const groupFeeCents = group === feeGroup ? dollarsToCents(deliveryFee) + dollarsToCents(tipAmount) : 0;
+        const destinationSnapshot = group.method === "pickup"
+          ? { type: "pickup", locationId: pickupLocation?.id ?? null, locationName: pickupLocation?.name ?? null, pickupAt: pickupSelection?.pickupAt.toISOString() ?? null }
+          : { type: "customer_address", address: trustedUberQuote ? formatUberAddress(trustedUberQuote.dropoffAddress as UberAddress) : body.data.shippingAddress };
+        const [persistedGroup] = await tx.insert(orderFulfillmentGroupsTable).values({
+          tenantId: houseTenantId,
+          orderId: createdOrder.id,
+          groupKey: group.key,
+          provider: group.provider,
+          inventoryOwnerSnapshot: group.provider === "cj" ? "cj_supplier" : group.provider,
+          fulfillmentOriginSnapshot: group.provider === "cj"
+            ? { type: "supplier", provider: "cj" }
+            : { type: "inventory_location", locationId: checkoutLocationId, locationName: pickupLocation?.name ?? null },
+          method: group.method,
+          destinationSnapshot,
+          quoteId: group.method === "uber_direct" || group.method === "csr_delivery" ? deliveryQuote?.quoteId ?? null : null,
+          quoteSnapshot: group.method === "uber_direct" || group.method === "csr_delivery" ? deliveryQuote : null,
+          merchandiseSubtotal: centsToDollars(merchandiseCents),
+          fee: centsToDollars(groupFeeCents),
+          tax: centsToDollars(groupTaxCents),
+          total: centsToDollars(merchandiseCents + groupFeeCents + groupTaxCents),
+          currency: deliveryQuote?.currency ?? "usd",
+          taxSnapshot: { taxConfigurationId: checkoutTaxSettings.taxConfigurationId, taxRate: checkoutTaxSettings.taxRate, jurisdiction: checkoutTaxSettings.taxJurisdiction, taxCents: groupTaxCents },
+          status: "submitted",
+        }).returning({ id: orderFulfillmentGroupsTable.id });
+        for (const lineIndex of group.lineIndexes) groupIdByLineIndex.set(lineIndex, persistedGroup.id);
+      }
+
       const alavontCartSnapshot = normalizedLines.map(l => ({
         originalCatalogItemId: l.original_catalog_item_id ?? l.catalog_item_id,
         catalogItemId: l.catalog_item_id,
@@ -1535,6 +1579,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           : quantityText(quantityUnits(option?.consumptionQuantity ?? "1") * BigInt(line.quantity));
         const [orderItem] = await tx.insert(orderItemsTable).values({
           orderId: createdOrder.id,
+          fulfillmentGroupId: groupIdByLineIndex.get(lineIndex),
           catalogItemId: line.catalog_item_id,
           catalogItemName: option ? `${option.productName}${option.label === "Standard" ? "" : ` — ${option.label}`}` : line.catalog_display_name,
           optionId: option?.optionId ?? null,

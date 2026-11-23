@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Server-created mixed-cart group writes (2026-11-23)
+
+- Checkout now partitions normalized lines from trusted server catalog fields: Alavont local inventory, Lucifer Direct local inventory, and CJ/Woo supplier inventory. The client cannot submit a provider, inventory owner, origin, group key, or authoritative method.
+- CJ lines are forced into customer-free `standard_shipping`; the selected eligible local method applies only to Alavont/Lucifer Direct groups. Cash is rejected whenever any group is courier or shipping, while existing Alavont pickup cash remains eligible.
+- Order creation atomically inserts immutable group origin, destination, quote, fee/tip, allocated merchandise, tax, total, currency, and status snapshots, then binds every new order item to its server-created group inside the existing inventory/quote/idempotency transaction.
+- Mixed pickup plus CJ shipping now requires a customer shipping address while preserving the local pickup destination snapshot and existing Alavont pickup scheduling behavior.
+
+Evidence:
+
+- Focused Vitest: `checkoutFulfillmentGroups` and `fulfillment-groups-schema-static` — 2 files, 3 tests passed, covering trusted mixed-cart partitioning, CJ shipping enforcement, cash eligibility, transactional group writes, and line binding.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the group planner, regression tests, and order route with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Immutable mixed-cart fulfillment group persistence foundation (2026-11-23)
 
 - Added forward-only migration `0085_order_fulfillment_groups.sql` and matching Drizzle schema for tenant/order-bound server-created fulfillment groups.
@@ -134,7 +148,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: immutable tenant/order group storage and cross-order line binding are now implemented. Next implement server-created grouping from trusted product/provider, inventory-owner, origin/location, and eligible fulfillment-method data; bind conversion, quote, order, authorization, idempotency, inventory, immutable snapshots, and parent/child status derivation to that scope.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, immutable transactional writes, line binding, and cash restrictions are implemented. Next make checkout quotes expose and bind per-group choices/destinations, add Lucifer Direct carrier quote persistence/eligibility, then derive parent status from child groups and restrict staff/provider transitions by group ownership.
 2. PostgreSQL validation for durable checkout quotes: a dedicated disposable `myorder_agent_test` database is now provided through `DATABASE_URL` on the isolated `luxdev` cluster. Apply migration 0084 there and add tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage. This database is disposable and must never be confused with staging or production.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
