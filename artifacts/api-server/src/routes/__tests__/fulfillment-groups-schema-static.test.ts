@@ -26,7 +26,7 @@ describe("mixed-cart fulfillment group persistence", () => {
     expect(orderRoute).toContain("fulfillmentGroupId: groupIdByLineIndex.get(lineIndex)");
     expect(orderRoute).toContain('error: "CASH_UNAVAILABLE_FOR_SHIPPING"');
     expect(orderRoute).toContain("const fulfillmentGroups = snapshotCheckoutFulfillmentGroups(fulfillmentGroupPlans");
-    expect(orderRoute).toContain("quoteSnapshot?.fulfillmentGroups) === JSON.stringify(quotedFulfillmentGroups)");
+    expect(orderRoute).toContain("isDeepStrictEqual(quoteSnapshot?.fulfillmentGroups, quotedFulfillmentGroups)");
     expect(orderRoute).toContain("res.json({ merchandiseSubtotal:");
     expect(orderRoute).toContain("pickup, fulfillmentGroups, tipAmount:");
   });
