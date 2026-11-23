@@ -41,7 +41,7 @@ async function paidUnitRankings(tenantId: number): Promise<RankedSale[]> {
   });
 }
 
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+router.use("/speed-order", requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 router.get("/speed-order/top-nine", requirePermission("speed_order.use"), async (req, res): Promise<void> => {
   const tenantId = req.authorizedTenantId!;
