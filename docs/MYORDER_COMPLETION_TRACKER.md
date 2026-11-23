@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal webhook verification result contract (2026-11-23)
+
+- Restricted PayPal webhook verification responses to the reviewed `SUCCESS` and `FAILURE` results before they can influence authenticated event handling.
+- Explicit provider verification failure remains a normal rejected signature, while missing, unknown, or non-string results now fail closed as invalid provider responses instead of being silently treated as ordinary verification failures.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox or live webhook behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 48 tests passed, including accepted success/failure results and rejection of malformed or unknown results.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the PayPal provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PayPal OAuth token-lifetime contract (2026-11-23)
 
 - Required a represented OAuth token lifetime, when supplied, to be a positive bounded integer before the access token can enter the in-memory cache.

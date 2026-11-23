@@ -65,6 +65,15 @@ describe("PayPal provider", () => {
     await expect(provider.verifyWebhook({ transmissionId: "id", transmissionTime: "time", transmissionSignature: "sig", certificateUrl: "https://api.paypal.com/cert", authAlgorithm: "SHA256withRSA" }, { id: "event" })).resolves.toBe(true);
     expect(fetcher.mock.calls[1][1].body).toContain('"webhook_id":"webhook"');
   });
+  it("accepts only recognized webhook verification results", async () => {
+    const failureFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ verification_status: "FAILURE" }));
+    await expect(new PayPalProvider(config, failureFetcher as typeof fetch).verifyWebhook({ transmissionId: "id", transmissionTime: "time", transmissionSignature: "sig", certificateUrl: "https://api.paypal.com/cert", authAlgorithm: "SHA256withRSA" }, { id: "event" })).resolves.toBe(false);
+
+    for (const response of [{}, { verification_status: "UNKNOWN" }, { verification_status: true }]) {
+      const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json(response));
+      await expect(new PayPalProvider(config, fetcher as typeof fetch).verifyWebhook({ transmissionId: "id", transmissionTime: "time", transmissionSignature: "sig", certificateUrl: "https://api.paypal.com/cert", authAlgorithm: "SHA256withRSA" }, { id: "event" })).rejects.toMatchObject({ failureClass: "invalid_response" });
+    }
+  });
   it("rejects invalid provider responses", async () => { const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "bad" })); await expect(new PayPalProvider(config, fetcher as typeof fetch).getOrder("bad")).rejects.toMatchObject({ failureClass: "invalid_response" }); });
   it("rejects blank provider resource identities", async () => {
     const createFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: " ", status: "CREATED", purchase_units: [{ reference_id: "7", amount: { value: "10.80", currency_code: "USD" } }] }));

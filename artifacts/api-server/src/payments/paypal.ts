@@ -186,6 +186,9 @@ export class PayPalProvider implements PaymentProvider {
   }
   async verifyWebhook(headers: PayPalTransmissionHeaders, event: unknown): Promise<boolean> {
     const body = await this.request("/v1/notifications/verify-webhook-signature", { method: "POST", body: JSON.stringify({ auth_algo: headers.authAlgorithm, cert_url: headers.certificateUrl, transmission_id: headers.transmissionId, transmission_sig: headers.transmissionSignature, transmission_time: headers.transmissionTime, webhook_id: this.config.webhookId, webhook_event: event }) });
+    if (body.verification_status !== "SUCCESS" && body.verification_status !== "FAILURE") {
+      throw new PayPalProviderError("invalid_response", "PayPal webhook verification response invalid");
+    }
     return body.verification_status === "SUCCESS";
   }
 }
