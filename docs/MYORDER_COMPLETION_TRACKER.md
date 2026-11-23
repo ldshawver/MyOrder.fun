@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal capture order identity binding (2026-11-23)
+
+- Bound the represented capture response to the exact provider order requested by the server before returning a capture for local persistence.
+- A syntactically valid capture response for a different PayPal order now fails closed as an invalid provider response; existing server-owned capture idempotency and durable reconciliation behavior remain unchanged.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox or live behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 33 tests passed, including mismatched capture-order identity.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the PayPal provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PayPal create-order authority binding (2026-11-23)
 
 - Bound the represented PayPal purchase unit to the exact server-authored internal order reference, amount, and currency before returning a provider order for local persistence.

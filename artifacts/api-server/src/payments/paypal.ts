@@ -138,7 +138,7 @@ export class PayPalProvider implements PaymentProvider {
   }
   private parseCapture(body: Json, orderId: string): ProviderCapture {
     const unit = (body.purchase_units as Array<Json> | undefined)?.[0]; const payments = unit?.payments as Json | undefined; const capture = (payments?.captures as Array<Json> | undefined)?.[0]; const amount = capture?.amount as Json | undefined;
-    if (typeof capture?.id !== "string" || typeof capture.status !== "string" || typeof amount?.value !== "string" || typeof amount.currency_code !== "string") throw new PayPalProviderError("invalid_response", "PayPal capture response invalid");
+    if (body.id !== orderId || typeof body.status !== "string" || typeof capture?.id !== "string" || typeof capture.status !== "string" || typeof amount?.value !== "string" || typeof amount.currency_code !== "string") throw new PayPalProviderError("invalid_response", "PayPal capture response invalid");
     const source = body.payment_source as Json | undefined;
     return { orderId, captureId: capture.id, status: capture.status, amount: { value: amount.value, currency: amount.currency_code }, fundingSource: fundingSource(source) };
   }
