@@ -72,6 +72,10 @@ function onlyObject(value: unknown): Json | undefined {
     : undefined;
 }
 
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 export class PayPalProviderError extends Error {
   constructor(public readonly failureClass: "declined" | "timeout" | "provider_error" | "invalid_response" | "unknown_outcome", message: string) { super(message); this.name = "PayPalProviderError"; }
 }
@@ -93,7 +97,7 @@ export class PayPalProvider implements PaymentProvider {
     }
     if (!response.ok) throw new PayPalProviderError("provider_error", "PayPal authentication failed");
     const body = await boundedJson(response) as { access_token?: string; expires_in?: number };
-    if (!body.access_token) throw new PayPalProviderError("invalid_response", "PayPal authentication response invalid");
+    if (!nonEmptyString(body.access_token)) throw new PayPalProviderError("invalid_response", "PayPal authentication response invalid");
     this.accessToken = { value: body.access_token, expiresAt: Date.now() + Math.max(60, body.expires_in ?? 300) * 1000 };
     return body.access_token;
   }
@@ -123,7 +127,7 @@ export class PayPalProvider implements PaymentProvider {
   async createOrder(input: { amount: Money; requestId: string; internalOrderId: number }): Promise<ProviderOrder> {
     const body = await this.request("/v2/checkout/orders", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ intent: "CAPTURE", purchase_units: [{ reference_id: String(input.internalOrderId), amount: { currency_code: input.amount.currency, value: input.amount.value } }] }) }, input.requestId);
     const unit = onlyObject(body.purchase_units); const amount = unit?.amount as Json | undefined;
-    if (typeof body.id !== "string" || typeof body.status !== "string" || !ORDER_STATUSES.has(body.status) || unit?.reference_id !== String(input.internalOrderId) || amount?.value !== input.amount.value || amount.currency_code !== input.amount.currency) throw new PayPalProviderError("invalid_response", "PayPal order response invalid");
+    if (!nonEmptyString(body.id) || typeof body.status !== "string" || !ORDER_STATUSES.has(body.status) || unit?.reference_id !== String(input.internalOrderId) || amount?.value !== input.amount.value || amount.currency_code !== input.amount.currency) throw new PayPalProviderError("invalid_response", "PayPal order response invalid");
     const rawApprovalUrl = (body.links as Array<Json> | undefined)?.find(link => link.rel === "payer-action" || link.rel === "approve")?.href;
     return { id: body.id, status: body.status, amount: { value: amount.value, currency: amount.currency_code }, approvalUrl: approvalUrl(rawApprovalUrl, this.config.environment) };
   }
@@ -133,7 +137,7 @@ export class PayPalProvider implements PaymentProvider {
     const captures = (unit?.payments as Json | undefined)?.captures;
     const rawCapture = captures === undefined ? undefined : onlyObject(captures); const captureAmount = rawCapture?.amount as Json | undefined;
     if (captures !== undefined && !rawCapture) throw new PayPalProviderError("invalid_response", "PayPal order response invalid");
-    const capture = typeof rawCapture?.id === "string" && typeof rawCapture.status === "string" && CAPTURE_STATUSES.has(rawCapture.status) && typeof captureAmount?.value === "string" && typeof captureAmount.currency_code === "string" ? { orderId: body.id, captureId: rawCapture.id, status: rawCapture.status, amount: { value: captureAmount.value, currency: captureAmount.currency_code } } : undefined;
+    const capture = nonEmptyString(rawCapture?.id) && typeof rawCapture.status === "string" && CAPTURE_STATUSES.has(rawCapture.status) && typeof captureAmount?.value === "string" && typeof captureAmount.currency_code === "string" ? { orderId: body.id, captureId: rawCapture.id, status: rawCapture.status, amount: { value: captureAmount.value, currency: captureAmount.currency_code } } : undefined;
     if (rawCapture && !capture) throw new PayPalProviderError("invalid_response", "PayPal order response invalid");
     return { id: body.id, status: body.status, amount: { value: amount.value, currency: amount.currency_code }, capture };
   }
@@ -143,13 +147,13 @@ export class PayPalProvider implements PaymentProvider {
   async getCapture(id: string): Promise<ProviderCapture> {
     const body = await this.request(`/v2/payments/captures/${encodeURIComponent(id)}`, { method: "GET" });
     const amount = body.amount as Json | undefined; const related = (body.supplementary_data as Json | undefined)?.related_ids as Json | undefined;
-    if (body.id !== id || typeof body.status !== "string" || !CAPTURE_STATUSES.has(body.status) || typeof amount?.value !== "string" || typeof amount.currency_code !== "string" || typeof related?.order_id !== "string") throw new PayPalProviderError("invalid_response", "PayPal capture response invalid");
+    if (body.id !== id || !nonEmptyString(body.id) || typeof body.status !== "string" || !CAPTURE_STATUSES.has(body.status) || typeof amount?.value !== "string" || typeof amount.currency_code !== "string" || !nonEmptyString(related?.order_id)) throw new PayPalProviderError("invalid_response", "PayPal capture response invalid");
     const source = body.payment_source as Json | undefined;
     return { orderId: related.order_id, captureId: body.id, status: body.status, amount: { value: amount.value, currency: amount.currency_code }, fundingSource: fundingSource(source) };
   }
   private parseCapture(body: Json, orderId: string): ProviderCapture {
     const unit = onlyObject(body.purchase_units); const payments = unit?.payments as Json | undefined; const capture = onlyObject(payments?.captures); const amount = capture?.amount as Json | undefined;
-    if (body.id !== orderId || typeof body.status !== "string" || !ORDER_STATUSES.has(body.status) || typeof capture?.id !== "string" || typeof capture.status !== "string" || !CAPTURE_STATUSES.has(capture.status) || typeof amount?.value !== "string" || typeof amount.currency_code !== "string") throw new PayPalProviderError("invalid_response", "PayPal capture response invalid");
+    if (body.id !== orderId || !nonEmptyString(body.id) || typeof body.status !== "string" || !ORDER_STATUSES.has(body.status) || !nonEmptyString(capture?.id) || typeof capture.status !== "string" || !CAPTURE_STATUSES.has(capture.status) || typeof amount?.value !== "string" || typeof amount.currency_code !== "string") throw new PayPalProviderError("invalid_response", "PayPal capture response invalid");
     const source = body.payment_source as Json | undefined;
     return { orderId, captureId: capture.id, status: capture.status, amount: { value: amount.value, currency: amount.currency_code }, fundingSource: fundingSource(source) };
   }
@@ -158,7 +162,7 @@ export class PayPalProvider implements PaymentProvider {
     const returned = body.amount as Json | undefined;
     const status = typeof body.status === "string" ? body.status : undefined;
     const recognizedStatuses = new Set(["COMPLETED", "PENDING", "FAILED", "CANCELLED"]);
-    if (typeof body.id !== "string" || !status || !recognizedStatuses.has(status)) throw new PayPalProviderError("invalid_response", "PayPal refund response invalid");
+    if (!nonEmptyString(body.id) || !status || !recognizedStatuses.has(status)) throw new PayPalProviderError("invalid_response", "PayPal refund response invalid");
     if (returned !== undefined && (typeof returned !== "object" || returned === null || Array.isArray(returned))) throw new PayPalProviderError("invalid_response", "PayPal refund response invalid");
     // PayPal may honor Prefer: return=representation by returning amount, but a
     // valid minimal success response is allowed to omit it. The requested amount

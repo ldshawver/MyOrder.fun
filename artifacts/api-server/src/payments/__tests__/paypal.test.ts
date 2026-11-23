@@ -66,6 +66,16 @@ describe("PayPal provider", () => {
     expect(fetcher.mock.calls[1][1].body).toContain('"webhook_id":"webhook"');
   });
   it("rejects invalid provider responses", async () => { const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "bad" })); await expect(new PayPalProvider(config, fetcher as typeof fetch).getOrder("bad")).rejects.toMatchObject({ failureClass: "invalid_response" }); });
+  it("rejects blank provider resource identities", async () => {
+    const createFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: " ", status: "CREATED", purchase_units: [{ reference_id: "7", amount: { value: "10.80", currency_code: "USD" } }] }));
+    await expect(new PayPalProvider(config, createFetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).rejects.toMatchObject({ failureClass: "invalid_response" });
+
+    const captureFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "COMPLETED", purchase_units: [{ payments: { captures: [{ id: " ", status: "COMPLETED", amount: { value: "10.80", currency_code: "USD" } }] } }] }));
+    await expect(new PayPalProvider(config, captureFetcher as typeof fetch).captureOrder("ORDER1", "capture-key")).rejects.toMatchObject({ failureClass: "invalid_response" });
+
+    const refundFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: " ", status: "COMPLETED" }));
+    await expect(new PayPalProvider(config, refundFetcher as typeof fetch).refundCapture("CAP1", { value: "10.80", currency: "USD" }, "refund-key", "test")).rejects.toMatchObject({ failureClass: "invalid_response" });
+  });
   it("rejects read responses whose provider identity does not match the requested resource", async () => {
     const orderFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER2", status: "COMPLETED", purchase_units: [{ amount: { value: "10.80", currency_code: "USD" } }] }));
     await expect(new PayPalProvider(config, orderFetcher as typeof fetch).getOrder("ORDER1")).rejects.toMatchObject({ failureClass: "invalid_response" });

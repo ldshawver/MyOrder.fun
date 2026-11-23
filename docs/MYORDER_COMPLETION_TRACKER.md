@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal non-empty provider identity contract (2026-11-23)
+
+- Required represented OAuth tokens and PayPal order, capture, related-order, and refund identities to contain non-whitespace data before they can enter local persistence or reconciliation.
+- Blank provider identifiers now fail closed as invalid responses instead of becoming ambiguous durable keys or references.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox or live behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 36 tests passed, including rejection of blank order, capture, and refund identities.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the PayPal provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PayPal lifecycle-state contract (2026-11-23)
 
 - Restricted represented PayPal order and capture lifecycle values to the reviewed provider states before they can enter local payment or reconciliation logic.
