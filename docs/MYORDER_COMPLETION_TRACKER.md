@@ -118,8 +118,8 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: define the authoritative group/member model from product requirements, then bind conversion, quote, order, authorization, idempotency, and inventory decisions to that persisted scope. No group checkout schema or route contract exists on the refreshed baseline, so semantics must not be invented.
-2. PostgreSQL validation for durable checkout quotes: apply migration 0084 to an isolated disposable database and add tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
+1. Secure group-specific checkout: the owner has supplied the authoritative model in the supervised task prompt. Implement server-created groups from trusted product/provider, inventory-owner, origin/location, and eligible fulfillment-method data; bind conversion, quote, order, authorization, idempotency, inventory, immutable snapshots, and parent/child status derivation to that scope.
+2. PostgreSQL validation for durable checkout quotes: a dedicated disposable `myorder_agent_test` database is now provided through `DATABASE_URL` on the isolated `luxdev` cluster. Apply migration 0084 there and add tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage. This database is disposable and must never be confused with staging or production.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
 5. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
@@ -127,5 +127,4 @@ Evidence:
 ## External validation still open
 
 - PayPal/Uber credential-backed sandbox verification.
-- Isolated PostgreSQL runtime/concurrency verification for migration 0084 and checkout quote consumption.
-- Product-authoritative definition of “group-specific checkout” if it means a scope distinct from the existing tenant/customer model.
+- PayPal/CJ/Uber credential-backed sandbox verification remains external; synthetic contracts may continue without credentials.
