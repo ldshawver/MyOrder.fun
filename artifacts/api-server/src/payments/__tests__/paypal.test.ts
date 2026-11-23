@@ -77,6 +77,16 @@ describe("PayPal provider", () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER2", status: "COMPLETED", purchase_units: [{ payments: { captures: [{ id: "CAP1", status: "COMPLETED", amount: { value: "10.80", currency_code: "USD" } }] } }] }));
     await expect(new PayPalProvider(config, fetcher as typeof fetch).captureOrder("ORDER1", "capture-key")).rejects.toMatchObject({ failureClass: "invalid_response" });
   });
+  it("rejects unknown order and capture lifecycle states", async () => {
+    const createFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "SURPRISE", purchase_units: [{ reference_id: "7", amount: { value: "10.80", currency_code: "USD" } }] }));
+    await expect(new PayPalProvider(config, createFetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).rejects.toMatchObject({ failureClass: "invalid_response" });
+
+    const captureFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "COMPLETED", purchase_units: [{ payments: { captures: [{ id: "CAP1", status: "SURPRISE", amount: { value: "10.80", currency_code: "USD" } }] } }] }));
+    await expect(new PayPalProvider(config, captureFetcher as typeof fetch).captureOrder("ORDER1", "capture-key")).rejects.toMatchObject({ failureClass: "invalid_response" });
+
+    const lookupFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "CAP1", status: "SURPRISE", amount: { value: "10.80", currency_code: "USD" }, supplementary_data: { related_ids: { order_id: "ORDER1" } } }));
+    await expect(new PayPalProvider(config, lookupFetcher as typeof fetch).getCapture("CAP1")).rejects.toMatchObject({ failureClass: "invalid_response" });
+  });
   it("classifies provider declines", async () => { const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({}, 422)); await expect(new PayPalProvider(config, fetcher as typeof fetch).captureOrder("ORDER1", "key")).rejects.toMatchObject({ failureClass: "declined" }); });
   it("treats a transport failure after sending a mutation as an unknown outcome", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockRejectedValueOnce(new TypeError("connection reset"));

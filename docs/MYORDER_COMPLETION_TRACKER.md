@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal lifecycle-state contract (2026-11-23)
+
+- Restricted represented PayPal order and capture lifecycle values to the reviewed provider states before they can enter local payment or reconciliation logic.
+- Unknown create, capture, embedded-capture, and capture-lookup states now fail closed as invalid provider responses instead of being propagated as authoritative provider state.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox or live behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 35 tests passed, including rejection of unknown order and capture lifecycle states.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the PayPal provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PayPal singular financial representation binding (2026-11-23)
 
 - Required create, order-lookup, and capture responses to represent exactly one purchase unit, matching the single server-authored purchase unit.
