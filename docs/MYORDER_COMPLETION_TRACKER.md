@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Carrier adapter synthetic response contract (2026-11-23)
+
+- Added a strict boundary for synthetic or sandbox Lucifer Direct carrier adapter responses before they can become durable checkout quote authority.
+- Provider responses may supply only quote/service identity, fee, currency, expiry, and optional delivery estimate; the trusted server request context remains authoritative for the cart fingerprint and normalized destination snapshot.
+- Rejected malformed or expanded payloads, negative/non-integer fees, invalid currency, unsafe configured provider identifiers, invalid destinations, expired quotes, and past delivery estimates.
+- This increment validates the adapter response contract only. It does not call a carrier, persist a rate, bind checkout to a carrier quote, or claim credential-backed behavior.
+
+Evidence:
+
+- Focused Vitest: `carrierQuoteAdapter` — 1 file, 7 tests passed, covering accepted normalization and malformed, expanded, expired, and authority-crossing responses.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the adapter and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Durable Lucifer Direct carrier quote authority foundation (2026-11-23)
 
 - Added forward-only migration `0086_carrier_quotes.sql` and matching Drizzle schema for opaque carrier rates created only by a future trusted server adapter.
@@ -177,7 +191,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, and cash restrictions are implemented. Durable carrier quote authority now exists; next bind only eligible Lucifer Direct carrier groups to records produced by a reviewed carrier adapter/mock contract, then derive parent status from child groups and restrict staff/provider transitions by group ownership.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, and cash restrictions are implemented. Durable carrier quote authority and a reviewed synthetic adapter response contract now exist; next add the configured adapter invocation/persistence path and bind only eligible Lucifer Direct carrier groups to those records, then derive parent status from child groups and restrict staff/provider transitions by group ownership.
 2. PostgreSQL validation for durable checkout quotes: `DATABASE_URL` resolves to the correctly named `myorder_agent_test`, but the refreshed target is an empty PostgreSQL 17 database without `users`, `tenants`, or `orders`, rather than the documented disposable migrated baseline. Migration 0084 therefore was not applied. Provision the repository baseline on this disposable database before adding tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
