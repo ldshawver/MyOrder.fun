@@ -7,10 +7,13 @@ import { assertWooHttpsOrigin } from "../lib/wooSafeHttp";
 import { logger } from "../lib/logger";
 import { isWooCommerceExternalIntegrationEnabled, wooCommerceDisabledResponse } from "../lib/wooExternalPolicy";
 import { reconcileWooWebhookProduct } from "./woocommerce";
+import { parseCjProviderEvent } from "../lib/cjFulfillmentEvents";
+import { CjFulfillmentEventError, processAuthenticatedCjFulfillmentEvent } from "../lib/cjFulfillmentEventProcessor";
 
 const router = Router();
 const MAX_BODY_BYTES = 1024 * 1024;
 const SUPPORTED_TOPICS = new Set(["product.created", "product.updated", "product.deleted"]);
+const CJ_ORDER_TOPIC = "order.updated";
 
 type WooTenantSecret = { tenantId: number; storeUrl: string; secretCiphertext: string | null };
 type EventRow = { id: string; status: "processing" | "processed" | "failed"; payload_sha256: string };
@@ -78,12 +81,12 @@ router.post("/webhooks/woocommerce", async (req, res): Promise<void> => {
     let event: unknown;
     try { event = JSON.parse(req.body.toString("utf8")); }
     catch { reject(res, "signed_body_invalid_json", 400); return; }
-    const eventData = event && typeof event === "object" ? event as { id?: unknown; parent_id?: unknown } : null;
+    const eventData = event && typeof event === "object" ? event as { id?: unknown; parent_id?: unknown; status?: unknown; date_modified_gmt?: unknown } : null;
     const productId = String(eventData?.id ?? "");
     const parentWooProductId = eventData?.parent_id == null ? undefined : String(eventData.parent_id);
-    if (!/^[1-9][0-9]{0,19}$/.test(productId)) { reject(res, "product_identity_invalid", 400); return; }
-    if (parentWooProductId !== undefined && !/^[1-9][0-9]{0,19}$/.test(parentWooProductId)) { reject(res, "parent_product_identity_invalid", 400); return; }
-    if (!SUPPORTED_TOPICS.has(topic)) {
+    if (!/^[1-9][0-9]{0,19}$/.test(productId)) { reject(res, topic === CJ_ORDER_TOPIC ? "order_identity_invalid" : "product_identity_invalid", 400); return; }
+    if (topic !== CJ_ORDER_TOPIC && parentWooProductId !== undefined && !/^[1-9][0-9]{0,19}$/.test(parentWooProductId)) { reject(res, "parent_product_identity_invalid", 400); return; }
+    if (!SUPPORTED_TOPICS.has(topic) && topic !== CJ_ORDER_TOPIC) {
       // The sender may have unrelated webhook topics enabled. A validly signed
       // event is acknowledged without attempting an unsupported mutation.
       res.status(200).json({ ok: true, ignored: true });
@@ -92,6 +95,24 @@ router.post("/webhooks/woocommerce", async (req, res): Promise<void> => {
 
     const payloadHash = createHash("sha256").update(req.body).digest("hex");
     const tenantId = matches[0]!.tenantId;
+    if (topic === CJ_ORDER_TOPIC) {
+      try {
+        const cjEvent = parseCjProviderEvent({
+          eventId: deliveryId,
+          eventType: topic,
+          providerOrderId: productId,
+          status: eventData?.status,
+          ...(typeof eventData?.date_modified_gmt === "string" ? { occurredAt: `${eventData.date_modified_gmt}Z` } : {}),
+        });
+        const result = await processAuthenticatedCjFulfillmentEvent({ tenantId, event: cjEvent, payloadSha256: payloadHash });
+        res.status(200).json({ ok: true, duplicate: result.replayed, reconciliationRequired: result.reconciliationRequired });
+      } catch (error) {
+        if (error instanceof CjFulfillmentEventError && error.code === "EVENT_PAYLOAD_MISMATCH") { reject(res, "delivery_id_payload_mismatch", 409); return; }
+        if (error instanceof CjFulfillmentEventError && error.code === "FULFILLMENT_NOT_FOUND") { reject(res, "fulfillment_identity_unmapped", 503); return; }
+        reject(res, "order_event_processing_failed", 503);
+      }
+      return;
+    }
     const claimed = rows<EventRow>(await db.execute(sql`INSERT INTO woocommerce_webhook_events
       (tenant_id, delivery_id, topic, product_id, payload_sha256, status, attempt_count, updated_at)
       VALUES (${tenantId}, ${deliveryId}, ${topic}, ${productId}, ${payloadHash}, 'processing', 1, now())

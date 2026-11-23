@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Authenticated replay-safe CJ/Woo fulfillment events (2026-11-23)
+
+- Extended the existing tenant-specific Woo HMAC boundary to accept signed `order.updated` events for mapped CJ fulfillment identities. Tenant scope comes only from the uniquely matched encrypted server configuration; event payloads cannot supply tenant, group, or parent-order authority.
+- Added one transaction that locks the tenant/provider fulfillment identity, claims the payload-hashed event inbox, rejects event-ID payload mismatches, applies the forward-only CJ transition policy, updates only a CJ-owned group, derives the parent from every child group, and marks the event processed.
+- Exact authenticated replays are idempotently acknowledged. Stale, regressive, conflicting terminal, hold, and failure states move the durable fulfillment/group/parent path to reconciliation rather than fabricating progress.
+- Unmapped provider identities fail for retry and are never attached by payload data. Provider polling reconciliation and credential-backed CJ/Woo sandbox validation remain open; this is synthetic contract validation only.
+
+Evidence:
+
+- Focused Vitest: `cjFulfillmentEvents` and `cjFulfillmentEventProcessor` — 2 files, 6 tests passed, covering strict event authority, forward-only decisions, tenant signature routing, row locking, payload-hash replay checks, CJ-only group mutation, parent derivation, and atomic processed state.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the processor, signed webhook route, and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### CJ provider event transition policy (2026-11-23)
 
 - Added a strict, bounded CJ event payload contract that accepts only provider event identity, type, order identity, status, and an optional offset-aware provider timestamp. Tenant and fulfillment authority cannot be supplied in the event payload.
@@ -276,7 +290,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, and staff transition ownership are implemented. Durable CJ provider identity/event-inbox storage and a strict forward-only transition policy are implemented; next add authenticated event ingestion, transactional inbox/group/parent updates, and reconciliation without permitting staff impersonation.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, and authenticated replay-safe CJ/Woo event application are implemented. Next add bounded provider polling reconciliation without permitting staff impersonation.
 2. PostgreSQL validation for durable checkout quotes: the owner reports that `DATABASE_URL` now targets the provisioned disposable PostgreSQL 17 `luxdev` baseline. Refresh and verify that target in the next database increment, then add tenant/customer cross-scope, expiry, rollback, locking, idempotency, and concurrent double-consumption coverage. Do not treat the disposable database's absent historical migration ledger as production migration evidence.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
