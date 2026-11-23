@@ -371,6 +371,11 @@ describe("automatic and reprint receipts share one path (source contract)", () =
     expect(receiptBranch).toContain("renderAutomaticReceipt(tenantId, order.id, printOrder, columns)");
     expect(receiptBranch).toContain('documentType: "ORDER_RECEIPT"');
     expect(receiptBranch).toContain('loadReceiptData(tenantId, order.id, "alavont_only")');
+    expect(receiptBranch).toContain('documentType: "EXPO"');
+    expect(receiptBranch).toContain('jobType: "expo_ticket"');
+    expect(receiptBranch).not.toContain('documentType: "WORK"');
+    expect(receiptBranch).not.toContain('jobType: "order_ticket"');
+    expect(receiptBranch).not.toContain("buildWorkTicket");
     expect(receiptBranch).not.toContain("renderCustomerReceipt(printOrder)");
   });
 

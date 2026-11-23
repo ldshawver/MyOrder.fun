@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Expo readability and affected-workflow-only printing (2026-11-23)
+
+- Increased every operational Expo ticket text line to the thermal printer's double-height mode while retaining normal character width for item-name capacity; the order number remains double-width and double-height.
+- Automatic order placement now queues the customer receipt (when authorized by the existing controls) and the affected order's Expo ticket only. It no longer creates the separate work/preparation ticket for that event.
+- Preserved the explicit work-ticket document builder/catalogue for other authorized workflows, and did not change customer receipts, cash-closeout documents, labels, shift documents, or other document types.
+- Preserved Alavont-only staff-ticket product identity and existing tenant, location, shift, routing, and idempotency behavior.
+
+Evidence:
+
+- Focused Vitest: `printDocuments` and `receipt-templates-routes` — 2 files, 35 tests passed. The render regression asserts all Expo operational text is `tall`/`large`, the encoded ESC/POS output contains double-height and double-size commands, both 50mm and 80mm layouts remain width-safe, and the automatic-order source contract includes Expo but excludes work/prep tickets.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the changed print implementation and tests with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Durable tenant/customer-scoped checkout quotes (2026-11-23)
 
 - Added forward-only migration `0084_durable_checkout_quotes.sql` and Drizzle schema for opaque, expiring checkout quote records.
@@ -44,9 +58,7 @@ Evidence:
 2. PostgreSQL validation for durable checkout quotes: apply migration 0084 to an isolated disposable database and add tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
 3. Provider sandbox/mock contracts: add reviewed mock/sandbox contracts for payment and delivery behavior; do not mark credential-dependent PayPal or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior.
-5. Expo ticket readability: increase the Expo ticket font size, verify the rendered layout, and add regression coverage.
-6. Expo-only workflow printing: generate/print the Expo ticket for the affected workflow, not the separate work/prep ticket; preserve customer receipts, closeout documents, labels, and unrelated authorized document types.
-7. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
+5. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
 
 ## External validation still open
 

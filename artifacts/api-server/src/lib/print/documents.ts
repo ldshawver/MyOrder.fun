@@ -120,26 +120,25 @@ export function buildDepositSlip(data: DepositSlipData): ReceiptLine[] {
   ];
 }
 
-function orderHeader(data: ReceiptData, title: string): ReceiptLine[] {
-  return [
-    center(title, true),
-    center(`#${data.order.number}`, true, "large"),
-    ...(data.order.fulfillment ? [center(data.order.fulfillment.toUpperCase(), true, "tall")] : []),
-    center(when(data.order.placedAt, data.order.timezone)),
-    ...(data.customer.safeName ? [center(data.customer.safeName)] : []),
-    rule("double"),
-  ];
-}
-
 /** Expo: fast to read at the pass. Order number, fulfilment, items, notes. No prices. */
 export function buildExpoTicket(data: ReceiptData): ReceiptLine[] {
-  const lines = orderHeader(data, "EXPO");
+  // Expo is read at a distance in a fast-moving workflow. Keep normal-width
+  // columns for product-name capacity, but use the printer's double-height
+  // mode for every operational text line (the order number remains large).
+  const lines: ReceiptLine[] = [
+    center("EXPO", true, "tall"),
+    center(`#${data.order.number}`, true, "large"),
+    ...(data.order.fulfillment ? [center(data.order.fulfillment.toUpperCase(), true, "tall")] : []),
+    center(when(data.order.placedAt, data.order.timezone), false, "tall"),
+    ...(data.customer.safeName ? [center(data.customer.safeName, false, "tall")] : []),
+    rule("double"),
+  ];
   for (const item of data.items) {
     lines.push({ kind: "text", text: `${item.quantity} x ${item.displayName}`, align: "left", bold: true, size: "tall" });
-    if (item.optionLabel) lines.push({ kind: "text", text: item.optionLabel, align: "left", bold: false, size: "normal", indent: 4 });
-    if (item.note) lines.push({ kind: "text", text: `* ${item.note}`, align: "left", bold: false, size: "normal", indent: 4 });
+    if (item.optionLabel) lines.push({ kind: "text", text: item.optionLabel, align: "left", bold: false, size: "tall", indent: 4 });
+    if (item.note) lines.push({ kind: "text", text: `* ${item.note}`, align: "left", bold: false, size: "tall", indent: 4 });
   }
-  if (data.order.note) lines.push(rule("dashed"), left(`NOTE: ${data.order.note}`, true));
+  if (data.order.note) lines.push(rule("dashed"), { kind: "text", text: clean(`NOTE: ${data.order.note}`, 200), align: "left", bold: true, size: "tall" });
   lines.push(rule("double"), feed(2));
   return lines;
 }
