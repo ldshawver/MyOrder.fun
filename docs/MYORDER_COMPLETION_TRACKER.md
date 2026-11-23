@@ -6,6 +6,21 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Staff fulfillment-group authority and derived parent lifecycle (2026-11-23)
+
+- Added a tenant/order/group-scoped staff transition path for server-created fulfillment groups. It row-locks the target group, applies the canonical lifecycle graph, derives the parent lifecycle from every child group, and persists the group and parent changes atomically.
+- Staff may transition only Alavont and Lucifer Direct groups. CJ remains provider-managed, and the staff path fails closed rather than impersonating a CJ provider event.
+- CSR transitions retain assigned active ready-shift authorization. Group completion retains payment-close and Uber-delivery completion gates; paid group cancellation remains restricted to the supported refund workflow.
+- Group changes write a dedicated actor audit record and publish the derived parent update. Legacy parent fulfillment endpoints now reject grouped orders so child state cannot be bypassed.
+- Provider-authenticated CJ event ingestion, event idempotency, and reconciliation remain open; this increment does not claim provider event behavior.
+
+Evidence:
+
+- Focused Vitest: `fulfillmentGroupLifecycle` — 1 file, 11 tests passed, covering provider ownership, legal transitions, mixed child-state parent derivation, tenant-scoped locking, audit, and legacy parent-mutation rejection source contracts.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the lifecycle policy, route, and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Atomic Lucifer Direct carrier quote checkout binding (2026-11-23)
 
 - Checkout quote creation now accepts an opaque carrier quote only for the server-derived Lucifer Direct group and revalidates tenant, customer, active lifecycle, expiry, trusted group cart fingerprint, and normalized destination address before including its fee in server totals.
@@ -233,7 +248,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, and authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption are implemented. Next derive parent status from child groups and restrict staff/provider transitions by group ownership.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, and staff transition ownership are implemented. Next add authenticated, idempotent CJ provider events and reconciliation without permitting staff impersonation.
 2. PostgreSQL validation for durable checkout quotes: `DATABASE_URL` resolves to the correctly named `myorder_agent_test`, but the refreshed target is an empty PostgreSQL 17 database without `users`, `tenants`, or `orders`, rather than the documented disposable migrated baseline. Migration 0084 therefore was not applied. Provision the repository baseline on this disposable database before adding tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.

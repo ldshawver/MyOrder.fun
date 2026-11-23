@@ -81,6 +81,11 @@ import { checkoutPaymentMethods } from "../payments/checkoutMethods";
 import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
 import { checkoutGroupsAllowCash, luciferDirectCarrierLines, planCheckoutFulfillmentGroups, snapshotCheckoutFulfillmentGroups } from "../lib/checkoutFulfillmentGroups";
 import { createDurableCarrierQuote, requireConfiguredCarrierQuoteAdapter } from "../lib/carrierQuoteAdapter";
+import {
+  assertStaffMayTransitionFulfillmentGroup,
+  deriveParentFulfillmentStatus,
+  transitionFulfillmentGroupStatus,
+} from "../lib/fulfillmentGroupLifecycle";
 
 import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
@@ -3236,6 +3241,14 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
+  const [groupedOrder] = await db.select({ id: orderFulfillmentGroupsTable.id }).from(orderFulfillmentGroupsTable).where(and(
+    eq(orderFulfillmentGroupsTable.tenantId, req.authorizedTenantId!),
+    eq(orderFulfillmentGroupsTable.orderId, orderId),
+  )).limit(1);
+  if (groupedOrder) {
+    res.status(409).json({ error: "Grouped orders must be advanced through a fulfillment group" }); return;
+  }
+
   const role = normalizeRole(actor.role);
   const tenantId = req.authorizedTenantId!;
   if (order.tenantId !== tenantId) { res.status(404).json({ error: "Not found" }); return; }
@@ -3325,6 +3338,81 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
 router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res); });
 router.post("/orders/:id/prepare", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res, "preparing"); });
 router.post("/orders/:id/ready", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res, "ready"); });
+
+const FulfillmentGroupStatusBody = z.object({
+  status: z.enum(["in_progress", "preparing", "ready", "completed", "cancelled"]),
+  reason: z.string().trim().min(1).max(500).optional(),
+}).strict().superRefine((body, ctx) => {
+  if (body.status === "cancelled" && !body.reason) ctx.addIssue({ code: "custom", path: ["reason"], message: "Cancellation reason is required" });
+});
+
+router.patch("/orders/:id/fulfillment-groups/:groupId/status", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
+  const orderId = Number(req.params.id);
+  const groupId = Number(req.params.groupId);
+  const parsed = FulfillmentGroupStatusBody.safeParse(req.body);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0 || !Number.isSafeInteger(groupId) || groupId <= 0 || !parsed.success) {
+    res.status(400).json({ error: parsed.success ? "Invalid order or group id" : parsed.error.issues[0]?.message }); return;
+  }
+  const tenantId = req.authorizedTenantId!;
+  const actor = req.dbUser!;
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  if (normalizeRole(actor.role) === "csr") {
+    const [shift] = await db.select().from(labTechShiftsTable).where(and(
+      eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.techId, actor.id),
+      eq(labTechShiftsTable.status, "active"), eq(labTechShiftsTable.id, order.assignedShiftId ?? -1),
+    )).limit(1);
+    if (!shift || !isShiftOrderRoutable(shift) || order.assignedCsrUserId !== actor.id) {
+      res.status(403).json({ error: "CSR must have the assigned active ready shift to update fulfillment" }); return;
+    }
+  }
+  if (parsed.data.status === "completed" && !await paymentReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Order must be fully paid or closed out before a group can be completed" }); return;
+  }
+  if (parsed.data.status === "completed" && !await uberDeliveryReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Courier delivery must be confirmed delivered before a group can be completed" }); return;
+  }
+  if (parsed.data.status === "cancelled" && order.paymentStatus === "paid") {
+    res.status(409).json({ error: "Paid groups require the supported refund workflow before cancellation" }); return;
+  }
+
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [group] = await tx.select().from(orderFulfillmentGroupsTable).where(and(
+        eq(orderFulfillmentGroupsTable.tenantId, tenantId),
+        eq(orderFulfillmentGroupsTable.orderId, orderId),
+        eq(orderFulfillmentGroupsTable.id, groupId),
+      )).for("update").limit(1);
+      if (!group) return null;
+      assertStaffMayTransitionFulfillmentGroup(group.provider);
+      const transition = transitionFulfillmentGroupStatus(group.status, parsed.data.status);
+      if (transition.changed) await tx.update(orderFulfillmentGroupsTable).set({ status: transition.to, updatedAt: new Date() }).where(and(
+        eq(orderFulfillmentGroupsTable.tenantId, tenantId), eq(orderFulfillmentGroupsTable.orderId, orderId), eq(orderFulfillmentGroupsTable.id, groupId),
+      ));
+      const groups = await tx.select({ status: orderFulfillmentGroupsTable.status }).from(orderFulfillmentGroupsTable).where(and(
+        eq(orderFulfillmentGroupsTable.tenantId, tenantId), eq(orderFulfillmentGroupsTable.orderId, orderId),
+      ));
+      const parentStatus = deriveParentFulfillmentStatus(groups.map((row) => row.status as OrderLifecycleState));
+      const [updatedOrder] = await tx.update(ordersTable).set({ status: parentStatus, fulfillmentStatus: parentStatus, updatedAt: new Date() }).where(and(
+        eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId),
+      )).returning();
+      await tx.insert(auditLogsTable).values({
+        actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
+        action: "UPDATE_FULFILLMENT_GROUP_STATUS", tenantId,
+        resourceType: "order_fulfillment_group", resourceId: String(groupId),
+        metadata: { orderId, status: transition.to, parentStatus, reason: parsed.data.reason }, ipAddress: req.ip,
+      });
+      return { groupStatus: transition.to, parentStatus, idempotent: !transition.changed, updatedOrder };
+    });
+    if (!result) { res.status(404).json({ error: "Fulfillment group not found" }); return; }
+    emitUpdated(result.updatedOrder, "fulfillment_group_changed");
+    res.json({ id: groupId, orderId, status: result.groupStatus, parentStatus: result.parentStatus, idempotent: result.idempotent });
+  } catch (error) {
+    if (error instanceof IllegalOrderTransitionError) { res.status(409).json({ error: error.message, from: error.from, to: error.to }); return; }
+    if (error instanceof Error && error.message.includes("provider-managed")) { res.status(403).json({ error: error.message }); return; }
+    throw error;
+  }
+});
 
 // POST /api/orders/:id/purge — purge order data (admin only)
 router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
