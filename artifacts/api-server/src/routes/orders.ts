@@ -78,7 +78,7 @@ import { deductPaidOrderInventory } from "../payments/inventory";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { checkoutPaymentMethods } from "../payments/checkoutMethods";
 import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
-import { checkoutGroupsAllowCash, planCheckoutFulfillmentGroups } from "../lib/checkoutFulfillmentGroups";
+import { checkoutGroupsAllowCash, planCheckoutFulfillmentGroups, snapshotCheckoutFulfillmentGroups } from "../lib/checkoutFulfillmentGroups";
 
 import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
@@ -509,6 +509,7 @@ const CheckoutQuoteBody = z.object({
   deliveryQuoteId: z.string().min(1).optional(),
   pickupLocationId: z.number().int().positive().optional(),
   pickupAt: z.string().datetime().optional(),
+  shippingAddress: z.string().trim().min(8).max(1000).optional(),
 }).strict();
 
 async function activeShiftDeliveryMode(tenantId: number) {
@@ -716,6 +717,11 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const deliveryResolution = resolveCustomerFulfillment(parsed.data.deliveryMethod, await activeShiftDeliveryMode(tenantId));
     if ("error" in deliveryResolution) { res.status(422).json({ error: deliveryResolution.error }); return; }
     const deliveryMethod = deliveryResolution.method;
+    const fulfillmentGroupPlans = planCheckoutFulfillmentGroups(lines, deliveryMethod);
+    const hasShippingGroup = fulfillmentGroupPlans.some(group => group.method === "standard_shipping");
+    if (tender === "cash" && !checkoutGroupsAllowCash(fulfillmentGroupPlans)) {
+      res.status(422).json({ error: "CASH_UNAVAILABLE_FOR_SHIPPING" }); return;
+    }
     const { targetLocationId } = await resolveCheckoutRouting(tenantId);
     let pickup: { locationId: number; pickupAt: string; mode: "immediate" | "scheduled"; timeZone: string } | null = null;
     let checkoutLocationId = targetLocationId;
@@ -728,6 +734,16 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     } else if (parsed.data.pickupLocationId != null || parsed.data.pickupAt != null) {
       res.status(422).json({ error: "PICKUP_SELECTION_NOT_ALLOWED" }); return;
     }
+    if (deliveryMethod === "pickup" && !hasShippingGroup && parsed.data.shippingAddress) {
+      res.status(422).json({ error: "PICKUP_ADDRESS_NOT_ALLOWED" }); return;
+    }
+    if ((deliveryMethod !== "pickup" || hasShippingGroup) && !parsed.data.shippingAddress) {
+      res.status(422).json({ error: "DELIVERY_ADDRESS_REQUIRED" }); return;
+    }
+    const fulfillmentGroups = snapshotCheckoutFulfillmentGroups(fulfillmentGroupPlans, {
+      pickup: pickup ? { locationId: pickup.locationId, pickupAt: pickup.pickupAt } : null,
+      shippingAddress: parsed.data.shippingAddress,
+    });
     const taxSettings = await getCheckoutTaxSettings(tenantId, checkoutLocationId ?? undefined);
     const cashDiscount = { enabled: Boolean(settings?.cashDiscountEnabled), type: settings?.cashDiscountType === "fixed" ? "fixed" as const : "percentage" as const, value: Number(settings?.cashDiscountValue ?? 0) };
     const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings.taxRate, taxMode: "added", taxJurisdiction: taxSettings.taxJurisdiction, taxConfigurationId: taxSettings.taxConfigurationId, tender, cashDiscount });
@@ -774,10 +790,11 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
         deliveryMethod,
         deliveryQuoteId: parsed.data.deliveryQuoteId ?? null,
         pickupAt: pickup?.pickupAt ?? null,
+        fulfillmentGroups,
       },
       expiresAt: new Date(Date.now() + CHECKOUT_TAX_QUOTE_TTL_MS),
     });
-    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, pickup, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
+    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, pickup, fulfillmentGroups, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
   } catch (error) {
     const pickupCode = error instanceof Error && error.message.startsWith("PICKUP_") ? error.message : null;
     const pickupMessage = pickupCode ? pickupSelectionErrorMessage(pickupCode) : null;
@@ -1157,8 +1174,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   )).limit(1) : [];
   const quoteSnapshot = trustedCheckoutQuote?.quoteSnapshot as {
     taxRate?: unknown; taxableBaseCents?: unknown; taxCents?: unknown; paymentMethod?: unknown;
-    deliveryMethod?: unknown; deliveryQuoteId?: unknown; pickupAt?: unknown;
+    deliveryMethod?: unknown; deliveryQuoteId?: unknown; pickupAt?: unknown; fulfillmentGroups?: unknown;
   } | undefined;
+  const quotedFulfillmentGroups = snapshotCheckoutFulfillmentGroups(fulfillmentGroupPlans, {
+    pickup: pickupSelection && pickupLocation ? { locationId: pickupLocation.id, pickupAt: pickupSelection.pickupAt.toISOString() } : null,
+    shippingAddress: body.data.shippingAddress,
+  });
   const quoteMatches = trustedCheckoutQuote
     && trustedCheckoutQuote.cartFingerprint === checkoutFingerprint(normalizedLines)
     && trustedCheckoutQuote.locationId === checkoutLocationId
@@ -1169,6 +1190,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     && quoteSnapshot?.paymentMethod === tender
     && quoteSnapshot?.deliveryMethod === requestedDeliveryMethod
     && quoteSnapshot?.deliveryQuoteId === ((body.data.deliveryQuote as { quoteId?: string } | null | undefined)?.quoteId ?? null)
+    && JSON.stringify(quoteSnapshot?.fulfillmentGroups) === JSON.stringify(quotedFulfillmentGroups)
     && (body.data.pickupAt == null || quoteSnapshot?.pickupAt === pickupSelection?.pickupAt.toISOString());
   if (!quoteMatches) {
     res.status(409).json({ error: "CHECKOUT_QUOTE_STALE" });

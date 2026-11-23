@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkoutGroupsAllowCash, planCheckoutFulfillmentGroups } from "../checkoutFulfillmentGroups";
+import { checkoutGroupsAllowCash, planCheckoutFulfillmentGroups, snapshotCheckoutFulfillmentGroups } from "../checkoutFulfillmentGroups";
 import type { NormalizedCartLine } from "../checkoutNormalizer";
 
 function line(overrides: Partial<NormalizedCartLine>): NormalizedCartLine {
@@ -34,5 +34,19 @@ describe("server-created checkout fulfillment groups", () => {
   it("preserves Alavont pickup cash eligibility and rejects courier cash", () => {
     expect(checkoutGroupsAllowCash(planCheckoutFulfillmentGroups([line({})], "pickup"))).toBe(true);
     expect(checkoutGroupsAllowCash(planCheckoutFulfillmentGroups([line({})], "uber_direct"))).toBe(false);
+  });
+
+  it("snapshots a distinct trusted destination for every server-created group", () => {
+    const groups = planCheckoutFulfillmentGroups([
+      line({}),
+      line({ source_type: "woo", woo_product_id: "cj-2" }),
+    ], "pickup");
+    expect(snapshotCheckoutFulfillmentGroups(groups, {
+      pickup: { locationId: 7, pickupAt: "2026-11-23T12:00:00.000Z" },
+      shippingAddress: "  123 Main St  ",
+    })).toEqual([
+      { key: "alavont:pickup", provider: "alavont", method: "pickup", destination: { type: "pickup", locationId: 7, pickupAt: "2026-11-23T12:00:00.000Z" } },
+      { key: "cj:standard_shipping", provider: "cj", method: "standard_shipping", destination: { type: "customer_address", address: "123 Main St" } },
+    ]);
   });
 });

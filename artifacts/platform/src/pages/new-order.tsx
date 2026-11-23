@@ -97,6 +97,7 @@ type CheckoutQuote = {
   tenderDue: number;
   checkoutTaxQuoteToken?: string;
   pickup?: { locationId: number; pickupAt: string; mode: "immediate" | "scheduled"; timeZone: string } | null;
+  fulfillmentGroups: Array<{ key: string; provider: "alavont" | "lucifer_direct" | "cj"; method: "pickup" | "uber_direct" | "csr_delivery" | "standard_shipping"; destination: { type: string; locationId?: number; pickupAt?: string; address?: string } }>;
 };
 type PickupLocationAvailability = { locationId: number; locationName: string; configured: boolean; timeZone: string | null; openNow: boolean; immediateAvailable: boolean; slots: Array<{ at: string; label: string }>; nextOpenAt: string | null; message: string; regularHours?: Array<{ dayOfWeek: number; day: string; hours: string }> };
 
@@ -532,6 +533,7 @@ export default function NewOrder() {
           tipAmount,
           deliveryMethod,
           ...(deliveryQuote ? { deliveryQuoteId: deliveryQuote.quoteId } : {}),
+          ...(shippingAddress.trim() ? { shippingAddress: shippingAddress.trim() } : {}),
           ...((deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && pickupLocationId ? { pickupLocationId } : {}),
           ...((deliveryMethod === "pickup" || deliveryMethod === "uber_direct") && pickupChoice && pickupChoice !== "immediate" ? { pickupAt: pickupChoice } : {}),
         }),
@@ -544,7 +546,7 @@ export default function NewOrder() {
       }).finally(() => { if (!cancelled) setIsQuotingCheckout(false); });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryBlocked, deliveryMethod, deliveryQuote, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected]);
+  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryBlocked, deliveryMethod, deliveryQuote, shippingAddress, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">

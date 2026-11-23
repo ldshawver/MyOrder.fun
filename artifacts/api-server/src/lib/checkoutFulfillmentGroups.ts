@@ -10,6 +10,17 @@ export interface CheckoutFulfillmentGroupPlan {
   lineIndexes: number[];
 }
 
+export type CheckoutFulfillmentDestination =
+  | { type: "pickup"; locationId: number; pickupAt: string }
+  | { type: "customer_address"; address: string };
+
+export interface CheckoutFulfillmentGroupChoice {
+  key: string;
+  provider: CheckoutFulfillmentProvider;
+  method: CheckoutFulfillmentMethod;
+  destination: CheckoutFulfillmentDestination;
+}
+
 /**
  * Derive checkout partitions exclusively from server-normalized catalog data.
  * CJ/Woo lines are always customer-free standard shipping; the selected local
@@ -35,4 +46,19 @@ export function planCheckoutFulfillmentGroups(
 
 export function checkoutGroupsAllowCash(groups: CheckoutFulfillmentGroupPlan[]): boolean {
   return groups.every(group => group.method === "pickup");
+}
+
+/** Build the immutable customer-visible choice bound into a checkout quote. */
+export function snapshotCheckoutFulfillmentGroups(
+  groups: CheckoutFulfillmentGroupPlan[],
+  input: { pickup: { locationId: number; pickupAt: string } | null; shippingAddress?: string | null },
+): CheckoutFulfillmentGroupChoice[] {
+  return groups.map(group => ({
+    key: group.key,
+    provider: group.provider,
+    method: group.method,
+    destination: group.method === "pickup"
+      ? { type: "pickup", locationId: input.pickup!.locationId, pickupAt: input.pickup!.pickupAt }
+      : { type: "customer_address", address: input.shippingAddress!.trim() },
+  }));
 }
