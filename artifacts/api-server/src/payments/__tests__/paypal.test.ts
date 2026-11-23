@@ -11,6 +11,20 @@ describe("PayPal provider", () => {
     const result = await new PayPalProvider(config, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 });
     expect(calls.every(call => call.url.startsWith(config.apiOrigin))).toBe(true); expect(calls[1].init?.body).toContain('"value":"10.80"'); expect(result.id).toBe("ORDER1");
   });
+  it.each([
+    "https://evil.example/checkoutnow?token=ORDER1",
+    "http://www.sandbox.paypal.com/checkoutnow?token=ORDER1",
+    "https://www.sandbox.paypal.com.evil.example/checkoutnow?token=ORDER1",
+    "not-a-url",
+  ])("rejects an untrusted approval redirect %s", async href => {
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "CREATED", purchase_units: [{ amount: { value: "10.80", currency_code: "USD" } }], links: [{ rel: "payer-action", href }] }));
+    await expect(new PayPalProvider(config, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).rejects.toMatchObject({ failureClass: "invalid_response" });
+  });
+  it("accepts only the configured live PayPal approval origin in live mode", async () => {
+    const liveConfig: EnabledPaymentConfig = { ...config, mode: "live", environment: "live", apiOrigin: "https://api-m.paypal.com" };
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "CREATED", purchase_units: [{ amount: { value: "10.80", currency_code: "USD" } }], links: [{ rel: "approve", href: "https://www.paypal.com/checkoutnow?token=ORDER1" }] }));
+    await expect(new PayPalProvider(liveConfig, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).resolves.toMatchObject({ approvalUrl: "https://www.paypal.com/checkoutnow?token=ORDER1" });
+  });
   it("uses PayPal-Request-Id for capture idempotency", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token", expires_in: 300 })).mockResolvedValueOnce(json({ purchase_units: [{ payments: { captures: [{ id: "CAP1", status: "COMPLETED", amount: { value: "10.80", currency_code: "USD" } }] } }] }));
     await new PayPalProvider(config, fetcher as typeof fetch).captureOrder("ORDER1", "capture-key"); expect((fetcher.mock.calls[1][1].headers as Record<string, string>)["PayPal-Request-Id"]).toBe("capture-key");

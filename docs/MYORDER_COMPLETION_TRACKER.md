@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal approval redirect origin boundary (2026-11-23)
+
+- Validated provider-supplied approval links before returning them to the browser. Sandbox orders may redirect only to the exact HTTPS `www.sandbox.paypal.com` origin, while live orders may redirect only to the exact HTTPS `www.paypal.com` origin.
+- Rejected malformed URLs, cleartext URLs, lookalike subdomains, and unrelated hosts as invalid provider responses; server-owned API origins, amounts, and existing payment idempotency behavior remain unchanged.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox or live behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 26 tests passed, including configured sandbox/live approval origins and rejection of malicious redirect variants.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the PayPal provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Bounded carrier adapter invocation (2026-11-23)
 
 - Added a 15-second deadline around the reviewed server-side carrier quote adapter and passed an abort signal into the adapter contract so stalled provider work can be cancelled.
@@ -361,7 +374,7 @@ Evidence:
 ## Priority queue
 
 1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Durable quote PostgreSQL isolation, expiry, rollback, locking, idempotency, and concurrent consumption are verified. Mixed-order PostgreSQL atomic rollback, tenant/order group isolation, line binding, and committed group persistence are verified. CJ event PostgreSQL tenant isolation, rollback, locking, concurrent replay claiming, and atomic reconciliation persistence are verified; continue remaining provider mock contracts before the release gate.
-2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation. Carrier quote responses, trusted persistence, fail-closed configuration, and bounded abortable invocation are verified synthetically; continue reviewed mock contracts for remaining payment behavior. Do not mark credential-dependent PayPal, CJ/Woo, Uber, or carrier validation complete without credentials.
+2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation. Carrier quote responses, trusted persistence, fail-closed configuration, and bounded abortable invocation are verified synthetically. PayPal response bounds and configured-environment approval redirect origins are verified synthetically; continue reviewed mock contracts for remaining payment behavior. Do not mark credential-dependent PayPal, CJ/Woo, Uber, or carrier validation complete without credentials.
 3. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
 4. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
 
