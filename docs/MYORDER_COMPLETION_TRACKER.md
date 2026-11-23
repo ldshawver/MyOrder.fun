@@ -6,6 +6,18 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Server-authoritative catalog amount writes (2026-11-23)
+
+- Applied one catalog amount policy to both admin create and update writes: base, comparison, regular, and employee prices must be greater than zero when supplied, while cost basis may be zero but not negative.
+- Preserved nullable optional amounts and existing Alavont catalog fields while preventing a client from persisting zero or negative selling prices through the update path.
+
+Evidence:
+
+- Focused Vitest: `catalogPricing` — 1 file, 7 tests passed, including create/update route enforcement and every governed amount boundary.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the changed catalog pricing implementation, route, and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PayPal bounded synthetic provider responses (2026-11-23)
 
 - Bounded OAuth and authenticated PayPal JSON responses to 1 MiB, rejecting declared or streamed oversize bodies before provider data is trusted.
