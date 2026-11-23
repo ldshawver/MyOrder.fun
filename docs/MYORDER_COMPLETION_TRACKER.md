@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PostgreSQL CJ event reconciliation isolation and idempotency (2026-11-23)
+
+- Added a disposable-database integration regression for durable CJ fulfillment events and verified the configured target is PostgreSQL 17.
+- Verified the database rejects an event bound to another tenant's fulfillment, transaction rollback removes the event and restores fulfillment/group/parent state, and a row lock blocks a competing fulfillment writer.
+- Verified two concurrent claims of one provider event identity produce exactly one durable event, then verified reconciliation-required provider, group, derived-parent, and processed-event state persists atomically.
+- The disposable target initially lacked the latest CJ tables, so forward-only `0087_cj_fulfillment_events.sql` was applied transactionally before the passing test. This validates that migration SQL and the provisioned runtime schema only; it does not claim a historical migration ledger, production migration, or credential-backed provider behavior.
+
+Evidence:
+
+- `pnpm --filter @workspace/db exec tsx --test scripts/cj-fulfillment-events-postgres.test.ts` — 1 PostgreSQL integration test passed against PostgreSQL 17.
+- `pnpm --filter @workspace/db exec tsc --noEmit` — passed.
+- `git diff --check` — passed.
+- Focused ESLint is unavailable for the standalone DB package because it has no ESLint dependency/configuration; the package TypeScript gate covers the added test.
+
 ### PostgreSQL mixed-order group atomicity and isolation (2026-11-23)
 
 - Added a disposable-database integration regression for server-created mixed-order persistence and verified the configured target is PostgreSQL 17.
@@ -333,7 +347,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Durable quote PostgreSQL isolation, expiry, rollback, locking, idempotency, and concurrent consumption are verified. Mixed-order PostgreSQL atomic rollback, tenant/order group isolation, line binding, and committed group persistence are verified; continue database coverage for provider-event reconciliation before the release gate.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Durable quote PostgreSQL isolation, expiry, rollback, locking, idempotency, and concurrent consumption are verified. Mixed-order PostgreSQL atomic rollback, tenant/order group isolation, line binding, and committed group persistence are verified. CJ event PostgreSQL tenant isolation, rollback, locking, concurrent replay claiming, and atomic reconciliation persistence are verified; continue remaining provider mock contracts before the release gate.
 2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 3. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
 4. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
