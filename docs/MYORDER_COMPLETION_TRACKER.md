@@ -6,6 +6,21 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Durable Lucifer Direct carrier quote authority foundation (2026-11-23)
+
+- Added forward-only migration `0086_carrier_quotes.sql` and matching Drizzle schema for opaque carrier rates created only by a future trusted server adapter.
+- Persisted tenant/customer scope, provider identity, immutable service and destination snapshots, cart fingerprint, fee, currency, expiry, and single-consumption state outside browser authority.
+- Constrained non-negative fees, three-letter lowercase currency, valid lifecycle state, provider-quote uniqueness within a tenant, and indexed active checkout lookup scope.
+- This increment does not create or validate carrier rates and does not claim any provider behavior. Checkout binding and a reviewed carrier adapter/mock contract remain open.
+
+Evidence:
+
+- Focused Vitest: `carrier-quotes-schema-static` — 1 file, 1 test passed, covering server-owned snapshots, tenant/customer lookup scope, expiry, uniqueness, and single-use lifecycle.
+- `pnpm run typecheck:libs` — passed.
+- Focused ESLint on the regression test with zero warnings — passed.
+- Migration ledger inventory/journal classification — passed: 92 SQL files, 61 executable entries, 31 historical/excluded. The validator then stopped at its optional database comparison because the configured database lacks the repository baseline tables; no migration application is claimed.
+- `git diff --check` — passed.
+
 ### Checkout quote binding for server-created fulfillment groups (2026-11-23)
 
 - Checkout quote creation now plans fulfillment groups from trusted normalized catalog fields before accepting tender, rejecting cash for any courier or shipping group rather than deferring that decision until order creation.
@@ -162,8 +177,8 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, and cash restrictions are implemented. Next add Lucifer Direct carrier quote persistence/eligibility, then derive parent status from child groups and restrict staff/provider transitions by group ownership.
-2. PostgreSQL validation for durable checkout quotes: a dedicated disposable `myorder_agent_test` database is now provided through `DATABASE_URL` on the isolated `luxdev` cluster. Apply migration 0084 there and add tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage. This database is disposable and must never be confused with staging or production.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, and cash restrictions are implemented. Durable carrier quote authority now exists; next bind only eligible Lucifer Direct carrier groups to records produced by a reviewed carrier adapter/mock contract, then derive parent status from child groups and restrict staff/provider transitions by group ownership.
+2. PostgreSQL validation for durable checkout quotes: `DATABASE_URL` resolves to the correctly named `myorder_agent_test`, but the refreshed target is an empty PostgreSQL 17 database without `users`, `tenants`, or `orders`, rather than the documented disposable migrated baseline. Migration 0084 therefore was not applied. Provision the repository baseline on this disposable database before adding tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
 5. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.

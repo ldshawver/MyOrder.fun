@@ -421,6 +421,13 @@
       "when": 1795417200000,
       "tag": "0085_order_fulfillment_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1795420800000,
+      "tag": "0086_carrier_quotes",
+      "breakpoints": true
     }
   ]
 }

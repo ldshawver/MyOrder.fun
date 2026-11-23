@@ -21,3 +21,4 @@ export * from "./nonCatalogInventory";
 export * from "./inventoryLedger";
 export * from "./pickupScheduling";
 export * from "./checkoutQuotes";
+export * from "./carrierQuotes";
