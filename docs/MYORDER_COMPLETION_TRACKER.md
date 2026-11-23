@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal OAuth token-lifetime contract (2026-11-23)
+
+- Required a represented OAuth token lifetime, when supplied, to be a positive bounded integer before the access token can enter the in-memory cache.
+- Zero, negative, fractional, non-finite, and excessive lifetimes now fail closed as invalid provider responses; the existing bounded fallback remains for valid minimal responses that omit the optional lifetime.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox or live behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 47 tests passed, including invalid represented OAuth lifetimes.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the PayPal provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PayPal represented-money shape contract (2026-11-23)
 
 - Required provider-represented order, capture, embedded-capture, and optional refund amounts to use a bounded non-negative decimal shape with at most two fractional digits and an uppercase three-letter currency code.

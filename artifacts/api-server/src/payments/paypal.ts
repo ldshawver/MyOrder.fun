@@ -104,7 +104,10 @@ export class PayPalProvider implements PaymentProvider {
     }
     if (!response.ok) throw new PayPalProviderError("provider_error", "PayPal authentication failed");
     const body = await boundedJson(response) as { access_token?: string; expires_in?: number };
-    if (!nonEmptyString(body.access_token)) throw new PayPalProviderError("invalid_response", "PayPal authentication response invalid");
+    if (!nonEmptyString(body.access_token)
+      || (body.expires_in !== undefined && (!Number.isInteger(body.expires_in) || body.expires_in <= 0 || body.expires_in > 86_400))) {
+      throw new PayPalProviderError("invalid_response", "PayPal authentication response invalid");
+    }
     this.accessToken = { value: body.access_token, expiresAt: Date.now() + Math.max(60, body.expires_in ?? 300) * 1000 };
     return body.access_token;
   }

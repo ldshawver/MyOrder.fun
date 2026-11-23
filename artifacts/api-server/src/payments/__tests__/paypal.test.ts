@@ -126,6 +126,10 @@ describe("PayPal provider", () => {
     const lookupFailure = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockRejectedValueOnce(new TypeError("connection reset"));
     await expect(new PayPalProvider(config, lookupFailure as typeof fetch).getOrder("ORDER1")).rejects.toMatchObject({ failureClass: "provider_error" });
   });
+  it.each([0, -1, 1.5, 86_401, Number.NaN])("rejects an invalid represented OAuth lifetime %s", async expiresIn => {
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token", expires_in: expiresIn }));
+    await expect(new PayPalProvider(config, fetcher as typeof fetch).testConnection()).rejects.toMatchObject({ failureClass: "invalid_response" });
+  });
   it("rejects oversized provider responses before parsing them", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(new Response("x", { headers: { "content-length": String(1024 * 1024 + 1) } }));
     await expect(new PayPalProvider(config, fetcher as typeof fetch).getOrder("ORDER1")).rejects.toMatchObject({ failureClass: "invalid_response" });
