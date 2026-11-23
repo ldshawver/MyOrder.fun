@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PostgreSQL durable checkout quote isolation and concurrency (2026-11-23)
+
+- Added a disposable-database integration regression for the durable checkout quote authority boundary and verified the configured target is PostgreSQL 17.
+- Verified tenant and customer cross-scope lookups fail closed, expired quotes cannot be selected, and a rolled-back consumption leaves the quote available.
+- Verified row locks block a competing writer and that two concurrent conditional consumers produce exactly one success. A later replay cannot consume the quote again.
+- The test creates uniquely named tenant/customer/quote fixtures and removes them in cleanup. This validates the provisioned `push-force` runtime schema only; it does not claim a historical migration ledger or production migration evidence.
+
+Evidence:
+
+- `pnpm --filter @workspace/db exec tsx --test scripts/checkout-quotes-postgres.test.ts` — 1 PostgreSQL integration test passed against PostgreSQL 17.
+- `pnpm --filter @workspace/db exec tsc --noEmit` — passed.
+- `git diff --check` — passed.
+- Focused ESLint was unavailable for the standalone DB package because it has no ESLint dependency/configuration; the package TypeScript gate covers the added test.
+
 ### Bounded tenant-scoped CJ polling reconciliation (2026-11-23)
 
 - Added a bounded server-only reconciliation service for pending or reconciliation-required CJ fulfillment identities. It selects at most 25 records from one trusted tenant scope and exposes no staff-authored status transition path.
@@ -305,11 +319,10 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Continue PostgreSQL concurrency and rollback validation before the release gate.
-2. PostgreSQL validation for durable checkout quotes: the owner reports that `DATABASE_URL` now targets the provisioned disposable PostgreSQL 17 `luxdev` baseline. Refresh and verify that target in the next database increment, then add tenant/customer cross-scope, expiry, rollback, locking, idempotency, and concurrent double-consumption coverage. Do not treat the disposable database's absent historical migration ledger as production migration evidence.
-3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
-4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
-5. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Durable quote PostgreSQL isolation, expiry, rollback, locking, idempotency, and concurrent consumption are verified; continue database coverage for grouped order atomicity and provider-event reconciliation before the release gate.
+2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
+3. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
+4. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
 
 ## External validation still open
 
