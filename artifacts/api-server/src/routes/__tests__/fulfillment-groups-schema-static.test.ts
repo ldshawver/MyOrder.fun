@@ -21,7 +21,7 @@ describe("mixed-cart fulfillment group persistence", () => {
     expect(migration).toContain('CHECK ("method" IN (\'pickup\', \'uber_direct\', \'csr_delivery\', \'carrier\', \'standard_shipping\'))');
     expect(migration).toContain('"fulfillment_group_id" integer');
     expect(migration).not.toContain('"fulfillment_group_id" integer NOT NULL');
-    expect(orderRoute).toContain("planCheckoutFulfillmentGroups(normalizedLines, requestedDeliveryMethod)");
+    expect(orderRoute).toContain('planCheckoutFulfillmentGroups(normalizedLines, requestedDeliveryMethod, usesCarrier ? "carrier" : requestedDeliveryMethod)');
     expect(orderRoute).toContain("tx.insert(orderFulfillmentGroupsTable)");
     expect(orderRoute).toContain("fulfillmentGroupId: groupIdByLineIndex.get(lineIndex)");
     expect(orderRoute).toContain('error: "CASH_UNAVAILABLE_FOR_SHIPPING"');

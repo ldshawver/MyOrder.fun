@@ -1256,8 +1256,15 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     taxRate?: unknown; taxableBaseCents?: unknown; taxCents?: unknown; paymentMethod?: unknown;
     deliveryMethod?: unknown; deliveryQuoteId?: unknown; carrierQuoteId?: unknown; pickupAt?: unknown; fulfillmentGroups?: unknown;
   } | undefined;
+  const quotedImmediatePickupAt = body.data.pickupAt == null && Array.isArray(quoteSnapshot?.fulfillmentGroups)
+    ? (quoteSnapshot.fulfillmentGroups as Array<{ destination?: { type?: unknown; pickupAt?: unknown } }>)
+      .find(group => group.destination?.type === "pickup")?.destination?.pickupAt
+    : null;
   const quotedFulfillmentGroups = snapshotCheckoutFulfillmentGroups(fulfillmentGroupPlans, {
-    pickup: pickupSelection && pickupLocation ? { locationId: pickupLocation.id, pickupAt: pickupSelection.pickupAt.toISOString() } : null,
+    pickup: pickupSelection && pickupLocation ? {
+      locationId: pickupLocation.id,
+      pickupAt: typeof quotedImmediatePickupAt === "string" ? quotedImmediatePickupAt : pickupSelection.pickupAt.toISOString(),
+    } : null,
     shippingAddress: body.data.shippingAddress,
   });
   const quoteMatches = trustedCheckoutQuote

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { getCatalogLifecycleStatus, lifecycleMetadataPatch } from "../catalog";
 
 describe("catalog lifecycle metadata", () => {
-  it("does not treat order availability or stock-indicator preference as lifecycle visibility", () => {
+  it("reports unavailable products as hidden regardless of stock-indicator preference", () => {
     expect(getCatalogLifecycleStatus({ isAvailable: false, alavontInStock: false, metadata: { showCatalogueStockIndicator: false } }))
-      .toBe("customer_visible");
+      .toBe("unavailable_hidden");
   });
 
   it("stores archive state at the canonical metadata root, preserves presentation/history, and is idempotent", () => {

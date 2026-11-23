@@ -27,9 +27,10 @@ const dbState: {
   taxSnapshots: Array<Record<string, unknown>>;
   uberQuotes: Array<Record<string, unknown>>;
   checkoutQuotes: Array<Record<string, unknown>>;
+  fulfillmentGroups: Array<Record<string, unknown>>;
   disclaimerAcceptances: Array<Record<string, unknown>>;
   auditLogs: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], pickupSchedules: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], checkoutQuotes: [], disclaimerAcceptances: [], auditLogs: [] };
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], pickupSchedules: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], checkoutQuotes: [], fulfillmentGroups: [], disclaimerAcceptances: [], auditLogs: [] };
 
 let mockActor: Record<string, unknown> = {};
 const reservationMocks = vi.hoisted(() => ({
@@ -220,6 +221,8 @@ vi.mock("@workspace/db", () => {
   const orderTaxSnapshotsTable = { __t: "order_tax_snapshots", id: "id", tenantId: "tenantId", orderId: "orderId" };
   const uberDeliveryQuotesTable = { __t: "uber_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
   const checkoutQuotesTable = { __t: "checkout_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
+  const orderFulfillmentGroupsTable = { __t: "fulfillment_groups", id: "id", tenantId: "tenantId", orderId: "orderId", status: "status" };
+  const carrierQuotesTable = { __t: "carrier_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
   const auditLogsTable = { __t: "audit_logs" };
   const orderItems: Array<Record<string, unknown>> = [];
 
@@ -240,6 +243,7 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "order_tax_snapshots") return dbState.taxSnapshots;
     if (t.__t === "uber_quotes") return dbState.uberQuotes;
     if (t.__t === "checkout_quotes") return dbState.checkoutQuotes;
+    if (t.__t === "fulfillment_groups") return dbState.fulfillmentGroups;
     if (t.__t === "audit_logs") return dbState.auditLogs;
     return [];
   }
@@ -359,7 +363,7 @@ vi.mock("@workspace/db", () => {
 
   return {
     db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve({ rows: [{ id: "test-event", version: 1 }] })) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, locationPickupSchedulesTable, inventoryBalancesTable, csrBoxesTable, generalQueueCashSessionsTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, checkoutQuotesTable, auditLogsTable,
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, locationPickupSchedulesTable, inventoryBalancesTable, csrBoxesTable, generalQueueCashSessionsTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, checkoutQuotesTable, orderFulfillmentGroupsTable, carrierQuotesTable, auditLogsTable,
     orderNotesTable: { __t: "order_notes" },
     cashLedgerEntriesTable: { __t: "cash_ledger", tenantId: "tenantId", idempotencyKey: "idempotencyKey" },
   };
@@ -485,6 +489,7 @@ beforeEach(() => {
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null }];
   dbState.uberQuotes = [];
   dbState.checkoutQuotes = [];
+  dbState.fulfillmentGroups = [];
   dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
   mockActor = {};
   reservationMocks.reserve.mockClear();
