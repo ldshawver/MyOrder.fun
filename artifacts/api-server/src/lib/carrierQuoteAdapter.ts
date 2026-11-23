@@ -34,6 +34,18 @@ export interface CarrierQuoteAdapter {
   quote(context: Omit<CarrierQuoteRequestContext, "provider">): Promise<unknown>;
 }
 
+let configuredCarrierQuoteAdapter: CarrierQuoteAdapter | null = null;
+
+/** Configure the reviewed server-side adapter during process startup. */
+export function configureCarrierQuoteAdapter(adapter: CarrierQuoteAdapter | null): void {
+  configuredCarrierQuoteAdapter = adapter;
+}
+
+export function requireConfiguredCarrierQuoteAdapter(): CarrierQuoteAdapter {
+  if (!configuredCarrierQuoteAdapter) throw new Error("CARRIER_PROVIDER_UNAVAILABLE");
+  return configuredCarrierQuoteAdapter;
+}
+
 type CarrierQuoteInsert = typeof carrierQuotesTable.$inferInsert;
 
 export interface CreatedCarrierQuote {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptCarrierQuoteResponse, createDurableCarrierQuote } from "../carrierQuoteAdapter";
+import { acceptCarrierQuoteResponse, configureCarrierQuoteAdapter, createDurableCarrierQuote, requireConfiguredCarrierQuoteAdapter } from "../carrierQuoteAdapter";
 
 const now = new Date("2026-11-23T12:00:00.000Z");
 const context = {
@@ -18,6 +18,14 @@ const response = {
 };
 
 describe("carrier quote adapter contract", () => {
+  it("fails closed until a reviewed process adapter is configured", () => {
+    configureCarrierQuoteAdapter(null);
+    expect(() => requireConfiguredCarrierQuoteAdapter()).toThrow("CARRIER_PROVIDER_UNAVAILABLE");
+    const adapter = { provider: context.provider, quote: async () => response };
+    configureCarrierQuoteAdapter(adapter);
+    expect(requireConfiguredCarrierQuoteAdapter()).toBe(adapter);
+    configureCarrierQuoteAdapter(null);
+  });
   it("keeps cart and destination authority in the server request context", () => {
     expect(acceptCarrierQuoteResponse(context, response, now)).toEqual({
       provider: "sandbox_carrier",

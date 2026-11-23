@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Authenticated Lucifer Direct carrier quote path (2026-11-23)
+
+- Added a customer-checkout-authenticated carrier quote endpoint that re-normalizes the tenant catalog cart and selects only the server-derived Lucifer Direct group before invoking the carrier service.
+- Tenant and customer scope come from authenticated server context; provider, group membership, current prices, cart fingerprint, and durable quote identity cannot be supplied by the client.
+- The endpoint fails closed with `503 CARRIER_PROVIDER_UNAVAILABLE` until a reviewed process-level adapter is configured, and it returns only the existing bounded durable quote response.
+- This increment does not select a production carrier, bind or consume a carrier quote during checkout, or claim credential-backed provider behavior.
+
+Evidence:
+
+- Focused Vitest: `carrierQuoteAdapter`, `checkoutFulfillmentGroups`, and `carrier-quotes-schema-static` — 3 files, 16 tests passed, covering fail-closed adapter configuration, trusted Lucifer Direct line selection, authenticated route registration, server scope, and no client provider authority.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the carrier service, grouping implementation, order route, and regressions with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Trusted carrier adapter invocation and persistence boundary (2026-11-23)
 
 - Added a server-only creation service that invokes a configured carrier adapter with the trusted cart fingerprint and destination, validates the response through the existing strict contract, and persists the resulting rate with authenticated tenant/customer scope.
@@ -205,7 +219,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, and cash restrictions are implemented. Durable carrier quote authority, a reviewed synthetic response contract, and the trusted invocation/persistence service now exist; next expose that service through an authenticated configured-carrier quote path and bind/consume only eligible Lucifer Direct carrier groups, then derive parent status from child groups and restrict staff/provider transitions by group ownership.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, and the authenticated fail-closed Lucifer Direct carrier quote path are implemented. Next bind and atomically consume only eligible Lucifer Direct carrier quotes during checkout, then derive parent status from child groups and restrict staff/provider transitions by group ownership.
 2. PostgreSQL validation for durable checkout quotes: `DATABASE_URL` resolves to the correctly named `myorder_agent_test`, but the refreshed target is an empty PostgreSQL 17 database without `users`, `tenants`, or `orders`, rather than the documented disposable migrated baseline. Migration 0084 therefore was not applied. Provision the repository baseline on this disposable database before adding tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.

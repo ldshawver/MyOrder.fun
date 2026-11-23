@@ -48,6 +48,14 @@ export function checkoutGroupsAllowCash(groups: CheckoutFulfillmentGroupPlan[]):
   return groups.every(group => group.method === "pickup");
 }
 
+/** Select only the server-derived Lucifer Direct lines eligible for carrier rating. */
+export function luciferDirectCarrierLines(lines: NormalizedCartLine[]): NormalizedCartLine[] {
+  const plan = planCheckoutFulfillmentGroups(lines, "pickup")
+    .find(group => group.provider === "lucifer_direct");
+  if (!plan) throw new Error("CARRIER_GROUP_UNAVAILABLE");
+  return plan.lineIndexes.map(index => lines[index]!);
+}
+
 /** Build the immutable customer-visible choice bound into a checkout quote. */
 export function snapshotCheckoutFulfillmentGroups(
   groups: CheckoutFulfillmentGroupPlan[],

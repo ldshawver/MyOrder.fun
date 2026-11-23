@@ -78,7 +78,8 @@ import { deductPaidOrderInventory } from "../payments/inventory";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { checkoutPaymentMethods } from "../payments/checkoutMethods";
 import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
-import { checkoutGroupsAllowCash, planCheckoutFulfillmentGroups, snapshotCheckoutFulfillmentGroups } from "../lib/checkoutFulfillmentGroups";
+import { checkoutGroupsAllowCash, luciferDirectCarrierLines, planCheckoutFulfillmentGroups, snapshotCheckoutFulfillmentGroups } from "../lib/checkoutFulfillmentGroups";
+import { createDurableCarrierQuote, requireConfiguredCarrierQuoteAdapter } from "../lib/carrierQuoteAdapter";
 
 import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
@@ -294,6 +295,7 @@ const CUSTOMER_CHECKOUT_POST_PATHS = new Set([
   "/cart/availability",
   "/cart/convert",
   "/checkout/quote",
+  "/checkout/carrier-quote",
   "/orders/preview-conversion",
   "/orders/delivery-quote",
 ]);
@@ -510,6 +512,15 @@ const CheckoutQuoteBody = z.object({
   pickupLocationId: z.number().int().positive().optional(),
   pickupAt: z.string().datetime().optional(),
   shippingAddress: z.string().trim().min(8).max(1000).optional(),
+}).strict();
+
+const CarrierQuoteBody = z.object({
+  items: z.array(DeliveryQuoteCartLineInput).min(1),
+  destination: z.object({
+    countryCode: z.string().trim().length(2),
+    postalCode: z.string().trim().min(1).max(32),
+    address: z.string().trim().min(8).max(1000),
+  }).strict(),
 }).strict();
 
 async function activeShiftDeliveryMode(tenantId: number) {
@@ -799,6 +810,39 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const pickupCode = error instanceof Error && error.message.startsWith("PICKUP_") ? error.message : null;
     const pickupMessage = pickupCode ? pickupSelectionErrorMessage(pickupCode) : null;
     res.status(error instanceof CustomerCreditError ? error.status : pickupCode === "PICKUP_LOCATION_UNAVAILABLE" ? 404 : 422).json({ error: error instanceof CustomerCreditError ? error.code : pickupCode ?? "CHECKOUT_QUOTE_UNAVAILABLE", ...(pickupMessage ? { message: pickupMessage } : {}) });
+  }
+});
+
+// POST /api/checkout/carrier-quote
+// Customer identity and tenant scope come from the checkout auth chain. Cart
+// membership, pricing, and the eligible Lucifer Direct group are re-derived
+// from the tenant catalog before the configured adapter is invoked.
+router.post("/checkout/carrier-quote", async (req, res): Promise<void> => {
+  const parsed = CarrierQuoteBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "INVALID_CARRIER_QUOTE" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const actor = req.dbUser!;
+  try {
+    const lines = await normalizeCheckoutCart(parsed.data.items, undefined, true, tenantId, true, {
+      isCurrentEmployee: actor.isCurrentEmployee === true,
+    });
+    const eligibleLines = luciferDirectCarrierLines(lines);
+    const quote = await createDurableCarrierQuote({
+      tenantId,
+      customerId: actor.id,
+      cartFingerprint: checkoutFingerprint(eligibleLines),
+      destination: parsed.data.destination,
+    }, requireConfiguredCarrierQuoteAdapter());
+    res.json(quote);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "CARRIER_QUOTE_UNAVAILABLE";
+    if (code === "CARRIER_PROVIDER_UNAVAILABLE") {
+      res.status(503).json({ error: code });
+      return;
+    }
+    res.status(422).json({
+      error: code === "CARRIER_GROUP_UNAVAILABLE" ? code : "CARRIER_QUOTE_UNAVAILABLE",
+    });
   }
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkoutGroupsAllowCash, planCheckoutFulfillmentGroups, snapshotCheckoutFulfillmentGroups } from "../checkoutFulfillmentGroups";
+import { checkoutGroupsAllowCash, luciferDirectCarrierLines, planCheckoutFulfillmentGroups, snapshotCheckoutFulfillmentGroups } from "../checkoutFulfillmentGroups";
 import type { NormalizedCartLine } from "../checkoutNormalizer";
 
 function line(overrides: Partial<NormalizedCartLine>): NormalizedCartLine {
@@ -34,6 +34,13 @@ describe("server-created checkout fulfillment groups", () => {
   it("preserves Alavont pickup cash eligibility and rejects courier cash", () => {
     expect(checkoutGroupsAllowCash(planCheckoutFulfillmentGroups([line({})], "pickup"))).toBe(true);
     expect(checkoutGroupsAllowCash(planCheckoutFulfillmentGroups([line({})], "uber_direct"))).toBe(false);
+  });
+
+  it("selects carrier-rated lines only from the trusted Lucifer Direct group", () => {
+    const lucifer = line({ catalog_item_id: 20, merchant_brand: "lucifer_cruz" });
+    const lines = [line({ catalog_item_id: 10 }), lucifer, line({ catalog_item_id: 30, source_type: "woo" })];
+    expect(luciferDirectCarrierLines(lines)).toEqual([lucifer]);
+    expect(() => luciferDirectCarrierLines([lines[0]!])).toThrow("CARRIER_GROUP_UNAVAILABLE");
   });
 
   it("snapshots a distinct trusted destination for every server-created group", () => {
