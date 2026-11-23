@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptCarrierQuoteResponse } from "../carrierQuoteAdapter";
+import { acceptCarrierQuoteResponse, createDurableCarrierQuote } from "../carrierQuoteAdapter";
 
 const now = new Date("2026-11-23T12:00:00.000Z");
 const context = {
@@ -44,5 +44,64 @@ describe("carrier quote adapter contract", () => {
   it("rejects invalid configured providers and server destinations", () => {
     expect(() => acceptCarrierQuoteResponse({ ...context, provider: "https://carrier.test" }, response, now)).toThrow("CARRIER_PROVIDER_INVALID");
     expect(() => acceptCarrierQuoteResponse({ ...context, destination: { ...context.destination, countryCode: "USA" } }, response, now)).toThrow("CARRIER_DESTINATION_INVALID");
+  });
+
+  it("invokes the configured adapter and persists only trusted server scope and snapshots", async () => {
+    const persisted: unknown[] = [];
+    const adapterInput: unknown[] = [];
+    const created = await createDurableCarrierQuote({
+      tenantId: 14,
+      customerId: 28,
+      cartFingerprint: context.cartFingerprint,
+      destination: context.destination,
+    }, {
+      provider: context.provider,
+      async quote(input) {
+        adapterInput.push(input);
+        return response;
+      },
+    }, async value => { persisted.push(value); }, now);
+
+    expect(adapterInput).toEqual([{
+      cartFingerprint: context.cartFingerprint,
+      destination: context.destination,
+    }]);
+    expect(persisted).toEqual([expect.objectContaining({
+      id: created.id,
+      tenantId: 14,
+      customerId: 28,
+      provider: "sandbox_carrier",
+      providerQuoteId: "provider-quote-1",
+      cartFingerprint: context.cartFingerprint,
+      destinationSnapshot: { countryCode: "US", postalCode: "90210", address: "123 Main Street" },
+      feeCents: 1299,
+      currency: "usd",
+      status: "quoted",
+      expiresAt: new Date("2026-11-23T12:15:00.000Z"),
+    })]);
+    expect(created).toEqual(expect.objectContaining({
+      id: expect.stringMatching(/^carrier_/),
+      feeCents: 1299,
+      currency: "usd",
+      expiresAt: "2026-11-23T12:15:00.000Z",
+    }));
+  });
+
+  it("does not persist rejected adapter responses or invalid server scope", async () => {
+    const persisted: unknown[] = [];
+    const adapter = { provider: context.provider, quote: async () => ({ ...response, feeCents: -1 }) };
+    await expect(createDurableCarrierQuote({
+      tenantId: 14,
+      customerId: 28,
+      cartFingerprint: context.cartFingerprint,
+      destination: context.destination,
+    }, adapter, async value => { persisted.push(value); }, now)).rejects.toThrow("CARRIER_RESPONSE_INVALID");
+    await expect(createDurableCarrierQuote({
+      tenantId: 0,
+      customerId: 28,
+      cartFingerprint: context.cartFingerprint,
+      destination: context.destination,
+    }, adapter, async value => { persisted.push(value); }, now)).rejects.toThrow("CARRIER_SCOPE_INVALID");
+    expect(persisted).toEqual([]);
   });
 });

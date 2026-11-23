@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
+import { carrierQuotesTable, db } from "@workspace/db";
 
 const CarrierQuoteResponse = z.object({
   quoteId: z.string().trim().min(1).max(200),
@@ -25,6 +27,21 @@ export interface TrustedCarrierQuote {
   feeCents: number;
   currency: string;
   expiresAt: Date;
+}
+
+export interface CarrierQuoteAdapter {
+  provider: string;
+  quote(context: Omit<CarrierQuoteRequestContext, "provider">): Promise<unknown>;
+}
+
+type CarrierQuoteInsert = typeof carrierQuotesTable.$inferInsert;
+
+export interface CreatedCarrierQuote {
+  id: string;
+  feeCents: number;
+  currency: string;
+  service: TrustedCarrierQuote["serviceSnapshot"];
+  expiresAt: string;
 }
 
 /**
@@ -70,5 +87,61 @@ export function acceptCarrierQuoteResponse(
     feeCents: parsed.data.feeCents,
     currency: parsed.data.currency.toLowerCase(),
     expiresAt,
+  };
+}
+
+/**
+ * Invoke a configured carrier adapter and persist only the validated result.
+ * Tenant/customer scope and cart/destination authority are supplied by the
+ * authenticated server caller and are never accepted from the adapter.
+ */
+export async function createDurableCarrierQuote(
+  input: {
+    tenantId: number;
+    customerId: number;
+    cartFingerprint: string;
+    destination: CarrierQuoteRequestContext["destination"];
+  },
+  adapter: CarrierQuoteAdapter,
+  persist: (value: CarrierQuoteInsert) => Promise<void> = async value => {
+    await db.insert(carrierQuotesTable).values(value);
+  },
+  now = new Date(),
+): Promise<CreatedCarrierQuote> {
+  if (!Number.isInteger(input.tenantId) || input.tenantId <= 0
+    || !Number.isInteger(input.customerId) || input.customerId <= 0) {
+    throw new Error("CARRIER_SCOPE_INVALID");
+  }
+  const context = {
+    provider: adapter.provider,
+    cartFingerprint: input.cartFingerprint,
+    destination: input.destination,
+  };
+  const response = await adapter.quote({
+    cartFingerprint: context.cartFingerprint,
+    destination: context.destination,
+  });
+  const trusted = acceptCarrierQuoteResponse(context, response, now);
+  const id = `carrier_${randomUUID()}`;
+  await persist({
+    id,
+    tenantId: input.tenantId,
+    customerId: input.customerId,
+    provider: trusted.provider,
+    providerQuoteId: trusted.providerQuoteId,
+    serviceSnapshot: trusted.serviceSnapshot,
+    destinationSnapshot: trusted.destinationSnapshot,
+    cartFingerprint: trusted.cartFingerprint,
+    feeCents: trusted.feeCents,
+    currency: trusted.currency,
+    status: "quoted",
+    expiresAt: trusted.expiresAt,
+  });
+  return {
+    id,
+    feeCents: trusted.feeCents,
+    currency: trusted.currency,
+    service: trusted.serviceSnapshot,
+    expiresAt: trusted.expiresAt.toISOString(),
   };
 }
