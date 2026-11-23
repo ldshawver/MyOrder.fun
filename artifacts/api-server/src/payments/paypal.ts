@@ -130,7 +130,13 @@ export class PayPalProvider implements PaymentProvider {
       throw new PayPalProviderError("provider_error", "PayPal request failed");
     }
     const body = await boundedJson(response);
-    if (!response.ok) throw new PayPalProviderError(response.status === 422 ? "declined" : "provider_error", `PayPal request rejected (${response.status})`);
+    if (!response.ok) {
+      if (response.status === 422) throw new PayPalProviderError("declined", `PayPal request rejected (${response.status})`);
+      if (requestId && response.status >= 500) {
+        throw new PayPalProviderError("unknown_outcome", `PayPal request outcome is unknown (${response.status})`);
+      }
+      throw new PayPalProviderError("provider_error", `PayPal request rejected (${response.status})`);
+    }
     return body;
   }
 
