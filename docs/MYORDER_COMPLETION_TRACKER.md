@@ -29,11 +29,17 @@ Owner-request validation matrix:
 | Account approval and onboarding/profile completion | Integrated branch and existing focused tests | Validate Clerk email/profile/approval flow with staging identities | Email delivery/identity-provider behavior after deployment |
 | Global role and tenant isolation | Existing authorization tests plus focused Speed Order boundary tests | Multi-tenant staging accounts and audit review | Ongoing production monitoring; no unsupported provider claim |
 
-Local evidence for this increment before the final broad gate:
+Local evidence for this increment and final broad gate:
 
 - `pnpm --filter @workspace/api-server typecheck` and `pnpm --filter @workspace/platform typecheck` — passed.
 - Focused ESLint for API server and platform — passed with zero warnings.
 - Focused Speed Order Vitest — 3 files, 10 tests passed (top-nine policy, member-checkout boundary, and staff UI wiring).
+- `pnpm run typecheck` — passed across libraries, API server, platform, mockup sandbox, and scripts.
+- `pnpm run lint` — passed, including inventory lockdown; the existing mockup-sandbox warning remained within its unchanged 1/1 ratchet.
+- `pnpm run build` — passed; generated API and platform artifacts contain the Speed Order checkout boundary and screen. Existing Vite sourcemap notices remained non-fatal.
+- `pnpm run test` — passed the full API and safe-Compose suite, including the new Speed Order regressions.
+- Release-controller/smoke contract gates — 113/113 passed across production release, staging feature release, safe-Compose release, and safe-Compose suites.
+- `git diff --check` — passed.
 - No deployment, migration, provider call, shared database mutation, or physical hardware test was performed.
 
 ### Local release-candidate gates and immediate-pickup quote binding (2026-11-23)
