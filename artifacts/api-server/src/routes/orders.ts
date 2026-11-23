@@ -1,6 +1,7 @@
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { eq, and, desc, lt, gt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { isFinanciallyClosedForFulfillment } from "../lib/orderCloseEligibility";
 import { resolveCustomerFulfillment, shiftDeliveryMode } from "../lib/shiftDeliveryMode";
 import { customerVisibleNote, orderStageView } from "../lib/orderStage";
@@ -1319,7 +1320,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     && quoteSnapshot?.deliveryMethod === requestedDeliveryMethod
     && quoteSnapshot?.deliveryQuoteId === ((body.data.deliveryQuote as { quoteId?: string } | null | undefined)?.quoteId ?? null)
     && quoteSnapshot?.carrierQuoteId === (submittedCarrierQuoteId ?? null)
-    && JSON.stringify(quoteSnapshot?.fulfillmentGroups) === JSON.stringify(quotedFulfillmentGroups)
+    && isDeepStrictEqual(quoteSnapshot?.fulfillmentGroups, quotedFulfillmentGroups)
     && (body.data.pickupAt == null || quoteSnapshot?.pickupAt === pickupSelection?.pickupAt.toISOString());
   if (!quoteMatches) {
     res.status(409).json({ error: "CHECKOUT_QUOTE_STALE" });
