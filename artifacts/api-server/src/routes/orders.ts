@@ -1,6 +1,7 @@
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { eq, and, desc, lt, gt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { isFinanciallyClosedForFulfillment } from "../lib/orderCloseEligibility";
 import { resolveCustomerFulfillment, shiftDeliveryMode } from "../lib/shiftDeliveryMode";
 import { customerVisibleNote, orderStageView } from "../lib/orderStage";
@@ -49,7 +50,7 @@ import {
   AddOrderNoteBody,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, requireCustomerCheckoutAccess, writeAuditLog, normalizeRole } from "../lib/auth";
-import { requirePermission } from "../lib/roles";
+import { hasPermission, requirePermission } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
 import { quantityText, quantityUnits } from "../lib/exactQuantity";
 import { enqueueOrderCreated } from "../lib/orderNotifications";
@@ -311,6 +312,47 @@ const CUSTOMER_CHECKOUT_GET_PATHS = new Set([
   "/orders/pickup-availability",
 ]);
 
+const SPEED_ORDER_MEMBER_HEADER = "x-speed-order-member-id";
+const speedOrderStaffActors = new WeakMap<Request, typeof usersTable.$inferSelect>();
+
+/**
+ * Speed Order reuses the member checkout pipeline instead of maintaining a
+ * second pricing/order implementation. Staff may select only an approved,
+ * active customer in their authorized tenant. The selected member becomes the
+ * checkout principal for conversion tokens, quotes, credit exclusion, order
+ * ownership, and notifications; the authenticated staff actor is retained for
+ * the explicit Speed Order audit event below.
+ */
+async function resolveSpeedOrderMember(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const raw = req.get(SPEED_ORDER_MEMBER_HEADER);
+  if (!raw) { next(); return; }
+  if (!((req.method === "POST" && CUSTOMER_CHECKOUT_POST_PATHS.has(req.path))
+    || (req.method === "GET" && CUSTOMER_CHECKOUT_GET_PATHS.has(req.path)))) {
+    res.status(400).json({ error: "Speed Order member selection is not valid for this endpoint" });
+    return;
+  }
+  if (!/^\d+$/.test(raw)) { res.status(400).json({ error: "Invalid Speed Order member" }); return; }
+  const staff = req.dbUser!;
+  const tenantId = staff.tenantId;
+  if (!tenantId || !(await hasPermission(staff, "speed_order.use", tenantId))
+    || !(await hasPermission(staff, "customers.view", tenantId))) {
+    res.status(403).json({ error: "Speed Order access is required" });
+    return;
+  }
+  const memberId = Number(raw);
+  const [member] = await db.select().from(usersTable).where(and(
+    eq(usersTable.id, memberId),
+    eq(usersTable.tenantId, tenantId),
+    eq(usersTable.status, "approved"),
+    eq(usersTable.isActive, true),
+    sql`lower(${usersTable.role}) IN ('user', 'customer')`,
+  )).limit(1);
+  if (!member) { res.status(404).json({ error: "Eligible member not found" }); return; }
+  speedOrderStaffActors.set(req, staff);
+  req.dbUser = member;
+  next();
+}
+
 function requireOrderRouteApproval(req: Request, res: Response, next: NextFunction): void {
   if ((req.method === "POST" && CUSTOMER_CHECKOUT_POST_PATHS.has(req.path))
     || (req.method === "GET" && CUSTOMER_CHECKOUT_GET_PATHS.has(req.path))) {
@@ -327,7 +369,7 @@ function requireOrderRouteApproval(req: Request, res: Response, next: NextFuncti
 // policy below still sees the full req.path it keys on.)
 const ORDER_ROUTER_PREFIXES = ["/orders", "/cart", "/checkout", "/admin/orders"];
 const ownsPath = (path: string) => ORDER_ROUTER_PREFIXES.some(prefix => path === prefix || path.startsWith(`${prefix}/`));
-const orderRouteGuard = [requireAuth, loadDbUser, requireDbUser, requireOrderRouteApproval, requireTenantContext] as const;
+const orderRouteGuard = [requireAuth, loadDbUser, requireDbUser, resolveSpeedOrderMember, requireOrderRouteApproval, requireTenantContext] as const;
 router.use((req, res, next) => {
   if (!ownsPath(req.path)) { next("router"); return; }
   next();
@@ -1278,7 +1320,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     && quoteSnapshot?.deliveryMethod === requestedDeliveryMethod
     && quoteSnapshot?.deliveryQuoteId === ((body.data.deliveryQuote as { quoteId?: string } | null | undefined)?.quoteId ?? null)
     && quoteSnapshot?.carrierQuoteId === (submittedCarrierQuoteId ?? null)
-    && JSON.stringify(quoteSnapshot?.fulfillmentGroups) === JSON.stringify(quotedFulfillmentGroups)
+    && isDeepStrictEqual(quoteSnapshot?.fulfillmentGroups, quotedFulfillmentGroups)
     && (body.data.pickupAt == null || quoteSnapshot?.pickupAt === pickupSelection?.pickupAt.toISOString());
   if (!quoteMatches) {
     res.status(409).json({ error: "CHECKOUT_QUOTE_STALE" });
@@ -1982,6 +2024,19 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     },
     ipAddress: req.ip,
   });
+  const speedOrderStaff = speedOrderStaffActors.get(req);
+  if (speedOrderStaff) {
+    await writeAuditLog({
+      actorId: speedOrderStaff.id,
+      actorEmail: speedOrderStaff.email,
+      actorRole: speedOrderStaff.role,
+      action: "SPEED_ORDER_CREATED",
+      resourceType: "order",
+      resourceId: String(order.id),
+      metadata: { customerId: actor.id, total: finalTotal, itemCount: normalizedLines.length, paymentMethod: tender, deliveryMethod: requestedDeliveryMethod },
+      ipAddress: req.ip,
+    });
+  }
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,

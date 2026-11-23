@@ -31,6 +31,7 @@ import CatalogItemDetail from "@/pages/catalog-item";
 import Orders from "@/pages/orders";
 import OrderDetail from "@/pages/order-detail";
 import NewOrder from "@/pages/new-order";
+import SpeedOrder from "@/pages/speed-order";
 import AiConcierge from "@/pages/ai-concierge";
 import GlobalAdmin from "@/pages/global-admin";
 import GlobalAdminOnboarding from "@/pages/global-admin/onboarding";
@@ -542,6 +543,7 @@ function AuthenticatedApp() {
               Switch treats a fragment as a candidate, which previously shadowed
               /staff for supervisor and admin sessions. */}
           {isStaff && <Route path="/staff/orders">{() => protect(<Orders />)}</Route>}
+          {isStaff && <Route path="/staff/speed-order">{() => protect(<SpeedOrder />)}</Route>}
           {isStaff && <Route path="/staff">{() => protect(<StaffQueue />)}</Route>}
 
           {appRole === "global_admin" && (
