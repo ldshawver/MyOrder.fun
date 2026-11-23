@@ -82,12 +82,13 @@ function isArchivedOrSafeDuplicateRow(row: { metadata?: unknown }): boolean {
 export type CatalogLifecycleStatus = "customer_visible" | "unavailable_hidden" | "compliance_hold" | "archived";
 
 /** The admin lifecycle projection is server-owned; UI callers must not infer it from availability. */
-export function getCatalogLifecycleStatus(row: { metadata?: unknown }): CatalogLifecycleStatus {
+export function getCatalogLifecycleStatus(row: { metadata?: unknown; isAvailable?: boolean | null }): CatalogLifecycleStatus {
   const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
     ? row.metadata as Record<string, unknown>
     : {};
   if (isArchivedOrSafeDuplicateRow({ metadata })) return "archived";
   if (metadata.complianceHold === true) return "compliance_hold";
+  if (row.isAvailable === false) return "unavailable_hidden";
   return "customer_visible";
 }
 

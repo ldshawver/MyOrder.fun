@@ -6,6 +6,18 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Catalog lifecycle availability diagnostics (2026-11-23)
+
+- Corrected the server-owned admin lifecycle projection so an explicitly unavailable catalog item reports `unavailable_hidden` instead of the misleading `customer_visible` state.
+- Preserved the more restrictive archived and compliance-hold precedence, customer eligibility filtering, sellability behavior, and Alavont presentation fields.
+
+Evidence:
+
+- Focused Vitest: `catalog-customer-visibility` — 1 file, 30 tests passed, including tenant isolation, restricted-row filtering, optional-schema failure diagnostics, inventory availability, and the corrected unavailable lifecycle state.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the changed catalog route and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Expo readability and affected-workflow-only printing (2026-11-23)
 
 - Increased every operational Expo ticket text line to the thermal printer's double-height mode while retaining normal character width for item-name capacity; the order number remains double-width and double-height.
@@ -57,7 +69,7 @@ Evidence:
 1. Secure group-specific checkout: define the authoritative group/member model from product requirements, then bind conversion, quote, order, authorization, idempotency, and inventory decisions to that persisted scope. No group checkout schema or route contract exists on the refreshed baseline, so semantics must not be invented.
 2. PostgreSQL validation for durable checkout quotes: apply migration 0084 to an isolated disposable database and add tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
 3. Provider sandbox/mock contracts: add reviewed mock/sandbox contracts for payment and delivery behavior; do not mark credential-dependent PayPal or Uber validation complete without credentials.
-4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior.
+4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
 5. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
 
 ## External validation still open
