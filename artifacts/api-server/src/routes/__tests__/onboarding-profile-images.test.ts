@@ -65,6 +65,10 @@ async function png() {
   return sharp({ create: { width: 12, height: 12, channels: 3, background: "#a10024" } }).png().toBuffer();
 }
 
+async function jpeg() {
+  return sharp({ create: { width: 12, height: 12, channels: 3, background: "#a10024" } }).jpeg().toBuffer();
+}
+
 describe("POST /api/profile-images", () => {
   it("requires both an email and an image", async () => {
     const response = await supertest(app).post("/api/profile-images").field("email", "person@example.com");
@@ -109,5 +113,14 @@ describe("POST /api/profile-images", () => {
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
     expect(response.headers["content-security-policy"]).toContain("sandbox");
     expect(response.headers["content-disposition"]).toContain("profile.webp");
+  });
+
+  it("accepts the common image/jpg alias and still serves only sanitized WebP", async () => {
+    const upload = await supertest(app).post("/api/profile-images").field("email", "person@example.com")
+      .attach("file", await jpeg(), { filename: "mobile-photo.jpg", contentType: "image/jpg" });
+    expect(upload.status).toBe(201);
+    const response = await supertest(app).get(`/api/profile-images/${upload.body.uploadId}`);
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toMatch(/^image\/webp/);
   });
 });

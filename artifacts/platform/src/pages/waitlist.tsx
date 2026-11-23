@@ -17,6 +17,7 @@ import {
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
+const PHONE_REGEX = /^\+?[\d\s-]{7,20}$/;
 
 type WaitlistForm = {
   name: string;
@@ -158,7 +159,7 @@ export default function WaitlistPage() {
       body: JSON.stringify({
         contactName: values.name,
         contactEmail: values.email,
-        contactPhone: values.phone || undefined,
+        contactPhone: values.phone.trim(),
         description: values.message || undefined,
         companyName: "Individual",
         businessType: "customer",
@@ -317,6 +318,11 @@ export default function WaitlistPage() {
     const password = form.password.trim();
     if (!sessionReady && !names) {
       setErrorMsg("Enter your first and last name.");
+      setStatus("error");
+      return;
+    }
+    if (!PHONE_REGEX.test(requestValues.phone.trim())) {
+      setErrorMsg("Enter a phone number with 7 to 20 digits. Spaces and dashes are allowed.");
       setStatus("error");
       return;
     }
@@ -556,14 +562,14 @@ export default function WaitlistPage() {
             <label className="text-xs font-mono" style={{ color: "#ffffff" }} htmlFor="verify-profile-picture">
               Profile picture (required)
             </label>
-            <input id="verify-profile-picture" type="file" accept="image/png,image/jpeg,image/webp" required={!profileImageUploadId} onChange={(e) => {
+            <input id="verify-profile-picture" type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/heic,image/heif" required={!profileImageUploadId} onChange={(e) => {
               setProfileImageFile(e.target.files?.[0] ?? null);
               setProfileImageUploadId(null);
               setProfileImageEmail("");
               setImageStatus("idle");
             }} aria-describedby="verify-profile-picture-help" className="w-full text-xs font-mono text-white file:mr-3 file:rounded file:border-0 file:bg-[#8b0000] file:px-3 file:py-2 file:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#dc143c]" />
             <p id="verify-profile-picture-help" className="text-[11px] font-mono" style={{ color: imageStatus === "error" ? "#ff8a9a" : "#f0f0f0" }}>
-              {imageStatus === "ready" ? "Image uploaded securely." : imageStatus === "uploading" ? "Validating image…" : "PNG, JPEG, or WebP, up to 3 MB. Choose again after a page refresh."}
+              {imageStatus === "ready" ? "Image uploaded securely." : imageStatus === "uploading" ? "Validating image…" : "PNG, JPEG, WebP, HEIC, or HEIF, up to 3 MB. Choose again after a page refresh."}
             </p>
 
             {signUp?.status !== "complete" && !emailAlreadyVerified && <input
@@ -649,14 +655,14 @@ export default function WaitlistPage() {
             <label className="text-xs font-mono" style={{ color: "#ffffff" }} htmlFor="signup-profile-picture">
               Profile picture (required)
             </label>
-            <input id="signup-profile-picture" type="file" accept="image/png,image/jpeg,image/webp" required={!profileImageUploadId} onChange={(e) => {
+            <input id="signup-profile-picture" type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/heic,image/heif" required={!profileImageUploadId} onChange={(e) => {
               setProfileImageFile(e.target.files?.[0] ?? null);
               setProfileImageUploadId(null);
               setProfileImageEmail("");
               setImageStatus("idle");
             }} aria-describedby="signup-profile-picture-help" className="w-full text-xs font-mono text-white file:mr-3 file:rounded file:border-0 file:bg-[#8b0000] file:px-3 file:py-2 file:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#dc143c]" />
             <p id="signup-profile-picture-help" className="text-[11px] font-mono" style={{ color: imageStatus === "error" ? "#ff8a9a" : "#f0f0f0" }}>
-              {imageStatus === "ready" ? "Image uploaded securely." : imageStatus === "uploading" ? "Validating image…" : "PNG, JPEG, or WebP, up to 3 MB."}
+              {imageStatus === "ready" ? "Image uploaded securely." : imageStatus === "uploading" ? "Validating image…" : "PNG, JPEG, WebP, HEIC, or HEIF, up to 3 MB."}
             </p>
 
             {signUp?.status !== "complete" && <input
@@ -685,6 +691,8 @@ export default function WaitlistPage() {
               placeholder="Phone"
               value={form.phone}
               onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+              required
+              autoComplete="tel"
               className="w-full rounded-lg px-3 py-2 text-sm font-mono placeholder:text-[#444] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#dc143c]"
               style={memberFieldStyle}
             />

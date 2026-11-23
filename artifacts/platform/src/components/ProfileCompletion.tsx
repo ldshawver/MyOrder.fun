@@ -56,7 +56,7 @@ export default function ProfileCompletion({ user, onSaved, onSignOut }: Props) {
       const bindEmail = emailLocked ? user.email.trim() : nextEmail;
       let profileImageUploadId: string | undefined;
       if (file) {
-        if (file.size > 3_000_000) throw new Error("Choose a PNG, JPEG, or WebP image up to 3 MB.");
+        if (file.size > 3_000_000) throw new Error("Choose a PNG, JPEG, WebP, HEIC, or HEIF image up to 3 MB.");
         const formData = new FormData();
         formData.set("file", file);
         formData.set("email", bindEmail);
@@ -121,7 +121,7 @@ export default function ProfileCompletion({ user, onSaved, onSignOut }: Props) {
           <div>
             <Label htmlFor="completion-photo">Profile picture</Label>
             {user.avatarUrl ? <img src={user.avatarUrl} alt="" className="mt-2 h-16 w-16 rounded-full object-cover" /> : null}
-            <Input id="completion-photo" className="mt-2" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+            <Input id="completion-photo" className="mt-2" type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/heic,image/heif" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
           </div>
         </div>
         {message && <p role="alert" className="text-sm text-destructive">{message}</p>}

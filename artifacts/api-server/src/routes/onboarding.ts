@@ -31,6 +31,11 @@ function receiveProfileUpload(req: Request, res: Response, next: (err?: unknown)
 }
 const profileImageUploadBody = z.object({ profileImageUploadId: z.string().uuid() });
 
+function memberName(contactName: string): { firstName: string; lastName: string | null } {
+  const parts = contactName.trim().split(/\s+/).filter(Boolean);
+  return { firstName: parts[0] ?? "", lastName: parts.slice(1).join(" ") || null };
+}
+
 async function cleanupUploads() {
   const users = await db.select({ avatarUrl: usersTable.avatarUrl }).from(usersTable);
   const referenced = new Set(users.map(({ avatarUrl }) => avatarUrl?.match(/^\/api\/profile-images\/([0-9a-f-]{36})$/i)?.[1]).filter((id): id is string => !!id));
@@ -42,7 +47,7 @@ imageCleanupTimer.unref();
 router.post("/profile-images", receiveProfileUpload, async (req, res): Promise<void> => {
   const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !req.file) {
-    res.status(400).json({ error: "Email and a PNG, JPEG, or WebP profile image are required." });
+    res.status(400).json({ error: "Email and a PNG, JPEG, WebP, HEIC, or HEIF profile image are required." });
     return;
   }
   try {
@@ -123,6 +128,7 @@ export async function submitOnboardingRequestHandler(req: Request, res: Response
   }
   await ensureAccessRequestUserSchema();
   const email = body.data.contactEmail.trim().toLowerCase();
+  const name = memberName(requestData.contactName);
   // Persist the same canonical identity used by the lock and lookup so case
   // variants of an address cannot create separate request rows.
   requestData.contactEmail = email;
@@ -143,7 +149,8 @@ export async function submitOnboardingRequestHandler(req: Request, res: Response
     if (!existingUser) {
       await tx.insert(usersTable).values({
         clerkId: `pending_request:${email.toLowerCase()}`, email,
-        firstName: requestData.contactName, contactPhone: requestData.contactPhone ?? null,
+        firstName: name.firstName, lastName: name.lastName,
+        contactPhone: requestData.contactPhone ?? null,
         avatarUrl: imagePath, role: "user", status: "pending", isActive: true,
       });
       finalizeImage = true;
@@ -151,7 +158,8 @@ export async function submitOnboardingRequestHandler(req: Request, res: Response
       // Do not downgrade, reactivate, or otherwise alter an approved/rejected
       // identity during retries. Provisioning only fills the pending profile.
       await tx.update(usersTable).set({
-        firstName: requestData.contactName,
+        firstName: name.firstName,
+        lastName: name.lastName,
         contactPhone: requestData.contactPhone ?? null,
         ...(existingUser.avatarUrl ? {} : { avatarUrl: imagePath }),
       }).where(eq(usersTable.id, existingUser.id));
