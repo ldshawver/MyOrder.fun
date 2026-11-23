@@ -6,6 +6,32 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Local release-candidate gates and immediate-pickup quote binding (2026-11-23)
+
+- Exact staging application candidate: `916d45434afd3dfa479291d809dac06f5d24d9c3` (`fix(checkout): preserve immediate pickup quote binding`). The following evidence was produced from that application tree before the evidence-only tracker commit.
+- Corrected immediate-pickup checkout so order creation compares the immutable pickup time in the trusted durable quote when the customer did not select a scheduled time. A later server clock value no longer makes an otherwise matching immediate-pickup quote stale; tenant, customer, cart, totals, method, location, and quote-consumption checks remain server-authoritative.
+- Updated stale regressions to cover the implemented carrier-aware grouping, unavailable catalogue lifecycle, combined trusted delivery fees, fulfillment-group route mock, and immediate pickup flow.
+- The owner-required Expo font increase and Expo-ticket-only automatic order printing remain verified by the earlier 35-test print evidence in this tracker. Receipts and unrelated document types remain unchanged.
+- No deployment, provider call, archive purge, or shared/production database mutation was performed.
+
+Evidence:
+
+- `pnpm run typecheck && pnpm run lint` — passed; inventory write lockdown passed. The existing mockup-sandbox one-warning ratchet remained within its unchanged ceiling.
+- Focused Vitest after the fix — 4 files, 72 tests passed.
+- `pnpm run test` — passed: API 185 files/1,667 tests passed with 19 files/151 tests intentionally skipped; safe Compose 20/20 passed.
+- `pnpm run build` — passed for all buildable workspace packages. Existing sourcemap and bundle-size notices were non-fatal.
+- `pnpm --filter @workspace/db db:validate-migrations` — repository inventory/journal passed: 93 SQL files, 62 executable entries, 31 historical/excluded. The disposable `push-force` database correctly reported `0/62` ledger rows; this is not historical or production migration evidence.
+- Previously recorded PostgreSQL 17 integration evidence remains applicable and was not repeated: durable quote tenant/customer isolation, expiry, rollback, row locking and concurrent consumption; mixed-order atomicity and group/line isolation; CJ event isolation, rollback, locking and replay claiming.
+- Release/rollback/smoke controller tests — 93/93 passed across production release, staging feature release, and safe-compose release suites.
+- Focused ESLint on the five changed API files, `git diff --check`, and the commit-time lint ratchet — passed.
+
+Staging handoff:
+
+1. Build immutable API, Platform, and Migrator images from application commit `916d45434afd3dfa479291d809dac06f5d24d9c3`; record image digests, config digests, architecture, and revision labels.
+2. Run the guarded staging preflight against the isolated staging target, validate exact migration lineage separately from this disposable push-force schema, retain a protected backup/restore rehearsal, and keep the current staging image digests as the rollback target.
+3. Validate mixed Alavont/Lucifer Direct/CJ carts, immediate and scheduled pickup, trusted delivery/carrier paths configured for staging, cash rejection for courier/shipping groups, tenant/customer isolation, idempotent replay, inventory locking, derived group/parent status, Expo readability, Expo-only automatic ticketing, customer receipts, closeout, labels, and existing Alavont/CSR workflows.
+4. Production remains gated on all staging checks, exact immutable image identities, production backup/restore and migration evidence, verified rollback identities, and supervised authorization. Credential-backed providers not configured on the staging path remain post-launch validation and are not claimed here.
+
 ### PayPal ambiguous HTTP mutation outcomes (2026-11-23)
 
 - Classified HTTP 5xx responses to idempotent PayPal create, capture, and refund mutations as unknown outcomes because the provider may have committed the financial side effect before returning an error.
@@ -517,10 +543,14 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Durable quote PostgreSQL isolation, expiry, rollback, locking, idempotency, and concurrent consumption are verified. Mixed-order PostgreSQL atomic rollback, tenant/order group isolation, line binding, and committed group persistence are verified. CJ event PostgreSQL tenant isolation, rollback, locking, concurrent replay claiming, and atomic reconciliation persistence are verified; continue remaining provider mock contracts before the release gate.
-2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation. Carrier quote responses, trusted persistence, fail-closed configuration, and bounded abortable invocation are verified synthetically. PayPal response bounds, configured-environment approval redirect origins, transport and HTTP 5xx ambiguous mutation outcome classification, read identity binding, and create-order internal-reference/financial binding are verified synthetically; continue reviewed mock contracts for remaining payment behavior. Do not mark credential-dependent PayPal, CJ/Woo, Uber, or carrier validation complete without credentials.
-3. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
-4. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
+1. Supervised staging release of exact application commit `916d45434afd3dfa479291d809dac06f5d24d9c3`, followed by the staging validation and evidence steps above. This worker does not deploy.
+2. Production release only after every staging, migration, backup/restore, rollback, smoke, provider-path, and authorization gate required for the configured release has passed.
+
+## Post-launch work (excluded from this candidate)
+
+- Additional credential-backed or speculative provider-contract coverage beyond the configured staging path.
+- Additional catalogue hardening and regression expansion not required by a staging defect.
+- Archived-catalog cleanup, deletion, or historical-reference rehoming. No purge is authorized in this release.
 
 ## External validation still open
 
