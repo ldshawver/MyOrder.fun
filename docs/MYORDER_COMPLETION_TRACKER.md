@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal read identity binding (2026-11-23)
+
+- Bound order and capture lookup responses to the exact provider resource identity requested by the server. A syntactically valid response for a different PayPal order or capture now fails closed before reconciliation can attach it to local payment state.
+- Existing server-owned lookup paths, response bounds, credential handling, and mutation idempotency behavior remain unchanged.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox or live behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 29 tests passed, including mismatched order and capture lookup identities.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the PayPal provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PayPal ambiguous mutation outcome classification (2026-11-23)
 
 - PayPal OAuth is now acquired before the payment request transport boundary, so authentication transport failures remain retryable provider errors and cannot be mistaken for an attempted payment mutation.

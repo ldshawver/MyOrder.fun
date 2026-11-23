@@ -46,6 +46,13 @@ describe("PayPal provider", () => {
     expect(fetcher.mock.calls[1][1].body).toContain('"webhook_id":"webhook"');
   });
   it("rejects invalid provider responses", async () => { const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "bad" })); await expect(new PayPalProvider(config, fetcher as typeof fetch).getOrder("bad")).rejects.toMatchObject({ failureClass: "invalid_response" }); });
+  it("rejects read responses whose provider identity does not match the requested resource", async () => {
+    const orderFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER2", status: "COMPLETED", purchase_units: [{ amount: { value: "10.80", currency_code: "USD" } }] }));
+    await expect(new PayPalProvider(config, orderFetcher as typeof fetch).getOrder("ORDER1")).rejects.toMatchObject({ failureClass: "invalid_response" });
+
+    const captureFetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "CAP2", status: "COMPLETED", amount: { value: "10.80", currency_code: "USD" }, supplementary_data: { related_ids: { order_id: "ORDER1" } } }));
+    await expect(new PayPalProvider(config, captureFetcher as typeof fetch).getCapture("CAP1")).rejects.toMatchObject({ failureClass: "invalid_response" });
+  });
   it("classifies provider declines", async () => { const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({}, 422)); await expect(new PayPalProvider(config, fetcher as typeof fetch).captureOrder("ORDER1", "key")).rejects.toMatchObject({ failureClass: "declined" }); });
   it("treats a transport failure after sending a mutation as an unknown outcome", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockRejectedValueOnce(new TypeError("connection reset"));
