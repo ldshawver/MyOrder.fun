@@ -6,6 +6,21 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Bounded tenant-scoped CJ polling reconciliation (2026-11-23)
+
+- Added a bounded server-only reconciliation service for pending or reconciliation-required CJ fulfillment identities. It selects at most 25 records from one trusted tenant scope and exposes no staff-authored status transition path.
+- Provider polling loads only that tenant's encrypted Woo credentials and uses the existing DNS-checked, connect-time-pinned, timeout- and response-bounded transport.
+- Strictly validates the provider order identity, supported status, and provider modification time, rejects identity mismatch, and routes every accepted snapshot through the same replay-safe event inbox, forward-only transition policy, CJ-only group mutation, and derived-parent transaction used by authenticated webhooks.
+- Stable polling event identities make unchanged provider snapshots replay-safe, while `last_reconciled_at` records successful authoritative checks. Per-order provider failures remain isolated for a later bounded retry.
+- This is synthetic contract validation only. No credential-backed CJ/Woo polling behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `cjFulfillmentReconciliation`, `cjFulfillmentEventProcessor`, and `cjFulfillmentEvents` — 3 files, 8 tests passed, covering strict snapshot parsing, Woo hold normalization, tenant/batch bounds, encrypted credential selection, pinned transport use, provider identity binding, durable event routing, and no staff impersonation path.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on reconciliation, event processing, and regression tests with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Authenticated replay-safe CJ/Woo fulfillment events (2026-11-23)
 
 - Extended the existing tenant-specific Woo HMAC boundary to accept signed `order.updated` events for mapped CJ fulfillment identities. Tenant scope comes only from the uniquely matched encrypted server configuration; event payloads cannot supply tenant, group, or parent-order authority.
@@ -290,7 +305,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, and authenticated replay-safe CJ/Woo event application are implemented. Next add bounded provider polling reconciliation without permitting staff impersonation.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Continue PostgreSQL concurrency and rollback validation before the release gate.
 2. PostgreSQL validation for durable checkout quotes: the owner reports that `DATABASE_URL` now targets the provisioned disposable PostgreSQL 17 `luxdev` baseline. Refresh and verify that target in the next database increment, then add tenant/customer cross-scope, expiry, rollback, locking, idempotency, and concurrent double-consumption coverage. Do not treat the disposable database's absent historical migration ledger as production migration evidence.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
