@@ -6,6 +6,22 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Immutable mixed-cart fulfillment group persistence foundation (2026-11-23)
+
+- Added forward-only migration `0085_order_fulfillment_groups.sql` and matching Drizzle schema for tenant/order-bound server-created fulfillment groups.
+- Persisted immutable provider, inventory-owner, origin, method, destination, provider quote, merchandise, fee, tax, total, currency, tax, and status snapshots at group scope.
+- Bound each grouped order line to both its parent order and group with a composite foreign key, preventing a line from referencing a group belonging to another order. The new line reference remains nullable solely to preserve historical orders during rollout.
+- Constrained supported authoritative provider/method values and non-negative group amounts, including database enforcement that group total equals merchandise plus fee plus tax.
+- This increment establishes persistence only; checkout grouping and writes are not yet enabled and remain first in the queue.
+
+Evidence:
+
+- Focused Vitest: `fulfillment-groups-schema-static` — 1 file, 1 test passed, covering tenant/order isolation, line/group order binding, provider/method policy, and legacy-history preservation.
+- `pnpm run typecheck:libs` — passed.
+- Focused ESLint on the regression test with zero warnings — passed.
+- `git diff --check` — passed.
+- Migration ledger inventory/journal classification — passed: 91 SQL files, 60 executable entries, 31 historical/excluded. Optional database comparison then stopped because the configured database is not the documented disposable baseline and lacks `users`, `tenants`, `orders`, `lab_tech_shifts`, and `print_jobs`; no PostgreSQL migration validation is claimed and the command was not retried.
+
 ### Server-authoritative catalog amount writes (2026-11-23)
 
 - Applied one catalog amount policy to both admin create and update writes: base, comparison, regular, and employee prices must be greater than zero when supplied, while cost basis may be zero but not negative.
@@ -118,7 +134,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: the owner has supplied the authoritative model in the supervised task prompt. Implement server-created groups from trusted product/provider, inventory-owner, origin/location, and eligible fulfillment-method data; bind conversion, quote, order, authorization, idempotency, inventory, immutable snapshots, and parent/child status derivation to that scope.
+1. Secure group-specific checkout: immutable tenant/order group storage and cross-order line binding are now implemented. Next implement server-created grouping from trusted product/provider, inventory-owner, origin/location, and eligible fulfillment-method data; bind conversion, quote, order, authorization, idempotency, inventory, immutable snapshots, and parent/child status derivation to that scope.
 2. PostgreSQL validation for durable checkout quotes: a dedicated disposable `myorder_agent_test` database is now provided through `DATABASE_URL` on the isolated `luxdev` cluster. Apply migration 0084 there and add tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage. This database is disposable and must never be confused with staging or production.
 3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
