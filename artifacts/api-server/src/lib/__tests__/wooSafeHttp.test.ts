@@ -39,6 +39,29 @@ describe("WooCommerce SSRF boundary", () => {
       }
     }
   });
+
+  it("rejects an unsafe CJ/Woo dispatch origin before credentials leave the process", async () => {
+    const priorFetch = globalThis.fetch;
+    const priorPolicy = process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED;
+    const priorKey = process.env.WC_CONSUMER_KEY;
+    const priorSecret = process.env.WC_CONSUMER_SECRET;
+    const priorStore = process.env.WC_STORE_URL;
+    process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "true";
+    process.env.WC_CONSUMER_KEY = "synthetic-key";
+    process.env.WC_CONSUMER_SECRET = "synthetic-secret";
+    process.env.WC_STORE_URL = "https://127.0.0.1";
+    const outbound = vi.fn();
+    globalThis.fetch = outbound as unknown as typeof fetch;
+    try {
+      await expect(createWooOrder({ orderId: 917, lines: [{ product_id: "12", name: "Synthetic fixture", quantity: 1, unit_price: 1099 }] })).rejects.toThrow(/public HTTPS origin/);
+      expect(outbound).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = priorFetch;
+      for (const [key, value] of [["WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED", priorPolicy], ["WC_CONSUMER_KEY", priorKey], ["WC_CONSUMER_SECRET", priorSecret], ["WC_STORE_URL", priorStore]] as const) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
   it.each(["http://shop.example", "https://user:pass@shop.example", "https://localhost", "https://127.0.0.1", "https://10.0.0.2", "https://169.254.169.254", "https://[::1]", "https://[fc00::1]", "https://shop.local", "https://shop.example/path", "https://shop.example?secret=1"])("rejects prohibited origin %s", url => {
     expect(() => assertWooHttpsOrigin(url)).toThrow();
   });
@@ -98,6 +121,31 @@ describe("WooCommerce SSRF boundary", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ environment: { version: "synthetic" } });
     expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends CJ/Woo order writes through the pinned transport contract", async () => {
+    let written = "";
+    const transport = vi.fn((_url, options: { method: string; headers: Record<string, string>; lookup: (host: string, options: { all: boolean }, callback: (error: Error | null, addresses: unknown) => void) => void }, respond: (res: EventEmitter & { statusCode: number; headers: Record<string, string> }) => void) => {
+      expect(options.method).toBe("POST");
+      expect(options.headers["Content-Type"]).toBe("application/json");
+      const req = new EventEmitter() as EventEmitter & { end: (body?: string) => void; destroy: () => void };
+      req.end = body => {
+        written = body ?? "";
+        const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> };
+        res.statusCode = 201;
+        res.headers = { "content-type": "application/json" };
+        respond(res);
+        res.emit("data", Buffer.from('{"id":917}'));
+        res.emit("end");
+      };
+      req.destroy = vi.fn();
+      return req;
+    });
+    const response = await fetchWooSafely("https://8.8.8.8", "/wp-json/wc/v3/orders", "ck_synthetic", "cs_synthetic", transport as unknown as typeof request, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: '{"status":"processing"}',
+    });
+    expect(response.status).toBe(201);
+    expect(written).toBe('{"status":"processing"}');
   });
 
   it("rejects redirects without forwarding credentials", async () => {

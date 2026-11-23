@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### CJ/Woo provider mock contract and outbound credential boundary (2026-11-23)
+
+- Routed the enabled WooCommerce order writer used for CJ Dropshipping synchronization through the existing DNS-checked, connect-time-pinned HTTPS transport. Unsafe origins, private/documentation addresses, redirects, oversized responses, and timeouts now fail closed before provider credentials can be forwarded.
+- Extended the shared transport contract with bounded `GET`/`POST` request support while preserving the existing read-only integration callers.
+- Removed untrusted provider response bodies from dispatch errors and now reject missing, non-integer, or non-positive provider order identities.
+- This is synthetic mock-contract validation only. No CJ/Woo credential-backed dispatch or provider behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `wooSafeHttp` — 1 file, 37 tests passed, including a synthetic POST body contract and proof that the dispatch writer rejects a private origin before any global fetch call.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the changed transport, dispatch client, and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Catalog lifecycle availability diagnostics (2026-11-23)
 
 - Corrected the server-owned admin lifecycle projection so an explicitly unavailable catalog item reports `unavailable_hidden` instead of the misleading `customer_visible` state.
@@ -68,7 +82,7 @@ Evidence:
 
 1. Secure group-specific checkout: define the authoritative group/member model from product requirements, then bind conversion, quote, order, authorization, idempotency, and inventory decisions to that persisted scope. No group checkout schema or route contract exists on the refreshed baseline, so semantics must not be invented.
 2. PostgreSQL validation for durable checkout quotes: apply migration 0084 to an isolated disposable database and add tenant/customer cross-scope, expiry, rollback, and concurrent double-consumption integration coverage.
-3. Provider sandbox/mock contracts: add reviewed mock/sandbox contracts for payment and delivery behavior; do not mark credential-dependent PayPal or Uber validation complete without credentials.
+3. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are now verified. Continue reviewed mock contracts for remaining payment, Uber, and carrier behavior; do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 4. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
 5. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
 

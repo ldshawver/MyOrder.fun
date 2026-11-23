@@ -1,5 +1,6 @@
 import { logger } from "./logger";
 import { isWooCommerceExternalIntegrationEnabled } from "./wooExternalPolicy";
+import { fetchWooSafely } from "./wooSafeHttp";
 
 interface WooOrderLine {
   product_id: string;
@@ -34,9 +35,6 @@ export async function createWooOrder(params: CreateWooOrderParams): Promise<stri
     return null;
   }
 
-  const base = creds.storeUrl.replace(/\/$/, "");
-  const auth = Buffer.from(`${creds.consumerKey}:${creds.consumerSecret}`).toString("base64");
-
   const payload = {
     status: "processing",
     line_items: params.lines.map(l => ({
@@ -50,22 +48,19 @@ export async function createWooOrder(params: CreateWooOrderParams): Promise<stri
     ],
   };
 
-  const res = await fetch(`${base}/wp-json/wc/v3/orders`, {
+  const res = await fetchWooSafely(creds.storeUrl, "/wp-json/wc/v3/orders", creds.consumerKey, creds.consumerSecret, undefined, {
     method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`WooCommerce create order failed: ${res.status} ${text.substring(0, 200)}`);
+    throw new Error(`WooCommerce create order failed (${res.status})`);
   }
 
-  const created = await res.json() as { id?: number };
-  const wooOrderId = String(created.id ?? "");
+  const created = await res.json() as { id?: unknown };
+  if (!Number.isSafeInteger(created.id) || Number(created.id) <= 0) throw new Error("WooCommerce create order returned an invalid identity");
+  const wooOrderId = String(created.id);
 
   logger.info(
     { orderId: params.orderId, wooOrderId, lineCount: params.lines.length },
