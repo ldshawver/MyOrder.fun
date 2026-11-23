@@ -6,6 +6,20 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PostgreSQL mixed-order group atomicity and isolation (2026-11-23)
+
+- Added a disposable-database integration regression for server-created mixed-order persistence and verified the configured target is PostgreSQL 17.
+- Verified the database rejects a fulfillment group whose tenant differs from its parent order and rejects a line bound to a fulfillment group from a different parent order.
+- Verified transaction rollback removes the parent order, group, and line together, while a committed mixed pickup/CJ shipping order retains two immutable groups with every line bound to its own group.
+- The test creates uniquely named tenant/customer/catalog/order fixtures and removes them in cleanup. This validates the provisioned `push-force` runtime schema only; it does not claim a historical migration ledger or production migration evidence.
+
+Evidence:
+
+- `pnpm --filter @workspace/db exec tsx --test scripts/fulfillment-groups-postgres.test.ts` — 1 PostgreSQL integration test passed against PostgreSQL 17.
+- `pnpm --filter @workspace/db exec tsc --noEmit` — passed.
+- `git diff --check` — passed.
+- Focused ESLint is unavailable for the standalone DB package because it has no ESLint dependency/configuration; the package TypeScript gate covers the added test.
+
 ### PostgreSQL durable checkout quote isolation and concurrency (2026-11-23)
 
 - Added a disposable-database integration regression for the durable checkout quote authority boundary and verified the configured target is PostgreSQL 17.
@@ -319,7 +333,7 @@ Evidence:
 
 ## Priority queue
 
-1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Durable quote PostgreSQL isolation, expiry, rollback, locking, idempotency, and concurrent consumption are verified; continue database coverage for grouped order atomicity and provider-event reconciliation before the release gate.
+1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Durable quote PostgreSQL isolation, expiry, rollback, locking, idempotency, and concurrent consumption are verified. Mixed-order PostgreSQL atomic rollback, tenant/order group isolation, line binding, and committed group persistence are verified; continue database coverage for provider-event reconciliation before the release gate.
 2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
 3. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
 4. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
