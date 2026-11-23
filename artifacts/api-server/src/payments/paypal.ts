@@ -1,6 +1,43 @@
 import type { EnabledPaymentConfig, Money, PaymentProvider, PayPalTransmissionHeaders, ProviderCapture, ProviderOrder, ProviderRefund } from "./provider";
 
 type Json = Record<string, unknown>;
+const MAX_PROVIDER_RESPONSE_BYTES = 1024 * 1024;
+
+async function boundedJson(response: Response): Promise<Json> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_PROVIDER_RESPONSE_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new PayPalProviderError("invalid_response", "PayPal response exceeded the size limit");
+  }
+  if (!response.body) throw new PayPalProviderError("invalid_response", "PayPal response was empty");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_PROVIDER_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new PayPalProviderError("invalid_response", "PayPal response exceeded the size limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(bytes));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    return parsed as Json;
+  } catch {
+    throw new PayPalProviderError("invalid_response", "PayPal response was not valid JSON");
+  }
+}
 
 function fundingSource(source: Json | undefined): import("./provider").ProviderFundingSource | undefined {
   if (!source) return undefined;
@@ -28,7 +65,7 @@ export class PayPalProvider implements PaymentProvider {
     const auth = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64");
     const response = await this.fetchImpl(`${this.config.apiOrigin}/v1/oauth2/token`, { method: "POST", headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" }, body: "grant_type=client_credentials", signal: AbortSignal.timeout(10_000) });
     if (!response.ok) throw new PayPalProviderError("provider_error", "PayPal authentication failed");
-    const body = await response.json() as { access_token?: string; expires_in?: number };
+    const body = await boundedJson(response) as { access_token?: string; expires_in?: number };
     if (!body.access_token) throw new PayPalProviderError("invalid_response", "PayPal authentication response invalid");
     this.accessToken = { value: body.access_token, expiresAt: Date.now() + Math.max(60, body.expires_in ?? 300) * 1000 };
     return body.access_token;
@@ -47,7 +84,7 @@ export class PayPalProvider implements PaymentProvider {
       if (error instanceof DOMException && error.name === "TimeoutError") throw new PayPalProviderError("unknown_outcome", "PayPal request timed out");
       throw new PayPalProviderError("provider_error", "PayPal request failed");
     }
-    const body = await response.json().catch(() => ({})) as Json;
+    const body = await boundedJson(response);
     if (!response.ok) throw new PayPalProviderError(response.status === 422 ? "declined" : "provider_error", `PayPal request rejected (${response.status})`);
     return body;
   }

@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal bounded synthetic provider responses (2026-11-23)
+
+- Bounded OAuth and authenticated PayPal JSON responses to 1 MiB, rejecting declared or streamed oversize bodies before provider data is trusted.
+- Classified empty, malformed, array, and oversized provider payloads as invalid responses without exposing response bodies or credentials.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 21 tests passed, including declared-oversize and malformed-body rejection.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the changed provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### Uber dispatch tenant isolation and synthetic path contract (2026-11-23)
 
 - Bound the dispatch-time customer contact lookup to both the order tenant and customer identity, preventing a same-ID user in another tenant from supplying courier contact data.
