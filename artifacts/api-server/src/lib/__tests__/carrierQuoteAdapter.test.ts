@@ -73,6 +73,7 @@ describe("carrier quote adapter contract", () => {
     expect(adapterInput).toEqual([{
       cartFingerprint: context.cartFingerprint,
       destination: context.destination,
+      signal: expect.any(AbortSignal),
     }]);
     expect(persisted).toEqual([expect.objectContaining({
       id: created.id,
@@ -110,6 +111,28 @@ describe("carrier quote adapter contract", () => {
       cartFingerprint: context.cartFingerprint,
       destination: context.destination,
     }, adapter, async value => { persisted.push(value); }, now)).rejects.toThrow("CARRIER_SCOPE_INVALID");
+    expect(persisted).toEqual([]);
+  });
+
+  it("aborts a stalled provider quote and never persists it", async () => {
+    const persisted: unknown[] = [];
+    let providerSignal: AbortSignal | undefined;
+    const adapter = {
+      provider: context.provider,
+      quote: async (input: { signal: AbortSignal }) => {
+        providerSignal = input.signal;
+        await new Promise<void>(() => undefined);
+      },
+    };
+
+    await expect(createDurableCarrierQuote({
+      tenantId: 14,
+      customerId: 28,
+      cartFingerprint: context.cartFingerprint,
+      destination: context.destination,
+    }, adapter, async value => { persisted.push(value); }, now, 5)).rejects.toThrow("CARRIER_PROVIDER_TIMEOUT");
+
+    expect(providerSignal?.aborted).toBe(true);
     expect(persisted).toEqual([]);
   });
 });

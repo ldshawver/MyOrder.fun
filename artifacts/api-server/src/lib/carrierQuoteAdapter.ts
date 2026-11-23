@@ -31,8 +31,10 @@ export interface TrustedCarrierQuote {
 
 export interface CarrierQuoteAdapter {
   provider: string;
-  quote(context: Omit<CarrierQuoteRequestContext, "provider">): Promise<unknown>;
+  quote(context: Omit<CarrierQuoteRequestContext, "provider"> & { signal: AbortSignal }): Promise<unknown>;
 }
+
+const CARRIER_QUOTE_TIMEOUT_MS = 15_000;
 
 let configuredCarrierQuoteAdapter: CarrierQuoteAdapter | null = null;
 
@@ -119,6 +121,7 @@ export async function createDurableCarrierQuote(
     await db.insert(carrierQuotesTable).values(value);
   },
   now = new Date(),
+  timeoutMs = CARRIER_QUOTE_TIMEOUT_MS,
 ): Promise<CreatedCarrierQuote> {
   if (!Number.isInteger(input.tenantId) || input.tenantId <= 0
     || !Number.isInteger(input.customerId) || input.customerId <= 0) {
@@ -129,10 +132,23 @@ export async function createDurableCarrierQuote(
     cartFingerprint: input.cartFingerprint,
     destination: input.destination,
   };
-  const response = await adapter.quote({
-    cartFingerprint: context.cartFingerprint,
-    destination: context.destination,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response: unknown;
+  try {
+    response = await Promise.race([
+      adapter.quote({
+        cartFingerprint: context.cartFingerprint,
+        destination: context.destination,
+        signal: controller.signal,
+      }),
+      new Promise<never>((_, reject) => {
+        controller.signal.addEventListener("abort", () => reject(new Error("CARRIER_PROVIDER_TIMEOUT")), { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
   const trusted = acceptCarrierQuoteResponse(context, response, now);
   const id = `carrier_${randomUUID()}`;
   await persist({

@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### Bounded carrier adapter invocation (2026-11-23)
+
+- Added a 15-second deadline around the reviewed server-side carrier quote adapter and passed an abort signal into the adapter contract so stalled provider work can be cancelled.
+- A timed-out provider call fails closed with `CARRIER_PROVIDER_TIMEOUT` before quote validation or durable persistence; tenant, customer, cart, destination, pricing, and quote authority remain server-owned.
+- This is synthetic mock-contract validation only. No production carrier selection or credential-backed carrier behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `carrierQuoteAdapter` — 1 file, 11 tests passed, including abort signaling, deterministic timeout classification, and proof that a stalled provider cannot persist a quote.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the carrier adapter and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PostgreSQL CJ event reconciliation isolation and idempotency (2026-11-23)
 
 - Added a disposable-database integration regression for durable CJ fulfillment events and verified the configured target is PostgreSQL 17.
@@ -348,7 +361,7 @@ Evidence:
 ## Priority queue
 
 1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Durable quote PostgreSQL isolation, expiry, rollback, locking, idempotency, and concurrent consumption are verified. Mixed-order PostgreSQL atomic rollback, tenant/order group isolation, line binding, and committed group persistence are verified. CJ event PostgreSQL tenant isolation, rollback, locking, concurrent replay claiming, and atomic reconciliation persistence are verified; continue remaining provider mock contracts before the release gate.
-2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation; continue reviewed mock contracts for remaining payment and carrier behavior. Do not mark credential-dependent PayPal, CJ/Woo, or Uber validation complete without credentials.
+2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation. Carrier quote responses, trusted persistence, fail-closed configuration, and bounded abortable invocation are verified synthetically; continue reviewed mock contracts for remaining payment behavior. Do not mark credential-dependent PayPal, CJ/Woo, Uber, or carrier validation complete without credentials.
 3. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
 4. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
 
