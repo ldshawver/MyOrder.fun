@@ -7,7 +7,7 @@ function json(body: unknown, status = 200) { return new Response(JSON.stringify(
 
 describe("PayPal provider", () => {
   it("uses only the internally selected Sandbox host and server amount", async () => {
-    const calls: Array<{ url: string; init?: RequestInit }> = []; const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => { calls.push({ url: String(url), init }); return calls.length === 1 ? json({ access_token: "token", expires_in: 300 }) : json({ id: "ORDER1", status: "CREATED", purchase_units: [{ amount: { value: "10.80", currency_code: "USD" } }], links: [{ rel: "approve", href: "https://www.sandbox.paypal.com/checkoutnow?token=ORDER1" }] }); });
+    const calls: Array<{ url: string; init?: RequestInit }> = []; const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => { calls.push({ url: String(url), init }); return calls.length === 1 ? json({ access_token: "token", expires_in: 300 }) : json({ id: "ORDER1", status: "CREATED", purchase_units: [{ reference_id: "7", amount: { value: "10.80", currency_code: "USD" } }], links: [{ rel: "approve", href: "https://www.sandbox.paypal.com/checkoutnow?token=ORDER1" }] }); });
     const result = await new PayPalProvider(config, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 });
     expect(calls.every(call => call.url.startsWith(config.apiOrigin))).toBe(true); expect(calls[1].init?.body).toContain('"value":"10.80"'); expect(result.id).toBe("ORDER1");
   });
@@ -17,17 +17,25 @@ describe("PayPal provider", () => {
     "https://www.sandbox.paypal.com.evil.example/checkoutnow?token=ORDER1",
     "not-a-url",
   ])("rejects an untrusted approval redirect %s", async href => {
-    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "CREATED", purchase_units: [{ amount: { value: "10.80", currency_code: "USD" } }], links: [{ rel: "payer-action", href }] }));
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "CREATED", purchase_units: [{ reference_id: "7", amount: { value: "10.80", currency_code: "USD" } }], links: [{ rel: "payer-action", href }] }));
     await expect(new PayPalProvider(config, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).rejects.toMatchObject({ failureClass: "invalid_response" });
   });
   it("accepts only the configured live PayPal approval origin in live mode", async () => {
     const liveConfig: EnabledPaymentConfig = { ...config, mode: "live", environment: "live", apiOrigin: "https://api-m.paypal.com" };
-    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "CREATED", purchase_units: [{ amount: { value: "10.80", currency_code: "USD" } }], links: [{ rel: "approve", href: "https://www.paypal.com/checkoutnow?token=ORDER1" }] }));
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "CREATED", purchase_units: [{ reference_id: "7", amount: { value: "10.80", currency_code: "USD" } }], links: [{ rel: "approve", href: "https://www.paypal.com/checkoutnow?token=ORDER1" }] }));
     await expect(new PayPalProvider(liveConfig, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).resolves.toMatchObject({ approvalUrl: "https://www.paypal.com/checkoutnow?token=ORDER1" });
   });
   it("uses PayPal-Request-Id for capture idempotency", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token", expires_in: 300 })).mockResolvedValueOnce(json({ purchase_units: [{ payments: { captures: [{ id: "CAP1", status: "COMPLETED", amount: { value: "10.80", currency_code: "USD" } }] } }] }));
     await new PayPalProvider(config, fetcher as typeof fetch).captureOrder("ORDER1", "capture-key"); expect((fetcher.mock.calls[1][1].headers as Record<string, string>)["PayPal-Request-Id"]).toBe("capture-key");
+  });
+  it.each([
+    ["a mismatched internal reference", { reference_id: "8", amount: { value: "10.80", currency_code: "USD" } }],
+    ["a mismatched amount", { reference_id: "7", amount: { value: "9.80", currency_code: "USD" } }],
+    ["a mismatched currency", { reference_id: "7", amount: { value: "10.80", currency_code: "CAD" } }],
+  ])("rejects create-order representation with %s", async (_label, unit) => {
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "ORDER1", status: "CREATED", purchase_units: [unit] }));
+    await expect(new PayPalProvider(config, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 })).rejects.toMatchObject({ failureClass: "invalid_response" });
   });
   it.each([
     ["venmo", { venmo: {} }, "venmo"],

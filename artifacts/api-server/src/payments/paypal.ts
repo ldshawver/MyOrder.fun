@@ -115,7 +115,7 @@ export class PayPalProvider implements PaymentProvider {
   async createOrder(input: { amount: Money; requestId: string; internalOrderId: number }): Promise<ProviderOrder> {
     const body = await this.request("/v2/checkout/orders", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ intent: "CAPTURE", purchase_units: [{ reference_id: String(input.internalOrderId), amount: { currency_code: input.amount.currency, value: input.amount.value } }] }) }, input.requestId);
     const unit = (body.purchase_units as Array<Json> | undefined)?.[0]; const amount = unit?.amount as Json | undefined;
-    if (typeof body.id !== "string" || typeof body.status !== "string" || typeof amount?.value !== "string" || typeof amount.currency_code !== "string") throw new PayPalProviderError("invalid_response", "PayPal order response invalid");
+    if (typeof body.id !== "string" || typeof body.status !== "string" || unit?.reference_id !== String(input.internalOrderId) || amount?.value !== input.amount.value || amount.currency_code !== input.amount.currency) throw new PayPalProviderError("invalid_response", "PayPal order response invalid");
     const rawApprovalUrl = (body.links as Array<Json> | undefined)?.find(link => link.rel === "payer-action" || link.rel === "approve")?.href;
     return { id: body.id, status: body.status, amount: { value: amount.value, currency: amount.currency_code }, approvalUrl: approvalUrl(rawApprovalUrl, this.config.environment) };
   }

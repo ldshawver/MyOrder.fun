@@ -6,6 +6,19 @@ Development branch: `codex/supervised-development`
 
 ## Verified increments
 
+### PayPal create-order authority binding (2026-11-23)
+
+- Bound the represented PayPal purchase unit to the exact server-authored internal order reference, amount, and currency before returning a provider order for local persistence.
+- A syntactically valid create response that substitutes a different order reference or financial value now fails closed as an invalid provider response; existing server-owned request construction, idempotency identity, and approval-origin validation remain unchanged.
+- This is synthetic mock-contract validation only. No PayPal credential-backed sandbox or live behavior is claimed.
+
+Evidence:
+
+- Focused Vitest: `paypal` provider — 1 file, 32 tests passed, including mismatched internal reference, amount, and currency representations.
+- `pnpm --filter @workspace/api-server typecheck` — passed.
+- Focused ESLint on the PayPal provider and regression test with zero warnings — passed.
+- `git diff --check` — passed.
+
 ### PayPal read identity binding (2026-11-23)
 
 - Bound order and capture lookup responses to the exact provider resource identity requested by the server. A syntactically valid response for a different PayPal order or capture now fails closed before reconciliation can attach it to local payment state.
@@ -401,7 +414,7 @@ Evidence:
 ## Priority queue
 
 1. Secure group-specific checkout: storage, server-created mixed-cart grouping, quote-bound per-group choices/destinations, immutable transactional writes, line binding, cash restrictions, authenticated fail-closed Lucifer Direct carrier quote creation/binding/atomic consumption, derived parent lifecycle, staff transition ownership, authenticated replay-safe CJ/Woo event application, and bounded tenant-scoped provider polling reconciliation without staff impersonation are implemented. Durable quote PostgreSQL isolation, expiry, rollback, locking, idempotency, and concurrent consumption are verified. Mixed-order PostgreSQL atomic rollback, tenant/order group isolation, line binding, and committed group persistence are verified. CJ event PostgreSQL tenant isolation, rollback, locking, concurrent replay claiming, and atomic reconciliation persistence are verified; continue remaining provider mock contracts before the release gate.
-2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation. Carrier quote responses, trusted persistence, fail-closed configuration, and bounded abortable invocation are verified synthetically. PayPal response bounds, configured-environment approval redirect origins, and ambiguous mutation outcome classification are verified synthetically; continue reviewed mock contracts for remaining payment behavior. Do not mark credential-dependent PayPal, CJ/Woo, Uber, or carrier validation complete without credentials.
+2. Provider sandbox/mock contracts: CJ/Woo outbound credential and synthetic write contracts are verified. Uber synthetic contracts now cover dispatch identity, tenant-scoped customer contact lookup, provider path encoding, idempotency key behavior, webhook HMAC isolation, bounded reconciliation, and cancellation. Carrier quote responses, trusted persistence, fail-closed configuration, and bounded abortable invocation are verified synthetically. PayPal response bounds, configured-environment approval redirect origins, ambiguous mutation outcome classification, read identity binding, and create-order internal-reference/financial binding are verified synthetically; continue reviewed mock contracts for remaining payment behavior. Do not mark credential-dependent PayPal, CJ/Woo, Uber, or carrier validation complete without credentials.
 3. Catalog reliability: continue tenant-scoped sellability, pricing, option, inventory, and archived-record regression coverage while preserving Alavont presentation behavior. Admin availability lifecycle diagnostics now distinguish unavailable rows from customer-visible rows.
 4. Archived-catalog historical-reference rehoming: use the dry-run evidence to design and validate immutable history preservation before any deletion. Purge execution requires separate approval and remains outside supervised-development policy.
 
