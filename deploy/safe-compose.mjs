@@ -35,8 +35,9 @@ const PINNED_ROLLBACK = {
   },
 };
 const TOOLING_ONLY_PATHS = new Set(["deploy/docker-compose.staging.yml", "deploy/safe-compose.mjs", "deploy/safe-compose.test.mjs"]);
-const ACTIONS = new Set(["config", "build", "up", "migrate", "migrations", "p0", "bootstrap", "stop"]);
-const RELEASE_MODE_ACTIONS = new Set(["config", "build", "migrations", "up", "migrate"]);
+const ACTIONS = new Set(["config", "build", "up", "migrate", "migrations", "p0", "bootstrap", "bootstrap-synthetic", "stop"]);
+const RELEASE_MODE_ACTIONS = new Set(["config", "build", "migrations", "up", "migrate", "bootstrap-synthetic"]);
+const SYNTHETIC_BOOTSTRAP_KIND = "synthetic-empty-vm-v1";
 
 export function validatePinnedImageMetadata({ daemonId, expectedDaemonId = EXPECTED_DOCKER_DAEMON_ID, image, expected, revision, architecture = EXPECTED_ARCH }) {
   if (daemonId !== expectedDaemonId) throw new Error("Docker daemon identity does not match the approved staging host");
@@ -159,6 +160,14 @@ export function validateStagingDatabasePreflight({ p0Ready, recognizedLineage, w
   if (!recognizedLineage) throw new Error("Staging migration lineage is not recognized through 0076");
   if (typeof wooExternalEnabled !== "boolean") throw new Error("Staging WooCommerce external integration policy is not explicit");
   if (wooExternalEnabled && (!Number.isSafeInteger(wooSafeTenantCount) || wooSafeTenantCount < 1)) throw new Error("Staging WooCommerce test integration is missing or required tenant credentials are absent");
+  return true;
+}
+
+export function validateSyntheticBootstrapState({ serviceContainerIds, projectContainerIds, databaseVolumeInspectStatus }) {
+  if (!Array.isArray(serviceContainerIds) || !Array.isArray(projectContainerIds)) throw new Error("Synthetic bootstrap state is unavailable");
+  if (serviceContainerIds.length || projectContainerIds.length) throw new Error("Synthetic bootstrap requires an empty staging project");
+  if (databaseVolumeInspectStatus === 0) throw new Error("Synthetic bootstrap refused because the staging database volume already exists");
+  if (databaseVolumeInspectStatus !== 1) throw new Error("Could not safely determine whether the staging database volume exists");
   return true;
 }
 
@@ -349,6 +358,23 @@ function recognizedStagingLineage(prefix, env = process.env) {
   return validator.includes("recognized lineage preserved: 49/51") && appliedMigrations.length === 51 && !hasPendingMigrations && validator.includes("APPLIED 0075_catalogue_variant_attributes ") && validator.includes("APPLIED 0076_tenant_woo_store_url_no_default ");
 }
 
+function recognizedSyntheticStagingLineage(prefix, env = process.env) {
+  const status = releaseMigrationStatus(prefix, env);
+  return status.pending.length === 0 && status.applied.length === status.journalCount;
+}
+
+function stagingP0Ready(prefix, dbUser) {
+  return stageQuery(prefix, dbUser, "SELECT (SELECT count(*) FROM public.myorder_hotfix_migrations WHERE migration_id='p0_owner_approval_provenance')=1 AND to_regclass('public.users_owner_approval_provenance_idx') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_at' AND data_type='timestamp with time zone' AND is_nullable='YES')=1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_by_clerk_id' AND data_type='text' AND is_nullable='YES')=1 AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='users_owner_approval_provenance_idx' AND i.indisvalid AND i.indisready AND pg_get_expr(i.indpred, i.indrelid) = '(status = ''approved''::text)')") === "t";
+}
+
+function applyStagingP0Patch(prefix, dbUser) {
+  const patch = readFileSync(path.join(ROOT, "deploy", "hotfix-owner-approval.sql"));
+  if (createHash("sha256").update(patch).digest("hex") !== P0_PATCH_SHA256) throw new Error("Approved P0 compatibility patch checksum mismatch");
+  const applied = spawnSync("docker", [...prefix, "exec", "-i", "db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", dbUser, "-d", DATABASE.staging], { input: patch, encoding: "utf8" });
+  if (applied.error) throw applied.error;
+  if (applied.status !== 0) throw new Error(`Approved staging P0 patch failed with status ${applied.status}`);
+}
+
 function verifyStagingP0Patch(prefix, resolved) {
   if (resolved.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED !== "false") throw new Error("The staging P0 patch action requires external WooCommerce explicitly disabled");
   const dbUser = resolved.services.db.environment.POSTGRES_USER;
@@ -364,15 +390,9 @@ function verifyStagingP0Patch(prefix, resolved) {
   const ledgerBefore = ledgerFingerprint();
   if (!ledgerBefore.startsWith("49:")) throw new Error("Staging migration ledger count does not match the recognized 49-row lineage");
 
-  const patchPath = path.join(ROOT, "deploy", "hotfix-owner-approval.sql");
-  const patch = readFileSync(patchPath);
-  if (createHash("sha256").update(patch).digest("hex") !== P0_PATCH_SHA256) throw new Error("Approved P0 compatibility patch checksum mismatch");
-  const applied = spawnSync("docker", [...prefix, "exec", "-i", "db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", dbUser, "-d", DATABASE.staging], { input: patch, encoding: "utf8" });
-  if (applied.error) throw applied.error;
-  if (applied.status !== 0) throw new Error(`Approved staging P0 patch failed with status ${applied.status}`);
+  applyStagingP0Patch(prefix, dbUser);
 
-  const p0Ready = stageQuery(prefix, dbUser, "SELECT (SELECT count(*) FROM public.myorder_hotfix_migrations)=1 AND (SELECT count(*) FROM public.myorder_hotfix_migrations WHERE migration_id='p0_owner_approval_provenance')=1 AND to_regclass('public.users_owner_approval_provenance_idx') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_at' AND data_type='timestamp with time zone' AND is_nullable='YES')=1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_by_clerk_id' AND data_type='text' AND is_nullable='YES')=1 AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='users_owner_approval_provenance_idx' AND i.indisvalid AND i.indisready AND pg_get_expr(i.indpred, i.indrelid) = '(status = ''approved''::text)')");
-  if (p0Ready !== "t") throw new Error("Staging P0 marker/provenance verification failed after patch");
+  if (!stagingP0Ready(prefix, dbUser)) throw new Error("Staging P0 marker/provenance verification failed after patch");
   if (ledgerFingerprint() !== ledgerBefore) throw new Error("Staging Drizzle migration ledger changed during P0 compatibility patch");
   console.log("Staging P0 patch applied and verified; recognized 49-row ledger unchanged.");
 }
@@ -382,8 +402,7 @@ function verifyStagingMutationPreflight(prefix, resolved, env, release) {
   const markerTableExists = stageQuery(prefix, dbUser, "SELECT to_regclass('public.myorder_hotfix_migrations') IS NOT NULL");
   let p0Ready = false;
   if (markerTableExists === "t") {
-    const marker = stageQuery(prefix, dbUser, "SELECT (SELECT count(*) FROM public.myorder_hotfix_migrations WHERE migration_id='p0_owner_approval_provenance')=1 AND to_regclass('public.users_owner_approval_provenance_idx') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_at' AND data_type='timestamp with time zone' AND is_nullable='YES')=1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_by_clerk_id' AND data_type='text' AND is_nullable='YES')=1 AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='users_owner_approval_provenance_idx' AND i.indisvalid AND i.indisready AND pg_get_expr(i.indpred, i.indrelid) = '(status = ''approved''::text)')");
-    p0Ready = marker === "t";
+    p0Ready = stagingP0Ready(prefix, dbUser);
   }
   if (!p0Ready) throw new Error("Staging P0 marker/provenance schema is not verified");
   const wooExternalEnabled = resolved.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED === "true";
@@ -395,7 +414,7 @@ function verifyStagingMutationPreflight(prefix, resolved, env, release) {
   }
   let recognizedLineage;
   let migrationStatus;
-  if (!release) recognizedLineage = recognizedStagingLineage(prefix, env);
+  if (!release) recognizedLineage = recognizedStagingLineage(prefix, env) || recognizedSyntheticStagingLineage(prefix, env);
   else if (release.action === "build") recognizedLineage = true; // images for this release do not exist yet; build mutates nothing
   else { migrationStatus = releaseMigrationStatus(prefix, env); recognizedLineage = true; }
   validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooExternalEnabled, wooSafeTenantCount });
@@ -455,6 +474,7 @@ function main() {
   if (!ACTIONS.has(action)) throw new Error("Usage: safe-compose.mjs <staging|production> <config|build|up|migrate|p0|bootstrap|stop> [services] [--authorize-production]");
   if (!(environment in PROJECT)) throw new Error("Unknown deployment environment");
   if (action === "p0" && environment !== "staging") throw new Error("The P0 compatibility patch action is staging-only");
+  if (action === "bootstrap-synthetic" && environment !== "staging") throw new Error("Synthetic bootstrap is staging-only");
   const authorization = rest.includes("--authorize-production") && process.env.PRODUCTION_DEPLOY_CONFIRMATION === "DEPLOY-PRODUCTION" ? "DEPLOY-PRODUCTION" : undefined;
   if (rest.includes("--authorize-production") && !authorization) throw new Error("Production authorization flag and confirmation must both be present");
   if (environment === "production" && !authorization) throw new Error("Production requires explicit authorization before Compose can be resolved");
@@ -478,7 +498,7 @@ function main() {
   if (action === "up" && (!services.length || services.some(service => !["db", "api", "platform", "nginx"].includes(service)))) throw new Error("up requires an explicit allowlisted service list");
   if (environment === "staging" && action === "up" && (services.length !== 2 || !services.includes("api") || !services.includes("platform"))) throw new Error("Pinned staging release up is restricted to the API and platform services");
   if ((action === "migrate" || action === "p0") && services.length) throw new Error(`${action} does not accept service arguments`);
-  if ((action === "bootstrap" || action === "build" || action === "config" || action === "migrations") && services.length) throw new Error(`${action} does not accept service arguments`);
+  if ((action === "bootstrap" || action === "bootstrap-synthetic" || action === "build" || action === "config" || action === "migrations") && services.length) throw new Error(`${action} does not accept service arguments`);
 
   const project = PROJECT[environment];
   const composeFile = path.join(ROOT, "deploy", environment === "production" ? "docker-compose.yml" : "docker-compose.staging.yml");
@@ -510,6 +530,27 @@ function main() {
     validatePlan({ environment, root: ROOT, project, config: resolved, authorization, deploySha: process.env.DEPLOY_SHA, pinnedImages: PINNED_CANDIDATE.images });
   }
   validateBuildPolicy({ environment, action, deploySha: process.env.DEPLOY_SHA });
+
+  if (action === "bootstrap-synthetic") {
+    const serviceContainerIds = ["db", "api", "platform", "nginx"].flatMap(service => run("docker", [...prefix, "ps", "--all", "--quiet", service], { capture: true }).trim().split(/\s+/).filter(Boolean));
+    const projectContainerIds = run("docker", ["ps", "--all", "--quiet", "--filter", `label=com.docker.compose.project=${project}`], { capture: true }).trim().split(/\s+/).filter(Boolean);
+    const databaseVolumeInspectStatus = spawnSync("docker", ["volume", "inspect", `${project}_postgres_data`], { stdio: "ignore" }).status;
+    validateSyntheticBootstrapState({ serviceContainerIds, projectContainerIds, databaseVolumeInspectStatus });
+    run("docker", [...prefix, "build"]);
+    verifyReleaseImages(RELEASE_IMAGE_SERVICES, process.env.DEPLOY_SHA);
+    run("docker", [...prefix, "up", "-d", "db"]);
+    run("docker", [...prefix, "run", "--rm", "migrate"]);
+    if (!recognizedSyntheticStagingLineage(prefix, composeEnv)) throw new Error("Synthetic bootstrap migration ledger is not fully recognized");
+    const dbUser = resolved.services.db.environment.POSTGRES_USER;
+    const p0Absent = stageQuery(prefix, dbUser, "SELECT to_regclass('public.myorder_hotfix_migrations') IS NULL AND to_regclass('public.users_owner_approval_provenance_idx') IS NULL");
+    if (p0Absent !== "t") throw new Error("Synthetic bootstrap found pre-existing P0 objects");
+    applyStagingP0Patch(prefix, dbUser);
+    if (!stagingP0Ready(prefix, dbUser)) throw new Error("Synthetic bootstrap P0 verification failed");
+    run("docker", [...prefix, "up", "-d", "api", "platform", "nginx"]);
+    verifyDeployedReleaseServices(prefix, ["api", "platform"], process.env.DEPLOY_SHA);
+    console.log(`STAGING_SYNTHETIC_BOOTSTRAP=${process.env.DEPLOY_SHA} kind=${SYNTHETIC_BOOTSTRAP_KIND}`);
+    return;
+  }
 
   if (action === "bootstrap") {
     const existing = ["db", "api", "platform", "nginx"].flatMap(service => run("docker", [...prefix, "ps", "--all", "--quiet", service], { capture: true }).trim().split(/\s+/).filter(Boolean));
