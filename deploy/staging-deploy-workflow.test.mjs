@@ -67,3 +67,15 @@ test("health and release identity are verified on the host and publicly", () => 
   assert.match(remote, /j\.status==="ok"&&j\.sha===process\.argv\[1\]/);
   assert.match(workflow, /\[ "\$sha" = "ok:\$\{RELEASE_SHA\}" \]/);
 });
+
+test("host script resolves Node.js before any guard call in a non-interactive SSH session", () => {
+  const resolveIdx = remote.indexOf('command -v node >/dev/null 2>&1 || fail "Node.js is not available');
+  const versionIdx = remote.indexOf(">= 22 ? 0 : 1");
+  const firstNodeUse = remote.indexOf('node deploy/safe-compose.mjs');
+  const healthProbe = remote.indexOf('| node -e');
+  assert.ok(resolveIdx > 0, "Node.js resolution with a clear failure is required");
+  assert.ok(versionIdx > resolveIdx, "Node.js major version must be checked after resolution");
+  assert.ok(versionIdx < firstNodeUse && versionIdx < healthProbe, "Node.js must be resolved before the guard and health probe");
+  assert.match(remote, /\$HOME\/\.nvm\/versions\/node/);
+  assert.doesNotMatch(remote, /\.nvm\/nvm\.sh|\bsource\b.*profile|\.bashrc/);
+});
