@@ -26,6 +26,23 @@ case "$ENV_FILE" in /opt/alavont/*) fail "Refusing to use a production environme
 if [ "$ACTION" = "migrate-and-deploy" ] && [ "$MIGRATION_CONFIRMATION" != "APPLY_STAGING_MIGRATIONS" ]; then fail "migrate-and-deploy requires the explicit migration confirmation"; fi
 if [ "$ACTION" != "migrate-and-deploy" ] && [ -n "$MIGRATION_CONFIRMATION" ]; then fail "A migration confirmation is only accepted with migrate-and-deploy"; fi
 
+# ── Node.js for the guard. Non-interactive SSH sessions do not load the deploy
+# user's shell profile, so a Node installed with nvm (or in a user bin dir) is not
+# on PATH. Resolve it explicitly from fixed, user-owned or system locations.
+if ! command -v node >/dev/null 2>&1; then
+  for dir in /usr/local/bin /usr/bin "$HOME/.local/bin" "$HOME/bin"; do
+    if [ -x "$dir/node" ]; then PATH="$dir:$PATH"; break; fi
+  done
+fi
+if ! command -v node >/dev/null 2>&1 && [ -d "$HOME/.nvm/versions/node" ]; then
+  nvm_node_bin="$(find "$HOME/.nvm/versions/node" -mindepth 3 -maxdepth 3 -path '*/bin/node' \( -type f -o -type l \) 2>/dev/null | sort -V | tail -1)"
+  if [ -n "$nvm_node_bin" ] && [ -x "$nvm_node_bin" ]; then PATH="$(dirname -- "$nvm_node_bin"):$PATH"; fi
+fi
+export PATH
+command -v node >/dev/null 2>&1 || fail "Node.js is not available to $(id -un) in a non-interactive SSH session; install Node.js 22 or newer system-wide or under ~/.nvm for this user"
+node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || fail "Node.js $(node --version) is too old for the staging guard; Node.js 22 or newer is required"
+echo "Staging guard Node.js: $(node --version)"
+
 # ── Protected staging environment file (contents are never read or printed here)
 [ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || fail "Staging environment file is missing or is not a regular file"
 [ "$(stat -c %u "$ENV_FILE")" = "$(id -u)" ] || fail "Staging environment file must be owned by the deploy user"
