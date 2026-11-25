@@ -10,6 +10,7 @@ const PROJECT = { staging: "myorder-staging", production: "deploy" };
 const ENVIRONMENT = { staging: "staging", production: "production" };
 const DATABASE = { staging: "myorder_staging", production: "alavont" };
 const WORKTREES_ROOT = "/home/serveradmin/worktrees";
+const STAGING_VM_WORKTREES_ROOT = "/srv/myorder-staging/worktrees";
 const STAGING_BACKUP_ROOT = "/home/serveradmin/release-backups";
 const P0_PATCH_SHA256 = "cd496d318643c3f485a563445ae5d3f59b3f4ea79d991108b2e7c17dd83db54a";
 const ROOTS = { production: "/opt/alavont" };
@@ -150,7 +151,7 @@ export function validateCandidateIdentity({ root, environment, status, headSha, 
 function isApprovedRoot(environment, root) {
   const resolved = path.resolve(root);
   if (environment === "production") return resolved === ROOTS.production;
-  return environment === "staging" && resolved.startsWith(`${WORKTREES_ROOT}/`) && path.dirname(resolved) === WORKTREES_ROOT;
+  return environment === "staging" && [WORKTREES_ROOT, STAGING_VM_WORKTREES_ROOT].includes(path.dirname(resolved));
 }
 
 export function validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooExternalEnabled, wooSafeTenantCount }) {
@@ -245,7 +246,7 @@ export function validateContainer({ environment, project, service, labels, envVa
   const sourceDir = path.resolve(labels["com.docker.compose.project.working_dir"] ?? "");
   if (environment === "production") {
     if (!sourceFiles.includes(path.resolve(composeFile)) || sourceDir !== path.resolve(composeWorkingDir)) throw new Error(`Resolved ${service} container belongs to another production Compose source`);
-  } else if (sourceFiles.length !== 1 || path.basename(sourceFiles[0]) !== "docker-compose.staging.yml" || !sourceDir.startsWith("/home/serveradmin/worktrees/") || path.basename(sourceDir) !== "deploy") {
+  } else if (sourceFiles.length !== 1 || path.basename(sourceFiles[0]) !== "docker-compose.staging.yml" || ![WORKTREES_ROOT, STAGING_VM_WORKTREES_ROOT].includes(path.dirname(path.dirname(sourceDir))) || path.basename(sourceDir) !== "deploy") {
     // Staging may be converging containers created by earlier staging builds;
     // ownership still must be the staging project, and no production checkout
     // or Compose file is accepted as an existing target.

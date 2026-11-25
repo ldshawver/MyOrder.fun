@@ -10,7 +10,7 @@ set -euo pipefail
 umask 077
 
 ACTION="${1:-}"; SHA="${2:-}"; TREE="${3:-}"; SOURCE_REPO="${4:-}"; ENV_FILE="${5:-}"; MIGRATION_CONFIRMATION="${6:-}"
-WORKTREES_ROOT="/home/serveradmin/worktrees"
+WORKTREES_ROOT="/srv/myorder-staging/worktrees"
 LOCAL_HEALTH_URL="http://127.0.0.1:28081/api/healthz"
 
 fail() { echo "::error::$*" >&2; exit 1; }
@@ -41,6 +41,9 @@ git -C "$SOURCE_REPO" fetch --quiet --no-tags origin "$SHA" || fail "Could not f
 [ "$(git -C "$SOURCE_REPO" rev-parse "$SHA^{tree}")" = "$TREE" ] || fail "Release tree does not match the selected commit"
 
 WT="$WORKTREES_ROOT/staging-release-${SHA:0:12}"
+mkdir -p -- "$WORKTREES_ROOT"
+[ "$(realpath -- "$WORKTREES_ROOT")" = "$WORKTREES_ROOT" ] && [ -O "$WORKTREES_ROOT" ] || fail "Staging worktree directory must be owned by the deployment user and use its canonical path"
+[ ! -L "$WT" ] || fail "Refusing a symlinked release worktree"
 if [ -e "$WT" ]; then
   git -C "$SOURCE_REPO" worktree list --porcelain | grep -qxF "worktree $WT" || fail "Existing $WT is not a registered worktree of the staging source repository"
 else
