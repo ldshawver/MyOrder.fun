@@ -169,5 +169,6 @@ export function renderCustomerReceiptBody(order: PrintOrder): string {
 }
 
 export function renderCustomerReceipt(order: PrintOrder): string {
-  return renderKitchenTicket(order);
+  const { blocks, width } = legacyReceiptBlocks(order);
+  return encodeStoredReceiptText(renderBlocks(blocks, width, true));
 }
