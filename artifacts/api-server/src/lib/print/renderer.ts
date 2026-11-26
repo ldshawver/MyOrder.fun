@@ -23,7 +23,7 @@ export type PrintBlock =
   | { type: "section";     text: string }
   | { type: "wrap";        text: string };
 
-export function renderBlocks(blocks: PrintBlock[], width: number): string {
+export function renderBlocks(blocks: PrintBlock[], width: number, tallerText = false): string {
   const lines: string[] = [];
 
   for (const block of blocks) {
@@ -96,7 +96,9 @@ export function renderBlocks(blocks: PrintBlock[], width: number): string {
   // \x1d\x56\x41\x00 = GS V A 0 (partial cut)
   lines.push("", "", "");
   const body = lines.join("\n");
-  return "\x1b\x40" + body + "\x1b\x64\x03\x1d\x56\x41\x00";
+  const tall = tallerText ? "\x1d!\x01" : "";
+  const reset = tallerText ? "\x1d!\x00" : "";
+  return "\x1b\x40" + tall + body + reset + "\x1b\x64\x03\x1d\x56\x41\x00";
 }
 
 /**

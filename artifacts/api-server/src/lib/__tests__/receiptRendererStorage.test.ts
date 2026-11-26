@@ -12,6 +12,8 @@ describe("receipt text persistence", () => {
 
     expect(stored).not.toContain("\x00");
     expect(stored).toContain("\u2400");
-    expect(decodeStoredReceiptText(stored)).toContain("\x1d\x56\x41\x00");
+    const bytes = decodeStoredReceiptText(stored);
+    expect(bytes).toMatch(/^\x1b@\x1d!\x01/u); // eslint-disable-line no-control-regex -- printer commands
+    expect(bytes).toContain("\x1d!\x00\x1bd\x03\x1d\x56\x41\x00");
   });
 });
