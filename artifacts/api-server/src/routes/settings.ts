@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { and, eq, sql } from "drizzle-orm";
-import { db, adminSettingsTable, customerDisclaimerAcceptancesTable, inventoryLocationsTable, locationPickupSchedulesTable, uberDirectSettingsTable } from "@workspace/db";
+import { db, adminSettingsTable, auditLogsTable, customerDisclaimerAcceptancesTable, inventoryLocationsTable, locationPickupSchedulesTable, uberDirectSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, requireCustomerCheckoutAccess, writeAuditLog } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { encrypt, hasConfiguredSettingsEncryptionKey, safeDecrypt } from "../lib/crypto";
@@ -13,6 +13,8 @@ import { z } from "zod";
 import { assertWooHttpsOrigin } from "../lib/wooSafeHttp";
 import { loadPickupSchedule, pickupOperatingWindow, pickupScheduleInputSchema, validatePickupSelection } from "../lib/pickupScheduling";
 import { pushRaspberryPiWifi } from "../lib/raspberryPiWifi";
+
+import { closureSettingsBody, loadStorefrontClosures, STOREFRONT_CLOSURE_LOCK } from "../lib/storefrontClosures";
 
 const router: IRouter = Router();
 // The customer disclaimer must be accepted before an order can be created, so
@@ -420,6 +422,42 @@ router.post("/customer/disclaimer/accept", async (req, res): Promise<void> => {
     disclaimerVersion: currentVersion,
   }).returning();
   res.status(201).json({ accepted: true, version: currentVersion, acceptedAt: created.acceptedAt });
+});
+
+const closureManagers = requireRole("global_admin", "admin", "supervisor");
+
+router.get("/admin/settings/storefront-closures", closureManagers, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json(await loadStorefrontClosures(req.authorizedTenantId!));
+});
+
+router.put("/admin/settings/storefront-closures", closureManagers, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const parsed = closureSettingsBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ error: parsed.error.issues[0]?.message ?? "Invalid closure schedule." }); return;
+  }
+  const tenantId = req.authorizedTenantId!;
+  const actor = req.dbUser!;
+  const { windows, version } = parsed.data;
+  const saved = await db.transaction(async tx => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${STOREFRONT_CLOSURE_LOCK})`);
+    const prior = await loadStorefrontClosures(tenantId, tx);
+    if (prior.version !== version) return null;
+    const result = await tx.execute<{ version: number }>(sql`
+      INSERT INTO storefront_closures (tenant_id, windows) VALUES (${tenantId}, ${JSON.stringify(windows)}::jsonb)
+      ON CONFLICT (tenant_id) DO UPDATE SET windows = EXCLUDED.windows,
+        version = storefront_closures.version + 1, updated_at = now()
+      RETURNING version
+    `);
+    const [row] = result.rows;
+    if (!row) throw new Error("Closure settings could not be saved");
+    await tx.insert(auditLogsTable).values({ actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, tenantId,
+      action: "STOREFRONT_CLOSURES_UPDATED", resourceType: "storefront_closures", resourceId: String(tenantId),
+      metadata: { version: row.version, windowCount: windows.length }, ipAddress: req.ip ?? null });
+    return { windows, version: row.version };
+  });
+  if (!saved) { res.status(409).json({ error: "The schedule changed. Reload it before saving." }); return; }
+  res.json(saved);
 });
 
 // GET /api/admin/settings/customer-disclaimer
