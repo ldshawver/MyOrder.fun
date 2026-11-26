@@ -176,7 +176,7 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
   it("clock-out writes an audit_logs row with action=shift.clock_out", async () => {
     const activeShift = { id: 888, techId: 50, status: "active", tenantId: 1, clockedInAt: new Date(), cashBankStart: "0" };
     configureDb({ user: makeUser("customer_service_rep", "approved"), activeShift });
-    const res = await supertest(buildApp()).post("/api/shifts/clock-out").send({ cashBankEnd: 100 });
+    const res = await supertest(buildApp()).post("/api/shifts/clock-out").send({ cashBankEnd: 100, endingInventory: [] });
     expect(res.status).toBe(200);
     expect(auditLogInsertSpy).toHaveBeenCalledTimes(1);
     const row = auditLogInsertSpy.mock.calls[0][0] as Record<string, unknown>;
