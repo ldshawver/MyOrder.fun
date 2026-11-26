@@ -61,6 +61,10 @@ export function buildClockSlip(data: ClockSlipData): ReceiptLine[] {
     pair("Time", when(data.at, data.timezone)),
     pair("Shift", `#${data.shiftRef}`),
     rule("dashed"),
+    ...(data.event === "out" ? [
+      left("Take the cash bank or drawer to", true),
+      left("your supervisor for the checkout memo.", true),
+    ] : []),
     feed(2),
   ];
 }
