@@ -28,41 +28,41 @@ export const FROZEN_RELEASE = Object.freeze({
   tree: "e9beecdec7fae71b7416c2dbe57bac464204866f",
 });
 export const APPROVED_RELEASE = Object.freeze({
-  sha: "d8a12649160aa44a82b242c98056f6b07fdaa29f",
-  tree: "4776ec269acb15690ece69080c8e1224e4019989",
+  sha: "f424d69b3a3897385f25da22700b30e9a38d7b8b",
+  tree: "eb4378ff6d93ba3fa7622afff8d6b41b510e38d2",
   // Production's containerd-backed Docker image store reports the immutable
   // manifest digest as image.Id. Keep registry manifests and their referenced
   // image-config digests separate so neither identity can stand in for the other.
   manifests: Object.freeze({
-    api: "sha256:450bfb1c5ccde58742cbd531ba559fe345bf8a1304a34b5e9730dfde0fa03ffe",
-    platform: "sha256:1a90d23664d631f18acea6ff27884842cb543152db83130de70d786e93e00af9",
-    migrate: "sha256:b79a1654b283277e861280acf17637511090e7fecee10b84b974d2ddffb03c4c",
+    api: "sha256:ec4ef5f5a1ed9cf2835de64eddba01debb74dc13bcfc806abfefd9e1c13a13c3",
+    platform: "sha256:1af51de43fa75282be32d82c6d5ee1f7d50a74e39ec7dd2ac414e7299bba663f",
+    migrate: "sha256:81ad5be95ddf29238cbf954dbdeb0328f55a22d219417f86eddde2015125fdd6",
   }),
   configs: Object.freeze({
-    api: "sha256:20bbaf37b3178c1c8c84bc21675d3d4a82826f4c0066addd6b28952b33456749",
-    platform: "sha256:beaf919a3cefc32eef9ef28aae6ea984ca12059aeaa6e162d28acb87ffff954a",
-    migrate: "sha256:dbbc68579aaf6e0f26adec916f36718e2b1d7894104f05a37c55488c22bc6d96",
+    api: "sha256:0b017f225afe4fe0865118e0f85d349b1e8362489de28367bf78f7baa225a8dd",
+    platform: "sha256:fa3fe7249444f91ef67219e908aed0ee40f1ade9203b540c475bd5a7c99ee9e6",
+    migrate: "sha256:1e6f8c175c249671717f0a08973559665ddd158ecd31c823ab44f9f68581611d",
   }),
   revisions: Object.freeze({
-    api: "d8a12649160aa44a82b242c98056f6b07fdaa29f",
-    platform: "d8a12649160aa44a82b242c98056f6b07fdaa29f",
-    migrate: "d8a12649160aa44a82b242c98056f6b07fdaa29f",
+    api: "f424d69b3a3897385f25da22700b30e9a38d7b8b",
+    platform: "f424d69b3a3897385f25da22700b30e9a38d7b8b",
+    migrate: "f424d69b3a3897385f25da22700b30e9a38d7b8b",
   }),
   references: Object.freeze({
-    api: "ghcr.io/ldshawver/myorder-api@sha256:450bfb1c5ccde58742cbd531ba559fe345bf8a1304a34b5e9730dfde0fa03ffe",
-    platform: "ghcr.io/ldshawver/myorder-platform@sha256:1a90d23664d631f18acea6ff27884842cb543152db83130de70d786e93e00af9",
-    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:b79a1654b283277e861280acf17637511090e7fecee10b84b974d2ddffb03c4c",
+    api: "ghcr.io/ldshawver/myorder-api@sha256:ec4ef5f5a1ed9cf2835de64eddba01debb74dc13bcfc806abfefd9e1c13a13c3",
+    platform: "ghcr.io/ldshawver/myorder-platform@sha256:1af51de43fa75282be32d82c6d5ee1f7d50a74e39ec7dd2ac414e7299bba663f",
+    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:81ad5be95ddf29238cbf954dbdeb0328f55a22d219417f86eddde2015125fdd6",
   }),
 });
 export const PRODUCTION_BASELINE = Object.freeze({
   // Verified from the live Compose containers before preparing this release.
-  apiImage: "sha256:b2866d18de726b6814409c1d278a65b0b89895535ee880948e1f3d107a2d6d7c",
-  apiRevision: "281f3b782fed069588681068d95b35ee91edd928",
-  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:b2866d18de726b6814409c1d278a65b0b89895535ee880948e1f3d107a2d6d7c",
+  apiImage: "sha256:450bfb1c5ccde58742cbd531ba559fe345bf8a1304a34b5e9730dfde0fa03ffe",
+  apiRevision: "d8a12649160aa44a82b242c98056f6b07fdaa29f",
+  apiReference: "ghcr.io/ldshawver/myorder-api@sha256:450bfb1c5ccde58742cbd531ba559fe345bf8a1304a34b5e9730dfde0fa03ffe",
   apiProvenance: "runtime-identity-verified",
-  platformImage: "sha256:33e15071172c695a92832dfbb36e2df2395e8cd2bd74a88f9c29e7a829056edf",
-  platformRevision: "281f3b782fed069588681068d95b35ee91edd928",
-  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:33e15071172c695a92832dfbb36e2df2395e8cd2bd74a88f9c29e7a829056edf",
+  platformImage: "sha256:1a90d23664d631f18acea6ff27884842cb543152db83130de70d786e93e00af9",
+  platformRevision: "d8a12649160aa44a82b242c98056f6b07fdaa29f",
+  platformReference: "ghcr.io/ldshawver/myorder-platform@sha256:1a90d23664d631f18acea6ff27884842cb543152db83130de70d786e93e00af9",
   platformProvenance: "runtime-identity-verified",
   nginxImage: "sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a",
   nginxReference: "nginx:alpine",
