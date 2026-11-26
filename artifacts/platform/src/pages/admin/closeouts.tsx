@@ -37,6 +37,7 @@ export default function AdminCloseouts() {
   const [reasonById, setReasonById] = useState<Record<number, string>>({});
   const [correctionCounts, setCorrectionCounts] = useState<Record<number, { counted?: string; opening?: string }>>({});
   const [correctionReasons, setCorrectionReasons] = useState<Record<number, string>>({});
+  const [unavailableReasons, setUnavailableReasons] = useState<Record<number, string>>({});
   const [confirmedById, setConfirmedById] = useState<Record<number, boolean>>({});
 
   const load = useCallback(async () => {
@@ -127,7 +128,9 @@ export default function AdminCloseouts() {
     }
   }
 
-  async function approve(shiftId: number) {
+  async function approve(shift: PendingShift) {
+    const { shiftId } = shift;
+    const unverifiedReason = unavailableReasons[shiftId]?.trim();
     setBusyId(shiftId);
     setError(null);
     setResultMessage(null);
@@ -141,6 +144,9 @@ export default function AdminCloseouts() {
           tipPercent,
           supervisorReason: reasonById[shiftId]?.trim() || undefined,
           confirmInventoryAccountability: confirmedById[shiftId] ?? false,
+          unavailableInventory: shift.inventoryAccountability.blockers.length && unverifiedReason
+            ? { itemIds: (shift.inventoryCorrections ?? []).map(item => item.itemId), reason: unverifiedReason }
+            : undefined,
           remainderPolicy: "carry_forward_to_future_shift_payout",
         }),
       });
@@ -156,6 +162,10 @@ export default function AdminCloseouts() {
           }
           setConfirmedById(prev => ({ ...prev, [shiftId]: false }));
           throw new Error(`Shift #${shiftId}: review the inventory shortage, enter a supervisor reason, and acknowledge it before finalizing.`);
+        }
+        if (failure.error === "SHIFT_CLOSEOUT_INVENTORY_BLOCKED") {
+          await load();
+          throw new Error(`Shift #${shiftId}: inventory blockers changed. Review the refreshed shift before retrying.`);
         }
         const errMsg = failure.error ?? text.slice(0, 200);
         throw new Error(`Approve failed (HTTP ${res.status}): ${errMsg}`);
@@ -232,6 +242,8 @@ export default function AdminCloseouts() {
             const cashDelta = s.cashBankEndReported - s.cashBankStart;
             const hasShortage = s.inventoryAccountability.lines.length > 0;
             const hasBlockers = s.inventoryAccountability.blockers.length > 0;
+            const canDefer = hasBlockers && s.inventoryCorrections?.length === s.inventoryAccountability.blockers.length;
+            const deferReady = canDefer && (unavailableReasons[s.shiftId]?.trim().length ?? 0) >= 10;
             const reasonReady = (reasonById[s.shiftId]?.trim().length ?? 0) >= 10;
             return (
               <div key={s.shiftId} className="rounded-xl border border-border/40 bg-card/30 p-4" data-testid={`row-closeout-${s.shiftId}`}>
@@ -290,6 +302,14 @@ export default function AdminCloseouts() {
                         disabled={(correctionReasons[s.shiftId]?.trim().length ?? 0) < 10}>Save verified counts</Button>
                     </fieldset>
                   )}
+                  {canDefer && (
+                    <label className="block text-xs">Why the original inventory counts cannot be recovered
+                      <textarea className="mt-1 w-full rounded border bg-background px-2 py-1"
+                        value={unavailableReasons[s.shiftId] ?? ""} maxLength={500}
+                        onChange={event => setUnavailableReasons(previous => ({ ...previous, [s.shiftId]: event.target.value }))} />
+                      <span className="text-muted-foreground">Finalizing leaves the listed rows flagged for inventory review without a shortage charge for those rows.</span>
+                    </label>
+                  )}
                   <label className="block text-xs">Supervisor shortage reason
                     <textarea className="mt-1 min-h-16 w-full rounded-md border bg-background px-2 py-1.5" value={reasonById[s.shiftId] ?? ""} onChange={event => setReasonById(prev => ({ ...prev, [s.shiftId]: event.target.value }))} placeholder="Required when a shortage is reported (minimum 10 characters)" maxLength={500} />
                   </label>
@@ -320,8 +340,8 @@ export default function AdminCloseouts() {
                     ))}
                   </div>
                   <Button
-                    onClick={() => approve(s.shiftId)}
-                    disabled={busyId === s.shiftId || hasBlockers || (hasShortage && (!reasonReady || !confirmedById[s.shiftId]))}
+                    onClick={() => approve(s)}
+                    disabled={busyId === s.shiftId || (hasBlockers && !deferReady) || (hasShortage && (!reasonReady || !confirmedById[s.shiftId]))}
                     size="sm"
                     className="gap-1.5 rounded-xl"
                     data-testid={`button-approve-${s.shiftId}`}
