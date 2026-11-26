@@ -5,7 +5,7 @@
 # release) in verified-release mode. All environment, database, network,
 # container and image checks stay in safe-compose.mjs.
 #
-# Usage: staging-release-remote.sh <preflight|deploy|migrate-and-deploy> <sha> <tree> <source-repo> <env-file> [migration-confirmation]
+# Usage: staging-release-remote.sh <preflight|deploy|migrate-and-deploy|bootstrap-synthetic> <sha> <tree> <source-repo> <env-file> [migration-confirmation]
 set -euo pipefail
 umask 077
 
@@ -15,7 +15,7 @@ LOCAL_HEALTH_URL="http://127.0.0.1:28081/api/healthz"
 
 fail() { echo "::error::$*" >&2; exit 1; }
 
-case "$ACTION" in preflight|deploy|migrate-and-deploy) ;; *) fail "Unknown action";; esac
+case "$ACTION" in preflight|deploy|migrate-and-deploy|bootstrap-synthetic) ;; *) fail "Unknown action";; esac
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || fail "Release SHA must be a full 40-character commit SHA"
 [[ "$TREE" =~ ^[0-9a-f]{40}$ ]] || fail "Release tree must be a full 40-character tree SHA"
 [[ "$SOURCE_REPO" =~ ^/[A-Za-z0-9._/-]+$ ]] || fail "Staging source repository path is invalid"
@@ -24,7 +24,8 @@ case "$SOURCE_REPO$ENV_FILE" in *..*) fail "Paths must not contain ..";; esac
 case "$SOURCE_REPO" in /opt/alavont|/opt/alavont/*) fail "Refusing to use the production checkout";; esac
 case "$ENV_FILE" in /opt/alavont/*) fail "Refusing to use a production environment file";; esac
 if [ "$ACTION" = "migrate-and-deploy" ] && [ "$MIGRATION_CONFIRMATION" != "APPLY_STAGING_MIGRATIONS" ]; then fail "migrate-and-deploy requires the explicit migration confirmation"; fi
-if [ "$ACTION" != "migrate-and-deploy" ] && [ -n "$MIGRATION_CONFIRMATION" ]; then fail "A migration confirmation is only accepted with migrate-and-deploy"; fi
+if [ "$ACTION" = "bootstrap-synthetic" ] && [ "$MIGRATION_CONFIRMATION" != "BOOTSTRAP_SYNTHETIC_STAGING" ]; then fail "bootstrap-synthetic requires the explicit synthetic bootstrap confirmation"; fi
+if [ "$ACTION" != "migrate-and-deploy" ] && [ "$ACTION" != "bootstrap-synthetic" ] && [ -n "$MIGRATION_CONFIRMATION" ]; then fail "A migration confirmation is only accepted with a mutating staging action"; fi
 
 # ── Node.js for the guard. Non-interactive SSH sessions do not load the deploy
 # user's shell profile, so a Node installed with nvm (or in a user bin dir) is not
@@ -78,6 +79,21 @@ guard() { node deploy/safe-compose.mjs staging "$@"; }
 
 previous="$(curl -fsS --max-time 10 "$LOCAL_HEALTH_URL" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).sha||"unknown"))}catch{process.stdout.write("unknown")}})' || true)"
 echo "STAGING_PREVIOUS_SHA=${previous:-unknown}"
+
+if [ "$ACTION" = "bootstrap-synthetic" ]; then
+  echo "== Guard: initialize an empty staging project with synthetic data only"
+  guard bootstrap-synthetic
+  echo "== Verify staging health and release identity"
+  for _ in $(seq 1 30); do
+    body="$(curl -fsS --max-time 5 "$LOCAL_HEALTH_URL" 2>/dev/null || true)"
+    if printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.exit(j.status==="ok"&&j.sha===process.argv[1]?0:1)}catch{process.exit(1)}})' "$SHA"; then
+      echo "STAGING_DEPLOYED_SHA=$SHA previous=${previous:-unknown}"
+      exit 0
+    fi
+    sleep 4
+  done
+  fail "Synthetic staging bootstrap did not report healthy with sha $SHA"
+fi
 
 echo "== Guard: release eligibility (read-only)"
 guard config

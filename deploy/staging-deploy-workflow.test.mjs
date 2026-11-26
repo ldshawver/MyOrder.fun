@@ -53,6 +53,15 @@ test("migrations need an explicit action and confirmation; deploy never migrates
   assert.ok(statusIdx > 0 && statusIdx < migrateIdx && migrateIdx < upIdx);
 });
 
+test("synthetic bootstrap is confirmation-gated and only drives the staging guard", () => {
+  assert.match(workflow, /bootstrap-synthetic requires migration_confirmation=BOOTSTRAP_SYNTHETIC_STAGING/);
+  assert.match(remote, /bootstrap-synthetic requires the explicit synthetic bootstrap confirmation/);
+  const bootstrap = remote.indexOf("guard bootstrap-synthetic");
+  const releaseGuard = remote.indexOf("guard config");
+  assert.ok(bootstrap > 0 && releaseGuard > bootstrap, "empty-state bootstrap must be handled before normal existing-stack guards");
+  assert.match(remote, /guard bootstrap-synthetic/);
+});
+
 test("host script only drives the staging guard and refuses production paths", () => {
   const nodeCalls = remote.match(/node deploy\/safe-compose\.mjs[^\n]*/g) ?? [];
   assert.deepEqual(nodeCalls, ['node deploy/safe-compose.mjs staging "$@"; }']);

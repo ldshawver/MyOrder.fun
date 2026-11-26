@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: preflight (no changes) | deploy | migrate-and-deploy (applies pending staging migrations after a backup)
+        description: preflight | deploy | migrate-and-deploy | bootstrap-synthetic (empty staging VM only)
         required: true
         type: choice
         default: preflight
@@ -18,6 +18,7 @@ on:
           - preflight
           - deploy
           - migrate-and-deploy
+          - bootstrap-synthetic
       release_sha:
         description: Full 40-character commit SHA to release
         required: true
@@ -27,7 +28,7 @@ on:
         required: true
         type: string
       migration_confirmation:
-        description: Only for migrate-and-deploy — type APPLY_STAGING_MIGRATIONS
+        description: For migrate-and-deploy type APPLY_STAGING_MIGRATIONS; for bootstrap-synthetic type BOOTSTRAP_SYNTHETIC_STAGING
         required: false
         type: string
         default: ""
@@ -61,8 +62,10 @@ jobs:
           [[ "$RELEASE_TREE" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_tree must be a full lowercase 40-character SHA"; exit 1; }
           if [ "$ACTION" = "migrate-and-deploy" ]; then
             [ "$MIGRATION_CONFIRMATION" = "APPLY_STAGING_MIGRATIONS" ] || { echo "::error::migrate-and-deploy requires migration_confirmation=APPLY_STAGING_MIGRATIONS"; exit 1; }
+          elif [ "$ACTION" = "bootstrap-synthetic" ]; then
+            [ "$MIGRATION_CONFIRMATION" = "BOOTSTRAP_SYNTHETIC_STAGING" ] || { echo "::error::bootstrap-synthetic requires migration_confirmation=BOOTSTRAP_SYNTHETIC_STAGING"; exit 1; }
           else
-            [ -z "$MIGRATION_CONFIRMATION" ] || { echo "::error::migration_confirmation is only accepted with migrate-and-deploy"; exit 1; }
+            [ -z "$MIGRATION_CONFIRMATION" ] || { echo "::error::migration_confirmation is only accepted with a mutating staging action"; exit 1; }
           fi
 
       - name: Checkout release
