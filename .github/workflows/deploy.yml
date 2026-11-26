@@ -150,7 +150,7 @@ jobs:
 
       # Used only to match the pre-pinned SSH host key; never used as a
       # network destination.
-      VPS_SSH_HOST_KEY_ALIAS: ${{ secrets.VPS_HOST }}
+      VPS_SSH_HOST_KEY_ALIAS: ${{ secrets.VPS_SSH_HOST_KEY_ALIAS || secrets.VPS_HOST }}
 
       VPS_USER: ${{ secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin' }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
@@ -234,7 +234,7 @@ jobs:
           }
 
           test -n "${VPS_SSH_HOST_KEY_ALIAS:-}" || {
-            echo "::error::Missing known_hosts identity alias in production environment secret VPS_HOST."
+            echo "::error::Missing known_hosts identity alias in production environment secret VPS_SSH_HOST_KEY_ALIAS."
             exit 1
           }
 
@@ -274,7 +274,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
           if ! ssh-keygen -F "${VPS_SSH_HOST_KEY_ALIAS}" -f ~/.ssh/known_hosts >/dev/null; then
-            echo "::error::VPS_KNOWN_HOSTS must contain the pinned production host key for the VPS_HOST identity alias."
+            echo "::error::VPS_KNOWN_HOSTS must contain the pinned production host key for the production SSH identity alias."
             exit 1
           fi
 
