@@ -946,7 +946,11 @@ describe("cash closeout rechecks current catalog eligibility", () => {
     // therefore exercise the post-authorization catalog guard.
     dbState.shifts = [{ id: 81, tenantId: 1, techId: 9, status: "active", boxAssignmentId: "sales-box-1", clockedInAt: new Date() }];
     const orderId = 9001;
-    dbState.orders = [{ id: orderId, tenantId: 1, customerId: 5, assignedCsrUserId: 9, assignedShiftId: 81, status: "pending", paymentStatus: "unpaid", total: "10.00", remainingTenderAmount: "10.00" }];
+    dbState.orders = [{
+      id: orderId, tenantId: 1, customerId: 5, assignedCsrUserId: 9, assignedShiftId: 81,
+      status: "pending", paymentStatus: "unpaid", selectedPaymentMethod: "cash",
+      total: "10.00", remainingTenderAmount: "10.00",
+    }];
     Object.assign(dbState.catalog[0]!, patch);
     await db.insert(orderItemsTable).values({ orderId, catalogItemId: 1, quantity: 1 } as never).returning();
     vi.mocked(db.update).mockClear();
