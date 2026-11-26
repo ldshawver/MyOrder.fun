@@ -297,6 +297,9 @@ function ProductEditor({
                 <input type="checkbox" checked={Boolean(form.showCatalogueStockIndicator)} onChange={e => setForm(f => ({ ...f, showCatalogueStockIndicator: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
                 <span className="text-sm">Show stock count</span>
               </label>
+              <p className="ml-6 mt-1 text-xs text-muted-foreground">
+                Controls the quantity customers see. Product visibility and ordering eligibility are set separately.
+              </p>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.isFeatured)} onChange={e => setForm(f => ({ ...f, isFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
                 <span className="text-sm">Featured (promote in catalogue)</span>
