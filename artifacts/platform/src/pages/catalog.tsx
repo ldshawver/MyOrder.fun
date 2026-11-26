@@ -194,7 +194,7 @@ function CatalogItemCard({
       data-testid={`card-product-${item.id}`}
     >
       {/* Thumbnail */}
-      <div className="relative aspect-square overflow-hidden" style={{ background: isLC ? "#0A0000" : undefined }}>
+      <div className="holiday-product-image relative aspect-square overflow-hidden" style={{ background: isLC ? "#0A0000" : undefined }}>
         {primaryImage && !imgError ? (
           <>
             <img

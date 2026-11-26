@@ -48,3 +48,11 @@ export const storefrontClosuresTable = pgTable("storefront_closures", {
   windowsArray: check("storefront_closures_windows_array", sql`jsonb_typeof(${table.windows}) = 'array'`),
   versionPositive: check("storefront_closures_version_positive", sql`${table.version} > 0`),
 }));
+
+export const holidayDecorationsTable = pgTable("holiday_decorations", {
+  tenantId: integer("tenant_id").primaryKey().references(() => tenantsTable.id, { onDelete: "cascade" }),
+  preferences: jsonb("preferences").notNull(),
+  version: integer("version").notNull().default(1),
+}, table => ({
+  versionPositive: check("holiday_decorations_version_positive", sql`${table.version} > 0`),
+}));

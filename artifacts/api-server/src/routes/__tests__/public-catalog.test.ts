@@ -42,6 +42,10 @@ vi.mock("@workspace/db", () => {
   return { db, catalogItemsTable, tenantsTable, tenantSettingsTable };
 });
 
+vi.mock("../../lib/holidayDecorations", () => ({
+  holidayDisplay: async (tenantId: number) => ({ theme: tenantId === 1 ? "christmas" : "easter", animated: tenantId === 1 }),
+}));
+
 const catalogRouter = (await import("../public-catalog")).default;
 const app = express();
 app.use("/api", catalogRouter);
@@ -103,5 +107,18 @@ describe("GET /api/public/catalog", () => {
     expect((await supertest(app).get("/api/public/catalog").set("Host", "myorder.fun")).status).toBe(404);
     fixtures.storefronts = fixtures.storefronts.slice(0, 1);
     expect((await supertest(app).get("/api/public/catalog").set("Host", "myorder.fun")).status).toBe(200);
+  });
+});
+
+describe("public holiday decorations", () => {
+  it("uses the storefront host and ignores a supplied tenant selector", async () => {
+    const base = "/api/public/holiday-decorations";
+    const first = await supertest(app).get(base + "?tenantId=2").set("Host", "myorder.fun");
+    expect(first.status).toBe(200);
+    expect(first.headers["cache-control"]).toBe("no-store");
+    expect(first.body).toEqual({ theme: "christmas", animated: true });
+    const second = await supertest(app).get(base).set("Host", "store.example.test");
+    expect(second.body).toEqual({ theme: "easter", animated: false });
+    expect((await supertest(app).get(base).set("Host", "unknown.test").set("X-Forwarded-Host", "myorder.fun")).status).toBe(404);
   });
 });

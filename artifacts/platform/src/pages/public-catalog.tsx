@@ -104,7 +104,7 @@ export default function PublicCatalog() {
           key={product.id} type="button" className="pc-card" data-testid="public-product-card"
           onClick={() => setSelected(product)} aria-label={`View ${product.name}`}
         >
-          <div className="pc-image">{product.imageUrl ? <img src={product.imageUrl} alt="" loading="lazy" /> : <span>LC</span>}</div>
+          <div className="pc-image holiday-product-image">{product.imageUrl ? <img src={product.imageUrl} alt="" loading="lazy" /> : <span>LC</span>}</div>
           <span className="pc-category">{product.category}</span>
           <span className="pc-name">{product.name}</span>
           <span className="pc-price">{money.format(product.price)} <ArrowUpRight size={16} aria-hidden="true" /></span>
@@ -120,7 +120,7 @@ export default function PublicCatalog() {
     <dialog ref={dialogRef} className="pc-dialog" onClose={() => setSelected(null)} aria-label={selected?.name || "Product details"}>
       {selected && <>
         <button type="button" className="pc-close" onClick={() => setSelected(null)} aria-label="Close product details">×</button>
-        {selected.imageUrl && <img src={selected.imageUrl} alt="" />}
+        {selected.imageUrl && <div className="holiday-product-image pc-dialog-image"><img src={selected.imageUrl} alt="" /></div>}
         <span className="pc-category">{selected.category}</span>
         <h2>{selected.name}</h2>
         <strong>{money.format(selected.price)}</strong>

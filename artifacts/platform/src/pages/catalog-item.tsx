@@ -169,7 +169,7 @@ export default function CatalogItemDetail() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         <Card className="overflow-hidden border-border/50 shadow-sm rounded-sm">
-          <div className="aspect-square bg-muted/20 flex items-center justify-center text-muted-foreground p-8">
+          <div className="holiday-product-image aspect-square bg-muted/20 flex items-center justify-center text-muted-foreground p-8">
             {selectedMedia ? (
               <div className="relative w-full h-full">
                 {selectedMedia.type === "video" ? (
