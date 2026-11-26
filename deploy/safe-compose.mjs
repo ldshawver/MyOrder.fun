@@ -457,7 +457,7 @@ function createReleaseBackup(prefix, dbUser, revision) {
   const backupPath = path.join(dir, "staging.dump");
   const out = openSync(backupPath, "wx", 0o600);
   try {
-    const dump = spawnSync("docker", [...prefix, "exec", "-T", "db", "pg_dump", "-X", "-U", dbUser, "-d", DATABASE.staging, "-Fc"], { stdio: ["ignore", out, "inherit"] });
+    const dump = spawnSync("docker", [...prefix, "exec", "-T", "db", "pg_dump", "-U", dbUser, "-d", DATABASE.staging, "-Fc"], { stdio: ["ignore", out, "inherit"] });
     if (dump.error) throw dump.error;
     if (dump.status !== 0) throw new Error("Staging pre-migration backup failed");
   } finally { closeSync(out); }
