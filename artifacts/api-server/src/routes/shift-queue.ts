@@ -105,7 +105,7 @@ router.get("/shift-queue/status", requirePermission("queue.view"), async (req, r
   const tenantId = req.authorizedTenantId!;
   const shifts = await listActiveCsrs(tenantId);
   const config = await latestRoutingConfig(tenantId);
-  const current = shifts.toSorted((a, b) => new Date(b.clockedInAt).getTime() - new Date(a.clockedInAt).getTime())[0];
+  const current = shifts.sort((a, b) => new Date(b.clockedInAt).getTime() - new Date(a.clockedInAt).getTime())[0];
   const [operator] = current ? await db.select({
     firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email,
   }).from(usersTable).where(eq(usersTable.id, current.userId)).limit(1) : [];
