@@ -143,6 +143,8 @@ class InsufficientInventoryError extends Error {
   }
 }
 class OptionSelectionError extends Error {}
+import { activeStorefrontClosure, loadStorefrontClosures, STOREFRONT_CLOSURE_LOCK, StorefrontClosedError } from "../lib/storefrontClosures";
+
 class CheckoutReplayConflictError extends Error {}
 class CheckoutQuoteConsumedError extends Error {}
 class PickupScheduleChangedError extends Error {}
@@ -763,6 +765,9 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
   if (!parsed.success) { res.status(400).json({ error: "INVALID_CHECKOUT_QUOTE", details: parsed.error.issues }); return; }
   const tenantId = req.authorizedTenantId!;
   const actor = req.dbUser!;
+  const { windows } = await loadStorefrontClosures(tenantId);
+  const closure = activeStorefrontClosure(windows);
+  if (closure) { res.status(409).json({ code: "STOREFRONT_CLOSED", error: closure.message }); return; }
   try {
     const lines = await normalizeCheckoutCart(parsed.data.items, undefined, true, tenantId, true, { isCurrentEmployee: actor.isCurrentEmployee === true });
     const totals = computeBaseCheckoutTotals(lines);
@@ -796,6 +801,8 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       const location = await resolvePickupLocation(tenantId, parsed.data.pickupLocationId);
       const schedule = await loadPickupSchedule(tenantId, location.id);
       const selection = validatePickupSelection(schedule, parsed.data.pickupAt);
+      const scheduledClosure = activeStorefrontClosure(windows, selection.pickupAt.getTime());
+      if (scheduledClosure) { res.status(409).json({ code: "PICKUP_DURING_CLOSURE", error: scheduledClosure.message }); return; }
       checkoutLocationId = location.id;
       pickup = { locationId: location.id, pickupAt: selection.pickupAt.toISOString(), mode: selection.mode, timeZone: schedule.timeZone };
     } else if (parsed.data.pickupLocationId != null || parsed.data.pickupAt != null) {
@@ -924,12 +931,20 @@ router.post("/checkout/carrier-quote", async (req, res): Promise<void> => {
 });
 
 router.get("/orders/pickup-availability", async (req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
   const tenantId = req.authorizedTenantId!;
+  const { windows } = await loadStorefrontClosures(tenantId);
+  const closure = activeStorefrontClosure(windows);
   const locations = await db.select({ id: inventoryLocationsTable.id, name: inventoryLocationsTable.name }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.type, "storefront"), eq(inventoryLocationsTable.isActive, true)));
   const results = await Promise.all(locations.map(async location => {
     try {
       const schedule = await loadPickupSchedule(tenantId, location.id);
-      return { locationId: location.id, locationName: location.name, configured: true, ...calculatePickupAvailability(schedule) };
+      const availability = calculatePickupAvailability(schedule);
+      const slots = availability.slots.filter(slot => !activeStorefrontClosure(windows, Date.parse(slot.at)));
+      return { locationId: location.id, locationName: location.name, configured: true, ...availability, slots,
+        ...(closure ? { immediateAvailable: false, openNow: false, message: closure.message } : {}),
+        ...(slots.length !== availability.slots.length || closure ? { nextOpenAt: slots[0]?.at ?? null } : {}),
+      };
     } catch {
       return { locationId: location.id, locationName: location.name, configured: false, timeZone: null, openNow: false, immediateAvailable: false, slots: [], nextOpenAt: null, message: "Pickup hours are not configured for this location." };
     }
@@ -1164,6 +1179,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(200).json(await buildOrderResponse(priorOrder));
     return;
   }
+  const closure = activeStorefrontClosure((await loadStorefrontClosures(houseTenantId)).windows);
+  if (closure) { res.status(409).json({ code: "STOREFRONT_CLOSED", error: closure.message }); return; }
   const conversionCheck = verifyConversionSnapshot((body.data as { checkoutConversionToken?: unknown }).checkoutConversionToken, houseTenantId, actor.id, strictItems.data);
   if (!conversionCheck.ok) {
     res.status(422).json({ error: conversionCheck.error });
@@ -1522,6 +1539,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         replayed = true;
         return concurrentOrder;
       }
+      await tx.execute(sql`SELECT pg_advisory_xact_lock_shared(${houseTenantId}, ${STOREFRONT_CLOSURE_LOCK})`);
+      const { windows } = await loadStorefrontClosures(houseTenantId, tx);
+      const activeClosure = activeStorefrontClosure(windows) ??
+        (pickupSelection ? activeStorefrontClosure(windows, pickupSelection.pickupAt.getTime()) : null);
+      if (activeClosure) throw new StorefrontClosedError(activeClosure);
       if (pickupLocation && pickupSchedule) {
         // Hold the schedule row stable until the order and its immutable
         // snapshot commit. Admin edits wait for this transaction, and a
@@ -1972,6 +1994,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       return currentOrder;
     });
   } catch (err) {
+    if (err instanceof StorefrontClosedError) { res.status(409).json({ code: "STOREFRONT_CLOSED", error: err.closure.message }); return; }
     if (err instanceof CheckoutReplayConflictError) { res.status(409).json({ error: err.message }); return; }
     if (err instanceof CheckoutQuoteConsumedError) { res.status(409).json({ error: "CHECKOUT_QUOTE_STALE" }); return; }
     if (err instanceof PickupScheduleChangedError) { res.status(409).json({ error: "PICKUP_SCHEDULE_CHANGED" }); return; }
