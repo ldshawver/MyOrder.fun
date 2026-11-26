@@ -16,6 +16,7 @@ const P0_PATCH_SHA256 = "cd496d318643c3f485a563445ae5d3f59b3f4ea79d991108b2e7c17
 const ROOTS = { production: "/opt/alavont" };
 const RELEASE_BASE_SHA = "8744d8e34ab8627555919aec337abde0c3291e0f";
 const EXPECTED_DOCKER_DAEMON_ID = "90b592a4-aee8-4d61-99a2-1a6a8b58ed55";
+const STAGING_VM_DOCKER_DAEMON_ID = "fe9efaf7-eae3-48af-9e85-a7bef881d2f8";
 const EXPECTED_ARCH = "amd64";
 const PINNED_CANDIDATE = {
   sha: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
@@ -432,9 +433,12 @@ function releaseMigrationStatus(prefix, env) {
 
 function verifyReleaseImages(services, revision) {
   const daemonId = run("docker", ["info", "--format", "{{.ID}}"], { capture: true }).trim();
+  const expectedDaemonId = path.dirname(ROOT) === STAGING_VM_WORKTREES_ROOT
+    ? STAGING_VM_DOCKER_DAEMON_ID
+    : EXPECTED_DOCKER_DAEMON_ID;
   for (const service of services) {
     const raw = run("docker", ["image", "inspect", `myorder-${service}:${revision}`, "--format", "{{json .}}"], { capture: true });
-    validateReleaseImageMetadata({ daemonId, image: JSON.parse(raw), service, revision });
+    validateReleaseImageMetadata({ daemonId, expectedDaemonId, image: JSON.parse(raw), service, revision });
   }
 }
 
