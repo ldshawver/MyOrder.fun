@@ -2410,8 +2410,9 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     }
     const terminal = ["completed", "refunded", "cancelled", "archived", "voided", "closed"].includes(order.status);
     if (terminal || order.paymentStatus === "paid") return { status: 409, error: "Order is already paid or is not eligible for cash closeout" } as const;
-    if (Number((order.taxSnapshot as { schemaVersion?: unknown } | null)?.schemaVersion) >= 3
-      && order.selectedPaymentMethod !== "cash") return { status: 409, error: "Order was not confirmed for Cash tender" } as const;
+    if ((order.selectedPaymentMethod ?? order.paymentMethod) !== "cash") {
+      return { status: 409, error: "Order was not confirmed for Cash tender" } as const;
+    }
     if (order.paymentStatus !== "unpaid" || order.paymentIntentId) return { status: 409, error: "Another payment is pending or associated with this order" } as const;
     const dueCents = moneyToCents(order.remainingTenderAmount ?? order.total);
     const tenderedCents = moneyToCents(parsed.data.amountTendered);
