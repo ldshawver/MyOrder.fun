@@ -4,6 +4,8 @@ import { z } from "zod";
 import { db, catalogItemsTable, tenantsTable, tenantSettingsTable } from "@workspace/db";
 import { normalizeStorefrontHost, resolvePublicStorefrontTenantIdForHost } from "../config/publicStorefrontBranding";
 
+import { activeStorefrontClosure, loadStorefrontClosures } from "../lib/storefrontClosures";
+
 const router: IRouter = Router();
 
 const querySchema = z.object({
@@ -70,6 +72,15 @@ async function tenantForPublicHost(host: string): Promise<number | null> {
   // configuration can resolve only when exactly one active tenant exists.
   return host === "myorder.fun" && active.length === 1 ? active[0].tenantId : null;
 }
+
+router.get("/public/storefront-closure", async (req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  const host = normalizeStorefrontHost(req.headers.host);
+  const tenantId = host ? await tenantForPublicHost(host) : null;
+  if (!tenantId) { res.status(404).json({ error: "Storefront not configured" }); return; }
+  const settings = await loadStorefrontClosures(tenantId);
+  res.json({ closure: activeStorefrontClosure(settings.windows) });
+});
 
 /** A guest-only projection of published Lucifer Cruz storefront products. */
 router.get("/public/catalog", async (req, res): Promise<void> => {

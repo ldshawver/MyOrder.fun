@@ -14,6 +14,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
 
+const closureState = vi.hoisted(() => ({ windows: [] as Array<{ startsAt: string; endsAt: string; message: string }> }));
+vi.mock("../../lib/storefrontClosures", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../lib/storefrontClosures")>();
+  return { ...actual, loadStorefrontClosures: async () => ({ windows: closureState.windows, version: 0 }) };
+});
+
 const dbState: {
   orders: Array<Record<string, unknown>>;
   users: Array<Record<string, unknown>>;
@@ -460,6 +466,7 @@ function captureEvents(role: string, userId: number): { received: OrderEvent[]; 
 }
 
 beforeEach(() => {
+  closureState.windows = [];
   dbState.orders = [];
   dbState.auditLogs = [];
   dbState.users = [
@@ -586,6 +593,18 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
     });
     expect(order.status).toBe(422);
     expect(order.body.error).toMatch(/PayPal checkout is unavailable/);
+    expect(dbState.orders).toHaveLength(0);
+  });
+
+  it("rejects checkout after a supervisor closes the store, even with a previously issued quote", async () => {
+    mockActor = dbState.users[0]!;
+    const app = buildApp();
+    const payload = await convertedCheckoutPayload(app);
+    closureState.windows = [{ startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 60_000).toISOString(), message: "We’re closed for the holidays." }];
+    const result = await supertest(app).post("/api/orders").send(payload);
+    expect(result.status, result.text).toBe(409);
+    expect(result.body).toMatchObject({ code: "STOREFRONT_CLOSED", error: "We’re closed for the holidays." });
     expect(dbState.orders).toHaveLength(0);
   });
 

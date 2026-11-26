@@ -13,6 +13,16 @@ describe("Speed Order staff screen", () => {
     expect(page).toContain('"X-Speed-Order-Member-Id"');
   });
 
+  it("shows category controls above products and can load more items into the same order", () => {
+    const categoryControls = page.indexOf('aria-label="Product categories"');
+    expect(categoryControls).toBeGreaterThan(-1);
+    expect(categoryControls).toBeLessThan(page.indexOf('className="grid grid-cols-3 gap-2"'));
+    expect(page).toContain('"/api/speed-order/categories"');
+    expect(page).toContain("/api/speed-order/category-items?");
+    expect(page).toContain("getNextPageParam: page => page.nextCursor");
+    expect(page).toContain("changeQuantity(id, 1)");
+  });
+
   it("reuses authoritative conversion, quote, order, and cash closeout", () => {
     expect(page).toContain('"/api/cart/convert"');
     expect(page).toContain('"/api/checkout/quote"');
