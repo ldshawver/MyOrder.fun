@@ -14,6 +14,7 @@ import {
 } from "@workspace/api-client-react";
 
 import { useQueryClient } from "@tanstack/react-query";
+import { OrderCourier } from "@/components/OrderCourier";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote, RotateCcw } from "lucide-react";
@@ -834,6 +835,8 @@ export default function OrderDetail() {
                   </Button>
                 </div>
               )}
+
+              {order.deliveryMethod === "uber_direct" && <OrderCourier orderId={order.id} />}
 
               {/* Customer: Track My Delivery / submit tracking link */}
               {isCustomer && (order as OrderWithTracking).trackingUrl ? (

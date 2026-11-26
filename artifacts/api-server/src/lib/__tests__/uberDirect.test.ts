@@ -142,3 +142,12 @@ describe("Uber Direct security boundaries", () => {
     } finally { fetchSpy.mockRestore(); }
   });
 });
+
+it("projects only customer-facing courier fields and verified Uber tracking origins", async () => {
+  const { projectUberCourierDetails } = await import("../uberDirect");
+  const courier = { name: "Taylor J.", vehicle_type: "car", phone_number: "+15550000000" };
+  expect(projectUberCourierDetails({ id: "delivery", courier, tracking_url: "https://www.ubereats.com/orders/abc" }))
+    .toEqual({ name: "Taylor J.", vehicle: "car", trackingUrl: "https://www.ubereats.com/orders/abc" });
+  expect(projectUberCourierDetails({ id: "delivery", tracking_url: "https://uber.com.example.com/orders/abc" }).trackingUrl).toBeNull();
+  expect(projectUberCourierDetails({ id: "delivery", tracking_url: "http://uber.com/orders/abc" }).trackingUrl).toBeNull();
+});

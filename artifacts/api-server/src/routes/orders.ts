@@ -89,7 +89,7 @@ import {
 } from "../lib/fulfillmentGroupLifecycle";
 
 import { logger } from "../lib/logger";
-import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
+import { courierDetailsForDelivery, isUberOrderReadyForDispatch, queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
 import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { allocateOrderLineRefundTax } from "../lib/refundAccounting";
@@ -2062,6 +2062,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       status: order.status,
       paymentStatus: order.paymentStatus,
       paymentMethod: order.paymentMethod,
+      selectedPaymentMethod: order.selectedPaymentMethod,
       notes: order.notes,
       subtotal: order.subtotal as string,
       tax: order.tax as string,
@@ -2182,7 +2183,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
   const tenantId = req.authorizedTenantId!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
-  if (["admin", "global_admin"].includes(normalizeRole(actor.role))) {
+  if (["admin", "global_admin"].includes(normalizeRole(actor.role)) && order.assignedCsrUserId == null && order.assignedShiftId == null) {
     await startDefaultQueueOrder(req, res, order);
     return;
   }
@@ -2536,6 +2537,9 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     return;
   }
   emitUpdated(outcome.updated, "cash_closeout_completed");
+  await import("../lib/autoReceiptPrint").then(({ printCashCloseoutReceipt }) =>
+    printCashCloseoutReceipt(tenantId, outcome.updated.id),
+  ).catch(() => logger.warn({ tenantId, orderId }, "Cash receipt enqueue failed"));
   await queueUberDeliveryForPaidOrder(tenantId, outcome.updated.id).catch(() => {
     logger.warn({ tenantId, orderId: outcome.updated.id, failure: "handoff_unavailable" }, "Uber Direct handoff will require recovery");
   });
@@ -2749,17 +2753,25 @@ router.get("/orders/:id/courier", async (req, res): Promise<void> => {
   const orderId = Number(req.params.id);
   if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const tenantId = req.authorizedTenantId!;
-  const [order] = await db.select({ id: ordersTable.id, customerId: ordersTable.customerId, deliveryMethod: ordersTable.deliveryMethod })
+  const [order] = await db.select({ id: ordersTable.id, customerId: ordersTable.customerId, deliveryMethod: ordersTable.deliveryMethod, assignedCsrUserId: ordersTable.assignedCsrUserId })
     .from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
-  if (!order || (normalizeRole(req.dbUser!.role) === "user" && order.customerId !== req.dbUser!.id)) {
+  const actor = req.dbUser!;
+  const role = normalizeRole(actor.role);
+  if (!order || (order.customerId !== actor.id &&
+    !["admin", "global_admin", "supervisor"].includes(role) &&
+    (role !== "csr" || order.assignedCsrUserId !== actor.id))) {
     res.status(404).json({ error: "Not found" }); return;
   }
   if (order.deliveryMethod !== "uber_direct") { res.status(404).json({ error: "No courier delivery for this order" }); return; }
-  const [delivery] = await db.select({ requestState: uberDeliveryFulfillmentsTable.requestState, providerStatus: uberDeliveryFulfillmentsTable.providerStatus })
+  const [delivery] = await db.select({ requestState: uberDeliveryFulfillmentsTable.requestState, providerStatus: uberDeliveryFulfillmentsTable.providerStatus, providerDeliveryId: uberDeliveryFulfillmentsTable.providerDeliveryId })
     .from(uberDeliveryFulfillmentsTable)
     .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId)))
     .limit(1);
-  res.json({ orderId, state: delivery?.requestState ?? "payment_pending", courierStatus: delivery?.providerStatus ?? null });
+  res.set("Cache-Control", "private, no-store");
+  const active = delivery?.providerDeliveryId && !["canceled", "returned"].includes(delivery.providerStatus ?? "");
+  const driver = active && delivery?.providerDeliveryId
+    ? await courierDetailsForDelivery(tenantId, delivery.providerDeliveryId, orderId) : null;
+  res.json({ orderId, state: delivery?.requestState ?? "payment_pending", courierStatus: delivery?.providerStatus ?? null, driver });
 });
 
 router.post("/orders/:id/courier/request", requireRole("admin", "global_admin", "csr"), async (req, res): Promise<void> => {
@@ -2769,14 +2781,15 @@ router.post("/orders/:id/courier/request", requireRole("admin", "global_admin", 
   const actor = req.dbUser!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
-  if (normalizeRole(actor.role) === "csr") {
+  if (normalizeRole(actor.role) === "csr" || order.assignedCsrUserId === actor.id) {
     const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, order.assignedShiftId ?? -1), eq(labTechShiftsTable.techId, actor.id), eq(labTechShiftsTable.status, "active"))).limit(1);
     if (!shift || !isShiftOrderRoutable(shift) || order.assignedCsrUserId !== actor.id) { res.status(403).json({ error: "Assigned active CSR shift required" }); return; }
   } else if (order.assignedCsrUserId != null || order.assignedShiftId != null) {
     res.status(409).json({ error: "Assigned orders require the existing reassignment workflow" }); return;
   }
-  if (order.deliveryMethod !== "uber_direct" || order.fulfillmentStatus !== "ready" || !order.readyAt) { res.status(409).json({ error: "Courier delivery requires a ready delivery order" }); return; }
+  if (!await isUberOrderReadyForDispatch(order)) { res.status(409).json({ error: "Courier delivery requires a ready delivery order" }); return; }
   try {
+    await queueUberDeliveryForPaidOrder(tenantId, orderId);
     const state = await requestUberDelivery(tenantId, orderId);
     if (["not_ready", "payment_required", "identity_mismatch", "configuration_required", "requote_required", "manual_reconciliation_required", "reconciliation_required"].includes(state)) { res.status(409).json({ orderId, state }); return; }
     await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "UBER_DELIVERY_REQUESTED", resourceType: "order", resourceId: String(orderId), metadata: { state }, ipAddress: req.ip });
@@ -3445,6 +3458,7 @@ router.patch("/orders/:id/fulfillment-groups/:groupId/status", requireRole("glob
 
   try {
     const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${orderId})`);
       const [group] = await tx.select().from(orderFulfillmentGroupsTable).where(and(
         eq(orderFulfillmentGroupsTable.tenantId, tenantId),
         eq(orderFulfillmentGroupsTable.orderId, orderId),
@@ -3460,7 +3474,11 @@ router.patch("/orders/:id/fulfillment-groups/:groupId/status", requireRole("glob
         eq(orderFulfillmentGroupsTable.tenantId, tenantId), eq(orderFulfillmentGroupsTable.orderId, orderId),
       ));
       const parentStatus = deriveParentFulfillmentStatus(groups.map((row) => row.status as OrderLifecycleState));
-      const [updatedOrder] = await tx.update(ordersTable).set({ status: parentStatus, fulfillmentStatus: parentStatus, updatedAt: new Date() }).where(and(
+      const ready = parentStatus === "ready" || (group.method === "uber_direct" && transition.to === "ready");
+      const [updatedOrder] = await tx.update(ordersTable).set({
+        status: parentStatus, fulfillmentStatus: parentStatus, updatedAt: new Date(),
+        ...(ready ? { readyAt: sql`coalesce(${ordersTable.readyAt}, now())` } : {}),
+      }).where(and(
         eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId),
       )).returning();
       await tx.insert(auditLogsTable).values({

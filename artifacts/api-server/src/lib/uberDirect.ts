@@ -321,7 +321,26 @@ export async function createUberDeliveryQuote(input: {
   return data as UberDeliveryQuote;
 }
 
-export type UberDelivery = { id: string; status?: string; external_id?: string; quote_id?: string };
+export type UberDelivery = {
+  id: string; status?: string; external_id?: string; quote_id?: string;
+  tracking_url?: unknown;
+  courier?: { name?: unknown; vehicle_type?: unknown } | null;
+};
+
+export type UberCourierDetails = { name: string | null; vehicle: string | null; trackingUrl: string | null };
+
+export function projectUberCourierDetails(delivery: UberDelivery): UberCourierDetails {
+  const toLabel = (value: unknown) => typeof value === "string" ? value.trim().slice(0, 100) || null : null;
+  let trackingUrl: string | null = null;
+  if (typeof delivery.tracking_url === "string") {
+    try {
+      const url = new URL(delivery.tracking_url);
+      if (url.protocol === "https:" && !url.username && !url.password && !url.port &&
+        /(^|\.)(uber|ubereats)\.com$/i.test(url.hostname)) trackingUrl = url.href;
+    } catch { /* Ignore an invalid provider link. */ }
+  }
+  return { name: toLabel(delivery.courier?.name), vehicle: toLabel(delivery.courier?.vehicle_type), trackingUrl };
+}
 
 export async function listUberDeliveries(config: UberDirectRuntimeConfig, limit = 100, offset = 0): Promise<{ deliveries: Array<UberDelivery & { external_id?: string; quote_id?: string }>; hasMore: boolean }> {
   const token = await getUberAccessToken(config);
