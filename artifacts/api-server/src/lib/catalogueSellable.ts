@@ -244,7 +244,7 @@ export async function loadSellableProducts(tenantId: number, pricing?: { isCurre
     )
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.regular_price AS "regularPrice", ci.homie_price AS "employeePrice", ci.compare_at_price AS "compareAtPrice", ci.metadata,
+      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.regular_price AS "regularPrice", ci.homie_price AS "employeePrice", ci.compare_at_price AS "compareAtPrice", ci.is_sale_featured AS "isSaleFeatured", ci.metadata,
       ii.base_unit AS "baseUnit", co.active,ci.is_available AS "isAvailable",
       COALESCE((ci.metadata->>'showCatalogueStockIndicator')::boolean,true) AS "showCatalogueStockIndicator",
       CASE WHEN ii.id IS NULL THEN 'missing_identity'
@@ -294,6 +294,7 @@ export async function loadSellableProducts(tenantId: number, pricing?: { isCurre
     const priced = sellable as Option & {
       employeePrice?: string | null;
       regularPrice?: string | null;
+      isSaleFeatured?: boolean | null;
       metadata?: unknown;
     };
     const retailPrice = (() => {
@@ -312,6 +313,7 @@ export async function loadSellableProducts(tenantId: number, pricing?: { isCurre
     };
     delete visible.employeePrice;
     delete visible.regularPrice;
+    delete visible.isSaleFeatured;
     delete visible.metadata;
     if (visible.showCatalogueStockIndicator) return visible;
     const hiddenFields = new Set(["balanceRowCount", "stockOnHand", "reservedQuantity", "availableQuantity"]);

@@ -166,15 +166,15 @@ function generatedSafeMerchantSku(catalogItemId: number): string {
 }
 
 /**
- * Pricing is server-owned.  `metadata.activeSale` is the explicit operator
- * switch for charging `compareAtPrice`; `isSaleFeatured` remains a
- * presentation-only badge and must never change a checkout total.
+ * An explicit activeSale setting takes precedence. Older catalogue entries
+ * can use their Sale flag when a sale price was also configured.
  */
 export function resolveEffectiveCatalogUnitPrice(input: {
   price: string | number;
   regularPrice?: string | number | null;
   compareAtPrice?: string | number | null;
   metadata?: unknown;
+  isSaleFeatured?: boolean | null;
 }): number {
   const regular = input.regularPrice == null || String(input.regularPrice).trim() === ""
     ? input.price
@@ -183,13 +183,15 @@ export function resolveEffectiveCatalogUnitPrice(input: {
   const activeSale = input.metadata != null
     && typeof input.metadata === "object"
     && !Array.isArray(input.metadata)
-    && (input.metadata as Record<string, unknown>).activeSale === true;
+    ? (input.metadata as Record<string, unknown>).activeSale
+    : undefined;
 
-  if (!activeSale) return regularCents / 100;
-  if (input.compareAtPrice == null || String(input.compareAtPrice).trim() === "") {
+  const hasSalePrice = input.compareAtPrice != null && String(input.compareAtPrice).trim() !== "";
+  if (activeSale !== true && !(activeSale === undefined && input.isSaleFeatured === true && hasSalePrice)) return regularCents / 100;
+  if (!hasSalePrice) {
     throw new Error("Active sale requires a sale price");
   }
-  const saleCents = dollarsToCents(input.compareAtPrice);
+  const saleCents = dollarsToCents(input.compareAtPrice!);
   if (saleCents > regularCents) throw new Error("Sale price cannot exceed regular price");
   return saleCents / 100;
 }
