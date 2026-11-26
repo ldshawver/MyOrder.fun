@@ -11,7 +11,7 @@ import { requireOnlinePayments } from "../payments/config";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { PayPalProvider } from "../payments/paypal";
 import { PaymentService, PaymentServiceError } from "../payments/service";
-import { calculatePostCloseoutCommissionRecovery, refundedCommissionBasisAfterCloseout } from "../lib/shiftEarnings";
+import { calculatePostCloseoutCommissionRecovery, refundedCommissionBasisAfterCloseout, shiftSaleGrossAmount } from "../lib/shiftEarnings";
 
 const router = Router();
 // Scope the approval gate to this router's own paths: it is mounted at /api
@@ -115,12 +115,17 @@ async function recordPostCloseoutCommissionAdjustment(
   const snapshot = rows<Row>(await tx.execute(sql`
     SELECT id,closeout_package_id AS "closeoutPackageId",shift_id AS "shiftId",csr_user_id AS "csrUserId",
       order_id AS "orderId",commission_basis::text AS basis,commission_rate::text AS rate,
-      commission_amount::text AS "commissionAmount"
+      commission_amount::text AS "commissionAmount",
+      (SELECT rule_snapshot->>'basis' FROM commission_snapshots cs
+       WHERE cs.closeout_package_id = shift_commission_order_snapshots.closeout_package_id
+         AND cs.tenant_id = shift_commission_order_snapshots.tenant_id
+         AND cs.csr_user_id = shift_commission_order_snapshots.csr_user_id) AS "basisRule"
     FROM shift_commission_order_snapshots
     WHERE tenant_id=${input.tenantId} AND order_id=${input.orderId}
     FOR UPDATE
   `))[0];
   if (!snapshot) return; // There was no closed commission to reverse.
+  const useNetShiftSales = snapshot.basisRule === "net_shift_sales";
   const [refunds] = rows<Row>(await tx.execute(sql`
     SELECT COALESCE(sum(rl.unit_value),0)::text AS amount
     FROM return_lines rl
@@ -128,12 +133,13 @@ async function recordPostCloseoutCommissionAdjustment(
     JOIN order_items oi ON oi.id=rl.order_item_id AND oi.order_id=${input.orderId}
     WHERE rt.tenant_id=${input.tenantId} AND rt.order_id=${input.orderId}
       AND rt.status='completed'
-      AND oi.commission_eligibility_snapshot='eligible'
+      AND (${useNetShiftSales} OR oi.commission_eligibility_snapshot='eligible')
   `));
   const [basis] = rows<Row>(await tx.execute(sql`
-    SELECT COALESCE(sum(commission_gross_amount - commission_discount_amount),0)::text AS amount
-    FROM order_items
-    WHERE order_id=${input.orderId} AND commission_eligibility_snapshot='eligible'
+    SELECT COALESCE(sum((CASE WHEN ${useNetShiftSales} THEN ${shiftSaleGrossAmount}
+      ELSE oi.commission_gross_amount END) - oi.commission_discount_amount),0)::text AS amount
+    FROM order_items oi JOIN orders o ON o.id=oi.order_id AND o.tenant_id=${input.tenantId}
+    WHERE oi.order_id=${input.orderId} AND (${useNetShiftSales} OR oi.commission_eligibility_snapshot='eligible')
   `));
   let refundedAfterCloseout: string;
   try {

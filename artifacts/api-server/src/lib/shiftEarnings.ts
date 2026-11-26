@@ -1,10 +1,22 @@
+import { sql } from "drizzle-orm";
 import { formatMoneyCents, requiredNonNegativeMoneyCents } from "./shiftCloseoutFinancials";
+
+// Shared by closeout and post-closeout refund recovery. Legacy orders before
+// commission snapshots stored the merchandise value on the order line.
+export const shiftSaleGrossAmount = sql`CASE
+  WHEN o.tax_snapshot #>> '{commission,schemaVersion}' IS NULL
+    AND oi.commission_gross_amount = 0 AND oi.commission_discount_amount = 0
+  THEN oi.total_price
+  ELSE oi.commission_gross_amount
+END`;
 
 export type CommissionEligibility = "eligible" | "membership" | "excluded" | "unclassified";
 export type ShiftEarningOrder = {
   orderId: number;
   routeSource: string | null;
   paymentStatus: string;
+  employeeSale?: boolean;
+  paymentMethod?: string | null;
   deliveryMethod: string | null;
   fulfillmentStatus?: string | null;
   uberRequestState?: string | null;
@@ -54,10 +66,10 @@ export function calculateShiftEarnings(orders: ShiftEarningOrder[], selectedComm
 
   for (const order of orders) {
     const commissionEligibleOrder = ["paid", "partially_refunded"].includes(order.paymentStatus)
-      && order.routeSource !== "general_account" && order.routeSource !== "general_queue";
+      && order.routeSource !== "general_account" && order.routeSource !== "general_queue"
+      && !order.employeeSale && order.paymentMethod !== "comp";
     if (commissionEligibleOrder) {
       for (const item of order.lines) {
-        if (item.eligibility !== "eligible") continue;
         const gross = requiredNonNegativeMoneyCents(item.grossAmount, `orderItem.${item.orderItemId}.commissionGrossAmount`);
         const discount = requiredNonNegativeMoneyCents(item.discountAmount, `orderItem.${item.orderItemId}.commissionDiscountAmount`);
         const refunded = requiredNonNegativeMoneyCents(item.refundedAmount, `orderItem.${item.orderItemId}.refundedAmount`);

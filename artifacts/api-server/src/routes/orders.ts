@@ -1892,7 +1892,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         grossCents: line.grossCents,
         discountCents: line.discountCents,
       }));
-      const finalizedTaxSnapshot = { ...checkoutTaxSnapshot, originalTenderAllocations, lineTaxAllocations, commission: { schemaVersion: 1, lines: commissionLines } };
+      const finalizedTaxSnapshot = { ...checkoutTaxSnapshot, originalTenderAllocations, lineTaxAllocations, commission: { schemaVersion: 1, employeeSale: actor.isCurrentEmployee === true, lines: commissionLines } };
       await tx.update(ordersTable).set({ taxSnapshot: finalizedTaxSnapshot })
         .where(and(eq(ordersTable.id, createdOrder.id), eq(ordersTable.tenantId, houseTenantId)));
       // order_tax_snapshots is protected by an immutable-row trigger. Build its

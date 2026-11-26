@@ -107,7 +107,7 @@ export function buildDepositSlip(data: DepositSlipData): ReceiptLine[] {
     ...(data.eligibleSalesCents == null ? [] : [
       rule("dashed"),
       left("COMMISSION", true),
-      pair("Sales excl. tax/delivery", formatMoney(data.eligibleSalesCents)),
+      pair("Commissionable sales", formatMoney(data.eligibleSalesCents)),
       pair("Selected commission", data.commissionPercent == null ? "-" : `${data.commissionPercent}%`),
       pair("Commission amount", data.commissionCents == null ? "-" : formatMoney(data.commissionCents), true),
     ]),
