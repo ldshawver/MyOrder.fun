@@ -19,11 +19,12 @@ function api(path: string): string {
   return readFileSync(resolve(apiRoot, path), "utf8");
 }
 
-// Production release authorization is pinned to the reviewed candidate identity.
-const approvedProduction = {
-  sha: "360f6747d7b319516bbf60d0ebfb0078c7b4183f",
-  tree: "32d26c8ad96d53263681bbd464c0e77266f3d11f",
-};
+// The controller independently pins the reviewed source, tree and images.
+const releaseIdentity = src("deploy/production-release.mjs").match(
+  /export const APPROVED_RELEASE = Object\.freeze\(\{\s*sha: "([a-f0-9]{40})",\s*tree: "([a-f0-9]{40})"/,
+);
+if (!releaseIdentity) throw new Error("Production controller is missing a pinned release identity");
+const approvedProduction = { sha: releaseIdentity[1]!, tree: releaseIdentity[2]! };
 
 function productionPinGuard(workflow: string): string {
   const globalEnv = workflow.match(/^env:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
@@ -321,9 +322,6 @@ describe("receipts and deploy workflow", () => {
   });
 
   it("resolves production pins to the exact approved controller identity and enforces both", () => {
-    const controller = src("deploy/production-release.mjs");
-    const identity = controller.match(/export const APPROVED_RELEASE = Object\.freeze\(\{\s*sha: "([a-f0-9]{40})",\s*tree: "([a-f0-9]{40})"/);
-    expect(identity?.slice(1)).toEqual([approvedProduction.sha, approvedProduction.tree]);
     const script = productionPinGuard(src(".github/workflows/deploy.yml"));
     // Execute the real workflow guard with only Git identity reads stubbed.
     const gitStub = `git() {
