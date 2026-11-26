@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@clerk/react";
 import { getGetOrderQueryKey, useGetOrder, useListOrders, useGetCurrentUser, type Order } from "@workspace/api-client-react";
 import { Link } from "wouter";
+import { canAccessStaffRoute } from "@/lib/routingPolicy";
 import { Plus, Package, Clock, ShieldAlert, ShoppingCart } from "lucide-react";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { CustomerOrderStage } from "@/components/CustomerOrderStage";
@@ -148,14 +149,25 @@ export default function Orders() {
               : "Operational handling has moved to Shift / Queue; this page remains tenant-scoped order history."}
           </p>
         </div>
-        <Link
-          href="/catalog"
-          className="shrink-0 inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-5 py-3 rounded-xl hover:opacity-90 transition-all shadow-lg shadow-primary/20"
-          data-testid="link-new-order"
-        >
-          <Plus size={16} />
-          Catalogue
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          {canAccessStaffRoute(user?.role) && (
+            <Link
+              href="/staff/speed-order"
+              className="inline-flex items-center rounded-xl border border-border px-5 py-3 text-sm font-semibold hover:bg-muted"
+              data-testid="link-speed-order"
+            >
+              Speed Order
+            </Link>
+          )}
+          <Link
+            href="/catalog"
+            className="shrink-0 inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-5 py-3 rounded-xl hover:opacity-90 transition-all shadow-lg shadow-primary/20"
+            data-testid="link-new-order"
+          >
+            <Plus size={16} />
+            Catalogue
+          </Link>
+          </div>
       </div>
 
       {isSupervisor && <SupervisorDelayedOrders />}
