@@ -2376,7 +2376,7 @@ router.post(
         !confirmInventoryAccountability || !supervisorReason || supervisorReason.trim().length < 10 || remainderPolicy !== CONTRACTOR_SHORTAGE_REMAINDER_POLICY
       )) return {
         conflict: "SHIFT_CLOSEOUT_INVENTORY_CONFIRMATION_REQUIRED" as const,
-        details: { shortageTotal: inventoryAccountability.total, requiredRemainderPolicy: CONTRACTOR_SHORTAGE_REMAINDER_POLICY },
+        details: { shortageTotal: inventoryAccountability.total, inventoryAccountability, requiredRemainderPolicy: CONTRACTOR_SHORTAGE_REMAINDER_POLICY },
       };
       const differenceAmount = Number(inventoryAccountability.total);
       const earnings = calculateShiftEarnings(await loadShiftEarningOrders(tx, shift.tenantId, shiftId), tipPercent as 15 | 16 | 17 | 18);

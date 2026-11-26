@@ -116,7 +116,16 @@ export default function AdminCloseouts() {
       let body: unknown = {};
       try { body = JSON.parse(text); } catch { /* leave as text */ }
       if (!res.ok) {
-        const errMsg = (body as { error?: string }).error ?? text.slice(0, 200);
+        const failure = body as { error?: string; details?: { inventoryAccountability?: PendingShift["inventoryAccountability"] } };
+        if (failure.error === "SHIFT_CLOSEOUT_INVENTORY_CONFIRMATION_REQUIRED") {
+          const inventoryAccountability = failure.details?.inventoryAccountability;
+          if (inventoryAccountability) {
+            setShifts(prev => prev.map(shift => shift.shiftId === shiftId ? { ...shift, inventoryAccountability } : shift));
+          }
+          setConfirmedById(prev => ({ ...prev, [shiftId]: false }));
+          throw new Error(`Shift #${shiftId}: review the inventory shortage, enter a supervisor reason, and acknowledge it before finalizing.`);
+        }
+        const errMsg = failure.error ?? text.slice(0, 200);
         throw new Error(`Approve failed (HTTP ${res.status}): ${errMsg}`);
       }
       setShifts(prev => prev.filter(s => s.shiftId !== shiftId));
@@ -221,12 +230,12 @@ export default function AdminCloseouts() {
                     <span className="md:col-span-2 font-medium">{line.itemName}</span><span>Expected {line.expectedQuantity}</span><span>Counted {line.countedQuantity}</span><span>Missing {line.missingQuantity}</span><span>80% unit ${line.unitReplacementValue} · line ${line.lineTotal}</span>
                   </div>)}
                   {s.inventoryAccountability.blockers.map(blocker => <div key={`${blocker.code}:${blocker.itemName}`} className="text-xs text-red-400"><b>{blocker.itemName}:</b> {blocker.message}</div>)}
-                  {hasShortage && <>
-                    <label className="block text-xs">Supervisor reason
-                      <textarea className="mt-1 min-h-16 w-full rounded-md border bg-background px-2 py-1.5" value={reasonById[s.shiftId] ?? ""} onChange={event => setReasonById(prev => ({ ...prev, [s.shiftId]: event.target.value }))} placeholder="Explain the reviewed inventory shortage (minimum 10 characters)" />
-                    </label>
+                  <label className="block text-xs">Supervisor shortage reason
+                    <textarea className="mt-1 min-h-16 w-full rounded-md border bg-background px-2 py-1.5" value={reasonById[s.shiftId] ?? ""} onChange={event => setReasonById(prev => ({ ...prev, [s.shiftId]: event.target.value }))} placeholder="Required when a shortage is reported (minimum 10 characters)" maxLength={500} />
+                  </label>
+                  {hasShortage && (
                     <label className="flex items-start gap-2 text-xs"><input type="checkbox" className="mt-0.5" checked={confirmedById[s.shiftId] ?? false} onChange={event => setConfirmedById(prev => ({ ...prev, [s.shiftId]: event.target.checked }))} /><span>I reviewed the counts and exact retail-price snapshots. Apply no more than the payable amount now and carry any remainder to a future shift payout as an audited contractor inventory-accountability adjustment.</span></label>
-                  </>}
+                  )}
                 </div>
 
                 <div className="mt-3 rounded-lg border border-border/40 bg-background/40 p-3 text-xs">
