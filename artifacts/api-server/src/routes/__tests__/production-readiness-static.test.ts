@@ -66,9 +66,9 @@ describe("production readiness workflow coverage", () => {
     expect(visibility).toContain("hasQueueStatus");
     expect(queue).toContain("router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext)");
     expect(queue).toContain('router.get("/shift-queue/status", requirePermission("queue.view")');
-    expect(queue).toContain("activeCsrShifts(tenantId)");
+    expect(queue).toContain("listActiveCsrs(tenantId)");
     expect(queue).toContain("eq(labTechShiftsTable.tenantId, tenantId)");
     expect(queue).toContain(': "General Queue Active"');
-    expect(queue).toContain('sql`lower(${usersTable.role}) = \'csr\'`');
+    expect(queue).not.toContain('sql`lower(${usersTable.role}) = \'csr\'`');
   });
 });

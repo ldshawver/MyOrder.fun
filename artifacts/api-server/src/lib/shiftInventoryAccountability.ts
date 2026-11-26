@@ -75,7 +75,9 @@ function signedQuantityUnits(value: unknown, field: string): bigint {
   const text = typeof value === "number" && Number.isFinite(value) ? String(value) : typeof value === "string" ? value.trim() : "";
   const negative = text.startsWith("-");
   const unsigned = negative ? text.slice(1) : text;
-  const units = quantityUnits(unsigned, field);
+  // PostgreSQL emits movement deltas at the ledger column's full decimal scale.
+  const exactQuantity = unsigned.replace(/(\.\d*?[1-9])0+$|\.0+$/, "$1");
+  const units = quantityUnits(exactQuantity, field);
   return negative ? -units : units;
 }
 

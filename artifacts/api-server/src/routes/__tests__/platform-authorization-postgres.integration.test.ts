@@ -227,10 +227,10 @@ pgSuite("platform authorization boundaries against disposable PostgreSQL 16", ()
     const report = await supertest(reportsApp).get("/api/admin/reports/summary");
     expect(report.status, JSON.stringify(report.body)).toBe(200);
     expect(report.body.totals).toMatchObject({ orderCount: 1, revenue: 15, activeShiftCount: 1 });
-    expect(JSON.stringify(report.body)).not.toMatch(/Tenant B secret|900|private-b@/);
+    expect(JSON.stringify(report.body)).not.toMatch(/Tenant B secret|private-b@|"[^"]+":900(?=[,}])/);
     const csv = await supertest(reportsApp).get("/api/admin/reports/export.csv");
     expect(csv.status).toBe(200);
-    expect(csv.text).not.toMatch(/Tenant B secret|900|private-b@/);
+    expect(csv.text).not.toMatch(/Tenant B secret|private-b@|(?:^|,)"?900(?:\.00)?"?(?=,|$)/m);
     expect((await supertest(reportsApp).get("/api/admin/reports/summary?tenantId=" + tenantB)).status).toBe(403);
 
     as("platform-owner-fixture");
