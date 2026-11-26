@@ -667,7 +667,7 @@ router.get("/admin/catalogue/inventory/:inventoryItemId/locations", admin, async
   `))[0];
   if (!item) { res.status(404).json({ error: "Inventory item not found" }); return; }
   const locations = rows(await db.execute(sql`
-    SELECT il.id AS "locationId", il.name, il.is_active AS "eligible",
+    SELECT il.id AS "locationId", il.name, il.is_active AS "eligible", (b.product_id IS NOT NULL) AS "hasBalance",
       COALESCE(b.quantity_on_hand, 0)::text AS "quantityOnHand", COALESCE(p.par, 0)::text AS par,
       COALESCE(p.reorder_point, 0)::text AS "reorderPoint",
       COALESCE(p.preferred_reorder_quantity, 0)::text AS "preferredReorderQuantity",

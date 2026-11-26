@@ -47,7 +47,6 @@ import CsrSettings from "@/pages/csr-settings";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
-import { CatalogWorkspace } from "@/pages/admin/catalog-workspace";
 import AdminInventory from "@/pages/admin/inventory";
 import StorefrontClosures from "@/pages/admin/storefront-closures";
 import { StorefrontClosureNotice } from "@/components/StorefrontClosureNotice";
@@ -559,12 +558,8 @@ function AuthenticatedApp() {
             </>
           )}
 
-          {isStaff && <Route path="/admin/inventory">{() => protect(
-            <CatalogWorkspace active="inventory" role={appRole}><AdminInventory /></CatalogWorkspace>,
-          )}</Route>}
-          {isStaff && <Route path="/admin/catalogue-products">{() => protect(
-            <CatalogWorkspace active="variants" role={appRole}><AdminCatalogueProducts /></CatalogWorkspace>,
-          )}</Route>}
+          {isStaff && <Route path="/admin/inventory">{() => protect(<AdminInventory />)}</Route>}
+          {isStaff && <Route path="/admin/catalogue-products">{() => protect(<AdminCatalogueProducts />)}</Route>}
 
           {["global_admin", "admin", "supervisor"].includes(appRole) &&
             <Route path="/admin/settings/store-closures">{() => protect(<StorefrontClosures />)}</Route>}
@@ -576,9 +571,7 @@ function AuthenticatedApp() {
               <Route path="/admin/import" component={AdminImport} />
               <Route path="/admin/settings">{() => protect(<AdminSettingsPage />)}</Route>
               <Route path="/admin/order-notifications">{() => protect(<OrderNotifications />)}</Route>
-              <Route path="/admin/edit-catalog">{() => (
-                <CatalogWorkspace active="catalog" role={appRole}><AdminEditCatalog /></CatalogWorkspace>
-              )}</Route>
+              <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
               <Route path="/admin/receipts">{() => protect(<AdminReceipts />)}</Route>
               <Route path="/admin/closeouts" component={AdminCloseouts} />
               <Route path="/admin/feedback" component={AdminFeedback} />

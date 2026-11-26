@@ -8,7 +8,7 @@ import { useGetCurrentUser } from "@workspace/api-client-react";
 type SpecialComponentRow = { catalogItemId: number; productName: string; label: string; quantity: string };
 type Option = { id: number; catalogItemId: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; price: string; compareAtPrice?: string | null; employeePrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number | null; baseUnit: string | null; consumptionQuantity: string; complianceHold: boolean; complianceReason: string | null; inventoryStatus: "ready" | "missing_identity" | "missing_balance"; balanceRowCount: number; stockOnHand: string | null; reservedQuantity: string | null; availableQuantity: string | null; orderable: boolean; components?: SpecialComponentRow[]; specialOrderable?: boolean; specialAvailableQuantity?: string | null };
 type Product = { id: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; options: Option[] };
-type Location = { locationId: number; name: string; quantityOnHand: string; par: string; reorderPoint: string; preferredReorderQuantity: string; moq: string };
+type Location = { locationId: number; name: string; hasBalance?: boolean; eligible?: boolean; quantityOnHand: string; par: string; reorderPoint: string; preferredReorderQuantity: string; moq: string };
 type Recommendation = { inventoryItemId: number; productName: string; baseUnit: string; recommendations: Array<{ locationId: number; locationName: string; internalTransfers: Array<{ fromLocationId: number; quantity: string }>; externalPurchaseQuantity: string }> };
 type InventoryPreview = { product: { id: number; name: string; inventoryModel: string; locationEvaluation: string }; target: { inventoryItemId?: number; create?: { name: string; baseUnit: string } }; targetUnit: string;
   variants: Array<{ optionId: number; label: string; optionValues: Record<string,string>; inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number; baseUnit: string; consumptionQuantity: string; sourceUnitQuantityInTargetUnit: string; proposedConsumption: string; price: string; sku: string | null; barcode: string | null }>;
@@ -116,11 +116,13 @@ function SpecialComponentEditor({ option, choices, save }: {
   </div>;
 }
 
-export default function AdminCatalogueProducts() {
+export default function AdminCatalogueProducts({ catalogItemId, refreshKey }: { catalogItemId?: number; refreshKey?: number } = {}) {
+  const embedded = catalogItemId !== undefined;
   const { getToken } = useAuth();
   const { data: currentUser } = useGetCurrentUser();
   const isGlobalAdmin = currentUser?.role === "global_admin";
   const [products, setProducts] = useState<Product[]>([]);
+  const [productsLoaded, setProductsLoaded] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<number | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -172,24 +174,35 @@ export default function AdminCatalogueProducts() {
   const refresh = useCallback(async () => {
     const [catalogue, recs] = await Promise.all([
       request("/api/admin/catalogue/products") as Promise<{ products: Product[] }>,
-      request("/api/admin/catalogue/recommendations") as Promise<{ items: Recommendation[] }>,
+      embedded ? Promise.resolve({ items: [] }) : request("/api/admin/catalogue/recommendations") as Promise<{ items: Recommendation[] }>,
     ]);
     setProducts(catalogue.products);
+    setProductsLoaded(true);
     setRecommendations(recs.items);
-  }, [request]);
-  useEffect(() => { void refresh().catch(error => setMessage(error.message)); }, [refresh]);
+  }, [embedded, request]);
+  useEffect(() => { void refresh().catch(error => setMessage(error.message)); }, [refresh, refreshKey]);
   useEffect(() => {
-    const catalogItemId = Number(new URLSearchParams(window.location.search).get("catalogItemId"));
-    if (!Number.isSafeInteger(catalogItemId) || catalogItemId <= 0) return;
-    const product = products.find(candidate => candidate.options.some(option => option.catalogItemId === catalogItemId));
-    const option = product?.options.find(candidate => candidate.catalogItemId === catalogItemId);
+    const requestedId = catalogItemId ?? Number(new URLSearchParams(window.location.search).get("catalogItemId"));
+    if (!Number.isSafeInteger(requestedId) || requestedId <= 0 || selectedId !== null) return;
+    const product = products.find(candidate => candidate.options.some(option => option.catalogItemId === requestedId));
+    const option = product?.options.find(candidate => candidate.catalogItemId === requestedId);
     if (product && option) { setSelectedId(product.id); setSelectedItemId(option.inventoryItemId); }
-  }, [products]);
+  }, [products, catalogItemId, selectedId]);
+  const loadLocations = useCallback(async (inventoryItemId: number, signal?: AbortSignal) => {
+    const result = await request(`/api/admin/catalogue/inventory/${inventoryItemId}/locations`, { signal }) as { locations: Location[] };
+    if (!signal?.aborted) setLocations(result.locations.filter(location => location.eligible !== false).map(location =>
+      location.hasBalance === false ? { ...location, quantityOnHand: "" } : location,
+    ));
+  }, [request]);
   useEffect(() => {
-    if (!selectedItemId) { setLocations([]); return; }
-    void (request(`/api/admin/catalogue/inventory/${selectedItemId}/locations`) as Promise<{ locations: Location[] }>)
-      .then(result => setLocations(result.locations)).catch(error => setMessage(error.message));
-  }, [request, selectedItemId]);
+    setLocations([]);
+    if (!selectedItemId) return;
+    const controller = new AbortController();
+    void loadLocations(selectedItemId, controller.signal).catch(error => {
+      if (!controller.signal.aborted) setMessage(error.message);
+    });
+    return () => controller.abort();
+  }, [loadLocations, selectedItemId]);
 
   async function perform(action: () => Promise<void>, successMessage = "Saved") {
     setBusy(true); setMessage("");
@@ -235,11 +248,11 @@ export default function AdminCatalogueProducts() {
   const updateLocation = (locationId: number, key: keyof Location, value: string) =>
     setLocations(current => current.map(location => location.locationId === locationId ? { ...location, [key]: value } : location));
 
-  return <div className="space-y-6 max-w-6xl mx-auto p-4" data-testid="catalogue-products-admin">
-    <header><h1 className="text-2xl font-bold">Products, options and reorder</h1>
-      <p className="text-sm text-muted-foreground">Set physical quantities by location. Replenishment suggestions do not place purchases. Lucifer Cruz website listings and WooCommerce items are not listed here and are not counted as their own stock.</p></header>
+  return <div className={embedded ? "space-y-4" : "mx-auto max-w-6xl space-y-6 p-4"} data-testid="catalogue-products-admin">
+    {!embedded && <header><h1 className="text-2xl font-bold">Products, options and reorder</h1>
+      <p className="text-sm text-muted-foreground">Set physical quantities by location. Replenishment suggestions do not place purchases. Lucifer Cruz website listings and WooCommerce items are not listed here and are not counted as their own stock.</p></header>}
     {message && <div role="status" className="rounded-lg border p-3 text-sm">{message}</div>}
-    <section className="rounded-xl border p-4 space-y-3">
+    {!embedded && <section className="rounded-xl border p-4 space-y-3">
       <h2 className="font-semibold">Create product</h2>
       <div className="grid gap-2 md:grid-cols-4">
         <label>Name<Input value={create.name} onChange={event => setCreate({ ...create, name: event.target.value })} /></label>
@@ -277,20 +290,23 @@ export default function AdminCatalogueProducts() {
         }) }) as { productId: number };
         setSelectedId(result.productId); setCreate(defaultProduct); setCreationVariants([defaultCreationVariant]);
       }, "Product and variants created successfully.")}>Create product</Button>
-    </section>
-    <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
-      <aside className="rounded-xl border p-3 space-y-1"><h2 className="font-semibold mb-2">Products</h2>
+    </section>}
+    <div className={embedded ? undefined : "grid gap-6 lg:grid-cols-[16rem_1fr]"}>
+      {!embedded && <aside className="rounded-xl border p-3 space-y-1"><h2 className="font-semibold mb-2">Products</h2>
         {products.map(product => <button key={product.id} type="button" onClick={() => { setSelectedId(product.id); setSelectedItemId(product.options[0]?.inventoryItemId ?? null); }}
           className={`block w-full rounded p-2 text-left text-sm ${product.id === selectedId ? "bg-primary/15" : "hover:bg-muted"}`}>
           {product.name}<span className="block text-xs text-muted-foreground">{product.options.length} option{product.options.length === 1 ? "" : "s"}</span>
-        </button>)}</aside>
-      {selected && <main className="space-y-5">
+        </button>)}</aside>}
+      {embedded && productsLoaded && !selected && !products.some(product => product.options.some(option => option.catalogItemId === catalogItemId)) && (
+        <p className="rounded-xl border p-4 text-sm text-muted-foreground">No variants are linked to this catalog item.</p>
+      )}
+      {selected && <div className="space-y-5">
         <section className="rounded-xl border p-4 space-y-3">
-          <h2 className="font-semibold">{selected.name}</h2>
-          <div className="flex gap-2"><label className="flex-1">Product name<Input value={editName} onChange={event => setEditName(event.target.value)} /></label>
+          <h2 className="font-semibold">{embedded ? "Variants and inventory settings" : selected.name}</h2>
+          {!embedded && <div className="flex gap-2"><label className="flex-1">Product name<Input value={editName} onChange={event => setEditName(event.target.value)} /></label>
             <Button className="self-end" disabled={busy} onClick={() => void perform(async () => {
               await request(`/api/admin/catalogue/products/${selected.id}`, { method: "PATCH", body: JSON.stringify({ name: editName }) });
-            })}>Save name</Button></div>
+            })}>Save name</Button></div>}
           <div className="grid gap-2 md:grid-cols-2">
             <label>Inventory model<select className="block w-full rounded border bg-background p-2" value={inventoryModelDraft}
               onChange={event => {
@@ -421,25 +437,52 @@ export default function AdminCatalogueProducts() {
             setNewOption(defaultOption);
           })}>Add option</Button>
         </section>
-        {selectedItemId && <section className="rounded-xl border p-4 space-y-3"><h2 className="font-semibold">Inventory item #{selectedItemId} by location</h2>
-          <div className="flex gap-2"><label>Base unit<Input value={editBaseUnit} onChange={event => setEditBaseUnit(event.target.value)} /></label>
-            <Button className="self-end" disabled={busy} onClick={() => void perform(async () => {
+        {selectedItemId && <section className="space-y-3 rounded-xl border p-4">
+          <div>
+            <h2 className="font-semibold">Inventory by location</h2>
+            <p className="text-xs text-muted-foreground">
+              {selected.inventoryModel === "SHARED" ? "Shared inventory pool" : "Variant inventory"} #{selectedItemId}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-end gap-2"><label>Base unit<Input value={editBaseUnit} onChange={event => setEditBaseUnit(event.target.value)} /></label>
+            <Button disabled={busy} onClick={() => void perform(async () => {
               await request(`/api/admin/catalogue/inventory/${selectedItemId}`, { method: "PATCH", body: JSON.stringify({ baseUnit: editBaseUnit }) });
             })}>Save unit</Button></div>
-          {locations.map(location => <div key={location.locationId} className="grid gap-2 border-b py-3 md:grid-cols-6">
-            <strong className="text-sm">{location.name}</strong>
-            {(["quantityOnHand", "par", "reorderPoint", "preferredReorderQuantity", "moq"] as const).map(key =>
-              <label key={key} className="text-xs">{{ quantityOnHand: "On hand", par: "PAR", reorderPoint: "Reorder point", preferredReorderQuantity: "Preferred order", moq: "MOQ" }[key]}
-                <Input value={location[key]} onChange={event => updateLocation(location.locationId, key, event.target.value)} /></label>)}
-            <div className="md:col-span-6"><Button size="sm" disabled={busy} onClick={() => void perform(async () => {
-              await request(`/api/admin/catalogue/inventory/${selectedItemId}/locations/${location.locationId}/policy`, { method: "PUT", body: JSON.stringify({ par: location.par, reorderPoint: location.reorderPoint, preferredReorderQuantity: location.preferredReorderQuantity, moq: location.moq }) });
-              await request(`/api/admin/catalogue/inventory/${selectedItemId}/locations/${location.locationId}/balance`, { method: "PUT", body: JSON.stringify({ quantityOnHand: location.quantityOnHand }) });
-            })}>Save location</Button></div>
-          </div>)}
+          {locations.length > 0 && <div className="overflow-x-auto rounded-lg border" tabIndex={0} aria-label="Location inventory columns">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40"><tr><th scope="col" className="px-3 py-2 text-left">Stock</th>
+                {locations.map(location => <th key={location.locationId} scope="col" className="min-w-32 px-3 py-2 text-left">{location.name}</th>)}
+              </tr></thead>
+              <tbody><tr><th scope="row" className="whitespace-nowrap px-3 py-2 text-left">On hand</th>
+                {locations.map(location => <td key={location.locationId} className="px-3 py-2">
+                  <Input aria-label={`${location.name} on hand`} value={location.quantityOnHand} placeholder="Not counted"
+                    disabled={busy} onChange={event => updateLocation(location.locationId, "quantityOnHand", event.target.value)} />
+                  <Button type="button" size="sm" variant="outline" className="mt-2" disabled={busy || !location.quantityOnHand.trim()}
+                    onClick={() => void perform(async () => {
+                      await request(`/api/admin/catalogue/inventory/${selectedItemId}/locations/${location.locationId}/balance`, {
+                        method: "PUT", body: JSON.stringify({ quantityOnHand: location.quantityOnHand }),
+                      });
+                    })}>Save {location.name} count</Button>
+                </td>)}
+              </tr></tbody>
+            </table>
+          </div>}
+          {locations.map(location => <details key={location.locationId} className="rounded-md border p-3">
+            <summary className="cursor-pointer text-sm font-semibold">{location.name} settings and save</summary>
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
+              {(["par", "reorderPoint", "preferredReorderQuantity", "moq"] as const).map(key =>
+                <label key={key} className="text-xs">{{ par: "PAR", reorderPoint: "Reorder point", preferredReorderQuantity: "Preferred order", moq: "MOQ" }[key]}
+                  <Input value={location[key]} onChange={event => updateLocation(location.locationId, key, event.target.value)} /></label>)}
+            </div>
+            <Button className="mt-3" size="sm" disabled={busy} onClick={() => void perform(async () => {
+              const route = `/api/admin/catalogue/inventory/${selectedItemId}/locations/${location.locationId}`;
+              await request(`${route}/policy`, { method: "PUT", body: JSON.stringify({ par: location.par, reorderPoint: location.reorderPoint, preferredReorderQuantity: location.preferredReorderQuantity, moq: location.moq }) });
+            })}>Save {location.name} settings</Button>
+          </details>)}
         </section>}
-      </main>}
+      </div>}
     </div>
-    <section className="rounded-xl border p-4 space-y-3"><h2 className="font-semibold">Replenishment recommendations</h2>
+    {!embedded && <section className="rounded-xl border p-4 space-y-3"><h2 className="font-semibold">Replenishment recommendations</h2>
       <p className="text-xs text-muted-foreground">Suggestions only. No inventory transfer or purchase has been created.</p>
       {recommendations.flatMap(item => item.recommendations.filter(rec => rec.internalTransfers.length || rec.externalPurchaseQuantity !== "0.000000")
         .map(rec => <div key={`${item.inventoryItemId}-${rec.locationId}`} className="border-b py-2 text-sm space-y-1">
@@ -451,6 +494,6 @@ export default function AdminCatalogueProducts() {
             Suggested external purchase: {rec.externalPurchaseQuantity} {item.baseUnit}
           </div>}
         </div>))}
-    </section>
+    </section>}
   </div>;
 }

@@ -1,12 +1,14 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
-import { CatalogWorkspace } from "../admin/catalog-workspace";
+import AdminEditCatalog from "../admin/edit-catalog";
 import AdminInventory from "../admin/inventory";
 
 const auth = vi.hoisted(() => ({ getToken: async () => "test-token" }));
 vi.mock("@clerk/react", () => ({ useAuth: () => auth }));
+vi.mock("@workspace/api-client-react", () => ({ useGetCurrentUser: () => ({ data: { role: "global_admin" } }) }));
 
 it("shows one inventory row with location columns and distinguishes zero from missing stock", async () => {
   const locations = [{ id: 1, name: "Storefront" }, { id: 2, name: "Backstock" }];
@@ -37,19 +39,51 @@ it("shows one inventory row with location columns and distinguishes zero from mi
   }
 });
 
-it.each([
-  ["admin", ["Edit Catalog", "Products & Variants", "Inventory"]],
-  ["supervisor", ["Products & Variants", "Inventory"]],
-])("keeps the workspace navigation within the %s role", async (role, expected) => {
+it("edits product details inline beside the matching variant and shared location counts", async () => {
+  const item = { id: 17, name: "Legacy name", alavontName: "Vendor product", customerSafeName: "Safe product",
+    luciferCruzName: "Legacy alias", luciferCruzDescription: "Legacy description", category: "Test category",
+    price: 10, isAvailable: true, lifecycleStatus: "customer_visible" };
+  const writes: Record<string, unknown>[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
+    if (path === "/api/catalog/17" && init?.method === "PATCH") {
+      writes.push(JSON.parse(String(init.body)));
+      return Response.json(item);
+    }
+    if (path.startsWith("/api/catalog?")) return Response.json({ items: [item] });
+    if (path === "/api/admin/catalogue/products") return Response.json({ products: [{
+      id: 4, name: "Vendor product", inventoryModel: "SHARED", locationEvaluation: "COMBINED_LOCATIONS",
+      options: [{ id: 5, catalogItemId: 17, label: "Test variant", inventoryItemId: 34, optionValues: {}, price: "10",
+        active: true, isAvailable: true, inventoryStatus: "ready", consumptionQuantity: "1" }],
+    }] });
+    if (path === "/api/admin/catalogue/inventory/34/locations") return Response.json({ locations: [
+      { locationId: 1, name: "Storefront", quantityOnHand: "0", hasBalance: true },
+      { locationId: 2, name: "Backstock", quantityOnHand: "0", hasBalance: false },
+    ] });
+    return Response.json({ items: [] });
+  }));
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const host = document.createElement("div");
   const root = createRoot(host);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
-    await act(async () => root.render(createElement(CatalogWorkspace, { active: "inventory", role, children: "Inventory content" })));
-    expect(Array.from(host.querySelectorAll("nav a"), tab => tab.textContent)).toEqual(expected);
-    expect(host.querySelector('nav [aria-current="page"]')?.textContent).toBe("Inventory");
+    await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(AdminEditCatalog) })));
+    await vi.waitFor(() => expect(host.querySelector('button[title="Edit"]')).not.toBeNull());
+    await act(async () => host.querySelector<HTMLButtonElement>('button[title="Edit"]')!.click());
+    await vi.waitFor(() => expect(host.querySelector('input[aria-label="Storefront on hand"]')).not.toBeNull());
+    expect(host.querySelector('section[aria-label="Product details"]')?.textContent).toContain("Vendor Name");
+    expect(host.querySelector('section[aria-label="Product details"]')?.textContent).toContain("Safe Name");
+    expect(host.querySelector('section[aria-label="Product details"]')?.textContent).not.toContain("LC Display Name");
+    expect(host.querySelector('input[aria-label="Backstock on hand"]')?.getAttribute("placeholder")).toBe("Not counted");
+    expect(host.textContent).toContain("Shared inventory pool #34");
+    const save = [...host.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save Changes");
+    await act(async () => save!.click());
+    await vi.waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toMatchObject({ alavontName: "Vendor product", customerSafeName: "Safe product" });
+    expect(writes[0]).not.toHaveProperty("luciferCruzName");
+    expect(writes[0]).not.toHaveProperty("luciferCruzDescription");
   } finally {
     await act(async () => root.unmount());
+    client.clear();
     vi.unstubAllGlobals();
   }
 });
