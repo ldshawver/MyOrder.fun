@@ -4,6 +4,7 @@ import { Link, useLocation } from "wouter";
 import { UserProfile } from "@workspace/api-client-react";
 import { useAuth, useClerk } from "@clerk/react";
 import { useBrand } from "@/contexts/BrandContext";
+import { APP_RELEASE_VERSION } from "@/lib/releaseVersion";
 import { 
   FlaskConical, 
   ShoppingCart, 
@@ -314,8 +315,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               <div className="font-bold text-sm tracking-wide text-foreground" data-testid="text-sidebar-logo">
                 {activeDisplayName}
               </div>
-              <div className="text-[10px] text-primary/80 font-medium tracking-widest uppercase">
-                {isLC ? "Supplier catalog" : "Powered by MyOrder.fun"}
+              <div className="text-[10px] text-primary/80 font-medium tracking-wide">
+                {isLC ? "Supplier catalog" : "Powered by Lucifer Cruz"}
               </div>
             </div>
           </Link>
@@ -363,6 +364,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               <div className="text-[10px] text-muted-foreground capitalize font-medium" data-testid="text-user-role">
                 {user.role.replace(/_/g, " ")}
               </div>
+              <div className="text-[10px] text-muted-foreground" data-testid="text-app-version">{APP_RELEASE_VERSION}</div>
             </div>
           </Link>
           <button
@@ -389,7 +391,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
                 <img src={activeLogo} alt={activeDisplayName} className="h-9 w-auto max-w-20 object-contain" />
                 <div>
                   <div className="font-bold text-sm tracking-wide">{activeDisplayName}</div>
-                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">{isLC ? "Supplier catalog" : "Powered by MyOrder.fun"}</div>
+                  <div className="text-[10px] text-primary/80 tracking-wide">{isLC ? "Supplier catalog" : "Powered by Lucifer Cruz"}</div>
                 </div>
               </Link>
               <button onClick={() => setMobileMenuOpen(false)} className="text-muted-foreground hover:text-foreground p-1">
@@ -433,6 +435,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
                 <div>
                   <div className="text-sm font-medium">{user.firstName || "User"} {user.lastName}</div>
                   <div className="text-[10px] text-muted-foreground capitalize">{user.role.replace(/_/g, " ")}</div>
+                  <div className="text-[10px] text-muted-foreground" data-testid="text-app-version-mobile">{APP_RELEASE_VERSION}</div>
                 </div>
               </Link>
               <button
@@ -460,7 +463,10 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           </button>
           <Link href="/catalog" className="flex items-center gap-2">
             <img src={activeLogo} alt={activeDisplayName} className="h-8 w-auto max-w-20 object-contain" />
-            <span className="font-bold text-sm tracking-wide truncate max-w-36">{activeDisplayName}</span>
+            <span className="flex min-w-0 flex-col">
+              <span className="font-bold text-sm tracking-wide truncate max-w-36">{activeDisplayName}</span>
+              {!isLC && <span className="text-[10px] text-primary/80">Powered by Lucifer Cruz</span>}
+            </span>
           </Link>
           <Link href="/notifications" className="relative text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-sidebar-accent/60 transition-colors">
             <Bell size={20} />
