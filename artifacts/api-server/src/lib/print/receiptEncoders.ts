@@ -40,18 +40,19 @@ function justify(left: string, right: string, columns: number): string {
 }
 
 /** ESC/POS bytes (as a binary string) for the bridge's raw CUPS queue. */
-export function encodeReceiptEscPos(receipt: RenderedReceiptLines): string {
+export function encodeReceiptEscPos(receipt: RenderedReceiptLines, tallerText = false): string {
   const out: string[] = [INIT];
   const style = (align: keyof typeof ALIGN, bold: boolean, size: ReceiptTextSize) =>
     out.push(ALIGN[align], bold ? BOLD.on : BOLD.off, SIZE[size]);
+  const textSize = (size: ReceiptTextSize) => tallerText && size === "normal" ? "tall" : size;
   for (const line of receipt.lines) {
     switch (line.kind) {
       case "text":
-        style(line.align, line.bold, line.size);
+        style(line.align, line.bold, textSize(line.size));
         out.push(" ".repeat(line.indent ?? 0), printable(line.text), "\n");
         break;
       case "columns":
-        style("left", line.bold, line.size);
+        style("left", line.bold, textSize(line.size));
         out.push(justify(printable(line.left), printable(line.right), columnsFor(receipt.width, line.size)), "\n");
         break;
       case "rule":

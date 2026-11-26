@@ -248,7 +248,7 @@ export function renderReceipt(
     try {
       const lines = renderReceiptFromTemplate(template.layout, data, columns ?? charWidth(template.paperWidth));
       return {
-        text: output === "escpos" ? encodeStoredReceiptText(encodeReceiptEscPos(lines)) : encodeReceiptPlain(lines),
+        text: output === "escpos" ? encodeStoredReceiptText(encodeReceiptEscPos(lines, true)) : encodeReceiptPlain(lines),
         plainText: encodeReceiptPlain(lines),
         source: "template",
         templateId: template.id,

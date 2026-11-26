@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts, concatTransformationMatrix, popGraphicsState, pushGraphicsState, rgb } from "pdf-lib";
 import sharp from "sharp";
 
 /** SHA-256 of /home/serveradmin/LC-Logo-BLK.png. Any other file is refused. */
@@ -79,7 +79,7 @@ export function receiptPdfLine(value: string): string {
     .replace(/[^\u0020-\u007E]/g, "?");
 }
 
-function courierSize(fontWidth: (size: number) => number, columns: number, maxWidth: number): number {
+function fittedCourierWidthSize(fontWidth: (size: number) => number, columns: number, maxWidth: number): number {
   let size = 9;
   while (size > 5 && fontWidth(size) * columns > maxWidth) size -= 0.25;
   return size;
@@ -101,7 +101,10 @@ export async function composeLuciferReceiptPdf(plainText: string, paperWidth: "5
   const logoWidth = geometry.width;
   const logoHeight = geometry.height;
   const columns = paperWidth === "58mm" ? 32 : 48;
-  const fontSize = courierSize((size) => courier.widthOfTextAtSize("M", size), columns, contentWidth);
+  const fontSize = 10;
+  // Keep the existing columns and margins while giving the glyphs more height.
+  const fittedWidthSize = fittedCourierWidthSize((size) => courier.widthOfTextAtSize("M", size), columns, contentWidth);
+  const horizontalScale = fittedWidthSize / fontSize;
   const lineHeight = fontSize * 1.25;
   const lines = plainText.replace(/\r\n/g, "\n").split("\n").flatMap(line => {
     const safe = receiptPdfLine(line);
@@ -111,7 +114,7 @@ export async function composeLuciferReceiptPdf(plainText: string, paperWidth: "5
     return wrapped;
   });
   // Center the whole body, preserving the spaces aligning descriptions/prices.
-  const bodyWidth = Math.max(0, ...lines.map(line => courier.widthOfTextAtSize(line, fontSize)));
+  const bodyWidth = Math.max(0, ...lines.map(line => courier.widthOfTextAtSize(line, fittedWidthSize)));
   const bodyX = (pageWidth - bodyWidth) / 2;
   const textHeight = Math.max(lineHeight, lines.length * lineHeight);
   const pageHeight = margin + logoHeight + 8 + textHeight + 14;
@@ -122,14 +125,15 @@ export async function composeLuciferReceiptPdf(plainText: string, paperWidth: "5
     width: logoWidth,
     height: logoHeight,
   });
+  page.pushOperators(pushGraphicsState(), concatTransformationMatrix(horizontalScale, 0, 0, 1, bodyX, 0));
   let cursor = pageHeight - margin - logoHeight - 8 - fontSize;
   for (const line of lines) {
-    const safe = receiptPdfLine(line);
-    if (safe.length > 0) {
-      page.drawText(safe, { x: bodyX, y: cursor, size: fontSize, font: courier, color: rgb(0, 0, 0) });
+    if (line.length > 0) {
+      page.drawText(line, { x: 0, y: cursor, size: fontSize, font: courier, color: rgb(0, 0, 0) });
     }
     cursor -= lineHeight;
   }
+  page.pushOperators(popGraphicsState());
   doc.setTitle("Receipt");
   return doc.save();
 }
