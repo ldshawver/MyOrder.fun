@@ -346,7 +346,7 @@ function EditDialog({
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.isSaleFeatured)} onChange={e => setForm(f => ({ ...f, isSaleFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
-                <span className="text-sm">Sale (show sale marker only)</span>
+                <span className="text-sm">Sale (charge the sale price)</span>
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.activeSale)} onChange={e => setForm(f => ({ ...f, activeSale: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />

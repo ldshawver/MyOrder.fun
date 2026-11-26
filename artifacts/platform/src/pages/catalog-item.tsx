@@ -227,9 +227,9 @@ export default function CatalogItemDetail() {
                 <div className="text-xs font-mono font-medium text-muted-foreground mb-2 uppercase tracking-wider">Pricing</div>
                 <div className="flex items-end gap-3">
                   <div className="text-5xl font-light tracking-tight" data-testid="text-product-price">${displayPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
-                  {selectedOption?.catalogItemId === id && item.compareAtPrice != null && (
+                  {item.regularPrice != null && Number(item.regularPrice) > displayPrice && (
                     <div className="text-xl text-muted-foreground line-through mb-1">
-                      ${item.compareAtPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      ${item.regularPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </div>
                   )}
                 </div>

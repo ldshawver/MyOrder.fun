@@ -18,6 +18,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireCatalogRead
 import { requireTenantContext } from "../lib/tenantContext";
 import { hasSellableProductSchema, loadSellableProducts } from "../lib/catalogueSellable";
 import { resolveEmployeeUnitPrice } from "../lib/employeePricing";
+import { resolveEffectiveCatalogUnitPrice } from "../lib/checkoutNormalizer";
 import { publicCatalogEligibility } from "../lib/catalogEligibility";
 import { catalogAmountError } from "../lib/catalogPricing";
 
@@ -27,6 +28,16 @@ router.use(requireAuth, loadDbUser, requireDbUser, requireCatalogReadAccess, req
 const listCatalogItemsRequest = ListCatalogItemsQueryParams.extend({
   customerPreview: z.enum(["true", "false"]).optional().transform(value => value === "true"),
 });
+
+function customerUnitPrice(row: typeof catalogItemsTable.$inferSelect, employee: boolean): number {
+  let retail = parseFloat(String(row.price));
+  try {
+    retail = resolveEffectiveCatalogUnitPrice(row);
+  } catch {
+    retail = parseFloat(String(row.price));
+  }
+  return employee ? resolveEmployeeUnitPrice(retail, row.homiePrice, true) : retail;
+}
 
 function rows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
@@ -487,7 +498,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
       if (!isCustomerView) return item;
       return {
         ...item,
-        price: employeeView ? resolveEmployeeUnitPrice(i.price, i.homiePrice, true) : item.price,
+        price: customerUnitPrice(i, employeeView),
         homiePrice: null,
       };
     }),
@@ -824,7 +835,7 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
   const employeeView = alavontOnly && req.dbUser?.isCurrentEmployee === true;
   res.json(GetCatalogItemResponse.parse({
     ...mapped,
-    price: employeeView ? resolveEmployeeUnitPrice(row.price, row.homiePrice, true) : mapped.price,
+    price: alavontOnly ? customerUnitPrice(row, employeeView) : mapped.price,
     homiePrice: alavontOnly ? null : mapped.homiePrice,
   }));
 });
