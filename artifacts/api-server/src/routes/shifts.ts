@@ -1541,13 +1541,18 @@ router.post(
 
     if (!activeShift) { res.status(404).json({ error: "No active shift" }); return; }
 
-    const {
-      endingInventory,
-      cashBankEnd,
-    } = req.body as {
-      endingInventory?: { shiftInventoryItemId: number; quantityEndActual: number }[];
-      cashBankEnd?: number; // rep-reported ending cash bank
-    };
+    const submitted = z.object({
+      endingInventory: z.array(z.object({
+        shiftInventoryItemId: z.number().int().positive(),
+        quantityEndActual: z.number().finite().nonnegative(),
+      }).strict()),
+      cashBankEnd: z.number().finite().nonnegative(),
+    }).strict().safeParse(req.body);
+    if (!submitted.success) {
+      res.status(422).json({ error: "Enter valid ending inventory and cash counts before ending the shift." });
+      return;
+    }
+    const { endingInventory, cashBankEnd } = submitted.data;
 
     const stats = await computeShiftStats(activeShift.id, activeShift.tenantId ?? null, req);
 
@@ -1561,8 +1566,13 @@ router.post(
 
     // Apply actual ending counts from form if provided
     const actualMap = new Map<number, number>(
-      (endingInventory ?? []).map(e => [e.shiftInventoryItemId, e.quantityEndActual])
+      endingInventory.map(e => [e.shiftInventoryItemId, e.quantityEndActual])
     );
+    const countable = enriched.filter(item => item.rowType === "item");
+    if (actualMap.size !== endingInventory.length || actualMap.size !== countable.length || countable.some(item => !actualMap.has(item.id))) {
+      res.status(422).json({ error: "Enter one physical ending count for each item on this shift." });
+      return;
+    }
 
     // Persist ending quantities and actual counts
     for (const item of enriched) {
