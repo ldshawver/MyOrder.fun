@@ -28,5 +28,13 @@ for (const width of [375, 1440]) {
     await expect(page.locator(".holiday-particle")).toHaveCSS("animation-name", "holiday-fall");
     await page.emulateMedia({ reducedMotion: "reduce" });
     await expect(page.locator(".holiday-particle")).toBeHidden();
+    await page.locator(".holiday-storefront").evaluate(element => element.setAttribute("data-holiday", "thanksgiving"));
+    const harvest = await page.locator(".holiday-product-image").evaluate(element => {
+      const accent = getComputedStyle(element, "::before");
+      return { content: accent.content, pointerEvents: accent.pointerEvents };
+    });
+    expect(harvest.content).toContain("🍁");
+    expect(harvest.pointerEvents).toBe("none");
+    expect(await card.boundingBox()).toEqual(before);
   });
 }
