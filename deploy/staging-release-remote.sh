@@ -75,7 +75,8 @@ grep -q 'RELEASE_MODE_VALUE = "verified-release"' deploy/safe-compose.mjs || fai
 
 export DEPLOY_SHA="$SHA" DEPLOY_TREE="$TREE" MYORDER_STAGING_ENV_FILE="$ENV_FILE" MYORDER_STAGING_RELEASE_MODE="verified-release"
 unset MYORDER_STAGING_MIGRATION_CONFIRMATION MYORDER_API_IMAGE MYORDER_PLATFORM_IMAGE MYORDER_MIGRATE_IMAGE PRODUCTION_DEPLOY_CONFIRMATION
-guard() { node deploy/safe-compose.mjs staging "$@"; }
+# Some Compose commands keep stdin open. Keep the SSH script stream reserved for Bash.
+guard() { node deploy/safe-compose.mjs staging "$@" </dev/null; }
 
 previous="$(curl -fsS --max-time 10 "$LOCAL_HEALTH_URL" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).sha||"unknown"))}catch{process.stdout.write("unknown")}})' || true)"
 echo "STAGING_PREVIOUS_SHA=${previous:-unknown}"

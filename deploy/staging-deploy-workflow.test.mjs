@@ -64,7 +64,7 @@ test("synthetic bootstrap is confirmation-gated and only drives the staging guar
 
 test("host script only drives the staging guard and refuses production paths", () => {
   const nodeCalls = remote.match(/node deploy\/safe-compose\.mjs[^\n]*/g) ?? [];
-  assert.deepEqual(nodeCalls, ['node deploy/safe-compose.mjs staging "$@"; }']);
+  assert.deepEqual(nodeCalls, ['node deploy/safe-compose.mjs staging "$@" </dev/null; }']);
   assert.doesNotMatch(remote, /\bdocker\b|\bpsql\b|safe-compose\.mjs production/);
   assert.match(remote, /\/opt\/alavont\|\/opt\/alavont\/\*\) fail "Refusing to use the production checkout"/);
   assert.match(remote, /case "\$mode" in 600\|400\)/);
