@@ -596,6 +596,25 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
     expect(dbState.orders).toHaveLength(0);
   });
 
+  it("returns no selectable pickup slots during a store closure", async () => {
+    mockActor = dbState.users[0]!;
+    const app = buildApp();
+    const before = await supertest(app).get("/api/orders/pickup-availability");
+    expect(before.status, before.text).toBe(200);
+    expect(before.body.locations[0].slots.length).toBeGreaterThan(0);
+
+    closureState.windows = [{
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 60_000).toISOString(),
+      message: "Closed for Thanksgiving",
+    }];
+    const closed = await supertest(app).get("/api/orders/pickup-availability");
+    expect(closed.status, closed.text).toBe(200);
+    expect(closed.body.locations[0]).toMatchObject({
+      configured: true, openNow: false, immediateAvailable: false, message: "Closed for Thanksgiving", slots: [],
+    });
+  });
+
   it("rejects checkout after a supervisor closes the store, even with a previously issued quote", async () => {
     mockActor = dbState.users[0]!;
     const app = buildApp();

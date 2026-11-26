@@ -941,7 +941,7 @@ router.get("/orders/pickup-availability", async (req, res): Promise<void> => {
       const schedule = await loadPickupSchedule(tenantId, location.id);
       const availability = calculatePickupAvailability(schedule);
       const slots = availability.slots.filter(slot => !activeStorefrontClosure(windows, Date.parse(slot.at)));
-      return { locationId: location.id, locationName: location.name, configured: true, ...availability, slots,
+      return { locationId: location.id, locationName: location.name, configured: true, ...availability, slots: closure ? [] : slots,
         ...(closure ? { immediateAvailable: false, openNow: false, message: closure.message } : {}),
         ...(slots.length !== availability.slots.length || closure ? { nextOpenAt: slots[0]?.at ?? null } : {}),
       };

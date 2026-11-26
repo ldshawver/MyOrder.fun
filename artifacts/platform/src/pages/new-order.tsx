@@ -239,7 +239,7 @@ export default function NewOrder() {
         setPickupAvailabilityError(null);
       })
       .catch(error => { setPickupLocations([]); setPickupAvailabilityError(error instanceof Error ? error.message : "Pickup availability is unavailable."); });
-  }, [getToken]);
+  }, [getToken, activeClosure]);
 
   const selectedPickupLocation = pickupLocations.find(location => location.locationId === pickupLocationId) ?? null;
   useEffect(() => {
@@ -517,7 +517,8 @@ export default function NewOrder() {
   useEffect(() => {
     setCheckoutQuote(null);
     setCheckoutQuoteError(null);
-    if (!conversionPreview || cart.length === 0 || deliveryBlocked || ((deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && !deliveryQuote)) return;
+    setIsQuotingCheckout(false);
+    if (activeClosure || !conversionPreview || cart.length === 0 || deliveryBlocked || ((deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && !deliveryQuote)) return;
     if (pickupWaitingForBusinessHours && !scheduledPickupSelected) {
       setCheckoutQuoteError("Choose a pickup time to place this order.");
       return;
@@ -548,7 +549,7 @@ export default function NewOrder() {
       }).finally(() => { if (!cancelled) setIsQuotingCheckout(false); });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryBlocked, deliveryMethod, deliveryQuote, shippingAddress, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected]);
+  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryBlocked, deliveryMethod, deliveryQuote, shippingAddress, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected, activeClosure]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">
@@ -718,9 +719,9 @@ export default function NewOrder() {
                   {(deliveryMethod === "pickup" || deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && (
                     <div className="rounded-sm border border-border/50 bg-muted/10 p-3 space-y-3" data-testid="pickup-scheduling">
                       <div className="font-semibold text-sm">{deliveryMethod === "pickup" ? "Pickup time" : "Handoff time"}</div>
-                      {activeClosure && <p className="text-xs text-destructive" role="status">{activeClosure.message}</p>}
+                      {activeClosure && <p className="text-base font-semibold text-destructive" role="status">Pickup scheduling is paused while the store is closed.</p>}
                       {pickupAvailabilityError && <p className="text-xs text-destructive">{pickupAvailabilityError}</p>}
-                      {pickupLocations.length > 1 && (
+                      {!activeClosure && pickupLocations.length > 1 && (
                         <label className="block text-xs space-y-1">
                           <span className="text-muted-foreground">Pickup location</span>
                           <select className="w-full rounded-sm border border-border bg-background p-2" value={pickupLocationId ?? ""} onChange={event => setPickupLocationId(Number(event.target.value))} data-testid="select-pickup-location">
@@ -728,7 +729,7 @@ export default function NewOrder() {
                           </select>
                         </label>
                       )}
-                      {selectedPickupLocation && (
+                      {!activeClosure && selectedPickupLocation && (
                         <>
                           <p className="text-xs text-muted-foreground">{selectedPickupLocation.immediateAvailable ? "Open now. Pickup can be immediate, or choose a later time." : "Closed. You can still place this order. Choose a pickup time."}</p>
                           {(selectedPickupLocation.immediateAvailable || selectedPickupLocation.slots.length > 0) ? (

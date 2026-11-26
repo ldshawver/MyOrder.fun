@@ -4,6 +4,7 @@ import { useAuth } from "@clerk/react";
 import { CheckCircle2, Minus, Plus, RefreshCw, Search, ShoppingBasket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useStorefrontClosure } from "@/components/StorefrontClosureNotice";
 
 type Slot = { slot: number; source: "pin" | "rank" | "empty"; catalogItemId: number | null; units: number; name: string | null; price: number | null; imageUrl: string | null };
 type CategoryPage = { items: Array<{ id: number; name: string; price: number }>; nextCursor: number | null };
@@ -25,6 +26,7 @@ function errorMessage(value: unknown, fallback: string) {
 
 export default function SpeedOrder() {
   const { getToken, sessionId } = useAuth();
+  const { data: activeClosure } = useStorefrontClosure();
   const [category, setCategory] = useState<string | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [quantities, setQuantities] = useState<Record<number, number>>({});
@@ -106,7 +108,7 @@ export default function SpeedOrder() {
     const controller = new AbortController();
     setConversion(null); setQuote(null); setAmountTendered(""); setActionError(null);
     setPickupLocations([]); setPickupLocationId(null); setPickupAt("");
-    if (memberId) {
+    if (memberId && !activeClosure) {
       void request<{ locations: PickupLocation[] }>("/api/orders/pickup-availability", {
         signal: controller.signal, cache: "no-store",
       }, memberId).then(({ locations }) => {
@@ -122,10 +124,10 @@ export default function SpeedOrder() {
       });
     }
     return () => controller.abort();
-  }, [memberId, request]);
+  }, [memberId, request, activeClosure]);
 
   const selectedPickup = pickupLocations.find(location => location.locationId === pickupLocationId);
-  const pickupSelected = !!selectedPickup && (pickupAt === "immediate"
+  const pickupSelected = !activeClosure && !!selectedPickup && (pickupAt === "immediate"
     ? selectedPickup.immediateAvailable
     : selectedPickup.slots.some(slot => slot.at === pickupAt));
 
@@ -146,7 +148,7 @@ export default function SpeedOrder() {
   }
 
   async function placeOrder() {
-    if (!selectedMember || !conversion || !quote || !pickupLocationId) return;
+    if (activeClosure || !selectedMember || !conversion || !quote || !pickupLocationId) return;
     const tendered = Number(amountTendered);
     if (!Number.isFinite(tendered) || tendered < quote.tenderDue) { setActionError("Cash tendered must cover the server total."); return; }
     setBusy("order"); setActionError(null);
@@ -242,7 +244,8 @@ export default function SpeedOrder() {
         </Button>
       )}
     </div>
-    {selectedMember && pickupLocations.length > 0 && (
+    {activeClosure && <p role="status" className="text-base font-semibold text-destructive">Pickup scheduling is paused while the store is closed.</p>}
+    {!activeClosure && selectedMember && pickupLocations.length > 0 && (
       <fieldset disabled={busy !== null} className="grid gap-3 rounded-xl border bg-card p-4 sm:grid-cols-2">
         <label className="text-xs font-medium">Pickup location
           <select className="mt-1 block w-full rounded-md border bg-background p-2" value={pickupLocationId ?? ""}
