@@ -109,7 +109,7 @@ describe("thermal documents", () => {
     expect(text).toMatch(/Expected cash\s+\$145\.00/);
     expect(text).toMatch(/Counted cash \(reported\)\s+\$144\.50/);
     expect(text).toMatch(/Variance\s+-\$0\.50/);
-    expect(text).toMatch(/Sales excl\. tax\/delivery\s+\$1,000\.00/);
+    expect(text).toMatch(/Commissionable sales\s+\$1,000\.00/);
     expect(text).toMatch(/Selected commission\s+16%/);
     expect(text).toMatch(/Commission amount\s+\$160\.00/);
     expect(text).toContain("Verified by:");
