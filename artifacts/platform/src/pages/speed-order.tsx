@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { CheckCircle2, Minus, Plus, RefreshCw, Search, ShoppingBasket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 type Slot = { slot: number; source: "pin" | "rank" | "empty"; catalogItemId: number | null; units: number; name: string | null; price: number | null; imageUrl: string | null };
+type CategoryPage = { items: Array<{ id: number; name: string; price: number }>; nextCursor: number | null };
 type Member = { id: number; name: string };
 type PickupLocation = { locationId: number; locationName: string; configured: boolean; immediateAvailable: boolean; slots: Array<{ at: string; label: string }>; message: string };
 type CheckoutQuote = { merchandiseSubtotal: number; customerTax: number; deliveryFee: number; tipAmount: number; finalAmountDue: number; tenderDue: number; checkoutTaxQuoteToken: string; pickup?: { locationId: number; pickupAt: string } | null };
@@ -22,7 +24,8 @@ function errorMessage(value: unknown, fallback: string) {
 }
 
 export default function SpeedOrder() {
-  const { getToken } = useAuth();
+  const { getToken, sessionId } = useAuth();
+  const [category, setCategory] = useState<string | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [quantities, setQuantities] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
@@ -53,6 +56,22 @@ export default function SpeedOrder() {
     if (!response.ok) throw new Error(errorMessage(data, `Request failed (${response.status})`));
     return data as T;
   }, [authHeaders]);
+
+  const categories = useQuery({
+    queryKey: ["speed-order", sessionId, "categories"],
+    enabled: !!sessionId,
+    queryFn: ({ signal }) => request<{ categories: string[] }>("/api/speed-order/categories", { signal }),
+  });
+  const categoryItems = useInfiniteQuery({
+    queryKey: ["speed-order", sessionId, "category-items", category],
+    enabled: !!sessionId && category !== null,
+    initialPageParam: 0,
+    queryFn: ({ pageParam, signal }) => {
+      const params = new URLSearchParams({ category: category ?? "", after: String(pageParam) });
+      return request<CategoryPage>(`/api/speed-order/category-items?${params}`, { signal });
+    },
+    getNextPageParam: page => page.nextCursor ?? undefined,
+  });
 
   const loadTopNine = useCallback(async () => {
     setLoading(true); setLoadError(null);
@@ -146,12 +165,83 @@ export default function SpeedOrder() {
     finally { setBusy(null); }
   }
 
+  const categoryProducts = categoryItems.data?.pages.flatMap(page => page.items) ?? [];
+  const visibleItems = category === null
+    ? slots.map(slot => ({ key: slot.slot, id: slot.catalogItemId, name: slot.name, price: slot.price }))
+    : categoryProducts.map(item => ({ ...item, key: item.id }));
+  const productsLoading = category === null ? loading : categoryItems.isPending;
+  const productsError = category === null ? loadError : categoryItems.error?.message;
+  const refreshProducts = () => category === null ? loadTopNine() : categoryItems.refetch();
+
   if (success) return <section className="mx-auto max-w-lg py-8" data-testid="speed-order-success"><div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-6 text-center"><CheckCircle2 className="mx-auto h-12 w-12 text-emerald-400" /><h1 className="mt-3 text-2xl font-bold">Order complete</h1><p className="mt-2">Order #{success.orderId} · ${success.total.toFixed(2)}</p><p className="text-sm text-muted-foreground">Change due: ${success.change.toFixed(2)}</p><Button className="mt-5 w-full min-h-12" onClick={() => setSuccess(null)}>Start another Speed Order</Button></div></section>;
 
   return <section className="mx-auto max-w-4xl space-y-5" data-testid="speed-order-screen">
-    <div><h1 className="text-2xl font-bold">Speed Order</h1><p className="mt-1 text-sm text-muted-foreground">Tenant top sellers · member pickup · accountable cash checkout</p></div>
+    <div><h1 className="text-2xl font-bold">Speed Order</h1><p className="mt-1 text-sm text-muted-foreground">Member pickup and cash checkout</p></div>
     <div className="rounded-xl border bg-card p-4"><label className="text-sm font-semibold" htmlFor="member-search">1. Select member</label><div className="relative mt-2"><Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input id="member-search" className="h-11 pl-9" value={memberQuery} onChange={event => { setMemberQuery(event.target.value); setSelectedMember(null); }} placeholder="Search name or email" /></div>{selectedMember ? <div className="mt-2 rounded-lg bg-primary/10 p-3 font-medium">{selectedMember.name}</div> : <div className="mt-2 max-h-44 overflow-y-auto rounded-lg border">{membersLoading ? <p className="p-3 text-sm text-muted-foreground">Loading members…</p> : members.length ? members.map(member => <button type="button" key={member.id} onClick={() => { setSelectedMember(member); setMemberQuery(member.name); }} className="block min-h-11 w-full border-b px-3 py-2 text-left text-sm last:border-0 hover:bg-muted">{member.name}</button>) : <p className="p-3 text-sm text-muted-foreground">No eligible members found.</p>}</div>}</div>
-    <div className="rounded-xl border bg-card p-4"><div className="mb-3 flex items-center justify-between"><div><h2 className="font-semibold">2. Tap top items</h2><p className="text-xs text-muted-foreground">Prices shown are server supplied; final totals are recalculated at checkout.</p></div><Button size="sm" variant="ghost" onClick={() => void loadTopNine()} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /></Button></div>{loading ? <div className="grid grid-cols-3 gap-2">{Array.from({ length: 9 }, (_, index) => <div key={index} className="aspect-square animate-pulse rounded-xl bg-muted" />)}</div> : loadError ? <div role="alert" className="rounded-lg border border-destructive/40 p-4 text-sm"><p>{loadError}</p><Button className="mt-3" variant="outline" onClick={() => void loadTopNine()}>Retry</Button></div> : slots.every(slot => !slot.catalogItemId) ? <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">No eligible top items are available yet.</p> : <div className="grid grid-cols-3 gap-2">{slots.map(slot => slot.catalogItemId ? <div key={slot.slot} className="flex min-h-36 flex-col rounded-xl border bg-background p-2"><button type="button" className="flex flex-1 flex-col text-left" onClick={() => changeQuantity(slot.catalogItemId!, 1)}><div className="line-clamp-2 text-xs font-semibold">{slot.name}</div><div className="mt-auto text-sm font-bold">${slot.price?.toFixed(2)}</div></button><div className="mt-2 flex items-center justify-between rounded-lg bg-muted"><button aria-label={`Remove ${slot.name}`} className="min-h-10 px-2" onClick={() => changeQuantity(slot.catalogItemId!, -1)}><Minus className="h-4 w-4" /></button><span className="font-bold">{quantities[slot.catalogItemId] ?? 0}</span><button aria-label={`Add ${slot.name}`} className="min-h-10 px-2" onClick={() => changeQuantity(slot.catalogItemId!, 1)}><Plus className="h-4 w-4" /></button></div></div> : <div key={slot.slot} className="min-h-36 rounded-xl border border-dashed bg-muted/20" aria-label="Empty Speed Order slot" />)}</div>}</div>
+    <div className="rounded-xl border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="font-semibold">2. Select products</h2>
+        <Button size="sm" variant="ghost" aria-label="Refresh products" disabled={productsLoading}
+          onClick={() => void refreshProducts()}>
+          <RefreshCw className={`h-4 w-4 ${productsLoading ? "animate-spin" : ""}`} />
+        </Button>
+      </div>
+      <div role="group" aria-label="Product categories" className="mb-3 flex flex-wrap gap-2">
+        <Button type="button" variant={category === null ? "default" : "outline"}
+          aria-pressed={category === null} onClick={() => setCategory(null)}>Top 9</Button>
+        {categories.data?.categories.map(name => (
+          <Button key={name} type="button" variant={category === name ? "default" : "outline"}
+            aria-pressed={category === name} onClick={() => setCategory(name)}>
+            {name || "Uncategorized"}
+          </Button>
+        ))}
+        {categories.isPending && <p className="self-center text-sm text-muted-foreground">Loading categories…</p>}
+        {categories.isError && <Button variant="outline" onClick={() => void categories.refetch()}>Retry categories</Button>}
+      </div>
+      {productsLoading && <p role="status" className="p-4 text-sm text-muted-foreground">Loading products…</p>}
+      {productsError && (
+        <div role="alert" className="rounded-lg border border-destructive/40 p-4 text-sm">
+          <p>{productsError}</p>
+          <Button className="mt-3" variant="outline" onClick={() => void (
+            category !== null && categoryItems.isFetchNextPageError ? categoryItems.fetchNextPage() : refreshProducts()
+          )}>Retry</Button>
+        </div>
+      )}
+      {!productsLoading && !productsError && !visibleItems.some(item => item.id !== null) && (
+        <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+          {categoryItems.hasNextPage && category !== null ? "No eligible products on this page." : "No eligible products are available."}
+        </p>
+      )}
+      {visibleItems.some(item => item.id !== null) && (
+        <div className="grid grid-cols-3 gap-2">
+          {visibleItems.map(({ key, id, name, price }) => id === null ? (
+            <div key={key} className="min-h-36 rounded-xl border border-dashed bg-muted/20" aria-label="Empty Speed Order slot" />
+          ) : (
+            <div key={key} className="flex min-h-36 flex-col rounded-xl border bg-background p-2">
+              <button type="button" disabled={busy !== null} onClick={() => changeQuantity(id, 1)} className="flex flex-1 flex-col text-left">
+                <span className="line-clamp-2 text-xs font-semibold">{name}</span>
+                <span className="mt-auto text-sm font-bold">${price?.toFixed(2)}</span>
+              </button>
+              <div className="mt-2 flex items-center justify-between rounded-lg bg-muted">
+                <button type="button" disabled={busy !== null} aria-label={`Remove ${name}`} className="min-h-10 px-2" onClick={() => changeQuantity(id, -1)}>
+                  <Minus className="h-4 w-4" />
+                </button>
+                <span className="font-bold">{quantities[id] ?? 0}</span>
+                <button type="button" disabled={busy !== null} aria-label={`Add ${name}`} className="min-h-10 px-2" onClick={() => changeQuantity(id, 1)}>
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {category !== null && categoryItems.hasNextPage && !categoryItems.isFetchNextPageError && (
+        <Button className="mt-3" variant="outline" disabled={categoryItems.isFetching}
+          onClick={() => void categoryItems.fetchNextPage()}>
+          {categoryItems.isFetchingNextPage ? "Loading more…" : "Load more products"}
+        </Button>
+      )}
+    </div>
     {selectedMember && pickupLocations.length > 0 && (
       <fieldset disabled={busy !== null} className="grid gap-3 rounded-xl border bg-card p-4 sm:grid-cols-2">
         <label className="text-xs font-medium">Pickup location

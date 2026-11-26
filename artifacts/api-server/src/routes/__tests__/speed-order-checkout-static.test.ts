@@ -10,6 +10,13 @@ describe("Speed Order member checkout boundary", () => {
     expect(speedOrder).not.toContain("router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext)");
   });
 
+  it("allows staff browsing while keeping pin management separate", () => {
+    expect(speedOrder).toContain('router.get("/speed-order/categories", requirePermission("speed_order.use")');
+    expect(speedOrder).toContain('router.get("/speed-order/category-items", requirePermission("speed_order.use")');
+    expect(speedOrder).toContain('router.put("/speed-order/pins", requirePermission("speed_order.pin")');
+    expect(speedOrder).toContain("browseEligible(tenantId), eq(browseCategory, category), gt(catalogItemsTable.id, Number(after))");
+  });
+
   it("requires Speed Order and customer-view permissions before delegation", () => {
     expect(orders).toContain('hasPermission(staff, "speed_order.use", tenantId)');
     expect(orders).toContain('hasPermission(staff, "customers.view", tenantId)');
