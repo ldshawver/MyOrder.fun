@@ -1,5 +1,5 @@
 export type CatalogProductDraft = Record<string, string | boolean | number>;
-export type CatalogProductFieldErrors = Partial<Record<"name" | "category" | "price" | "compareAtPrice" | "regularPrice" | "homiePrice" | "parLevel" | "moq" | "preferredReorderQuantity" | "imageUrl" | "alavontImageUrl" | "luciferCruzImageUrl", string>>;
+export type CatalogProductFieldErrors = Partial<Record<"name" | "category" | "price" | "compareAtPrice" | "regularPrice" | "homiePrice" | "parLevel" | "moq" | "preferredReorderQuantity" | "imageUrl" | "alavontImageUrl" | "luciferCruzImageUrl" | "merchantImage", string>>;
 
 function canonicalText(form: CatalogProductDraft, primary: string, fallback: string): string {
   return String(form[primary] || form[fallback] || "").trim();
@@ -44,7 +44,7 @@ export function validateCatalogProductDraft(form: CatalogProductDraft): CatalogP
     const value = optionalNumber(form, key);
     if (value === undefined || (value != null && value < 0)) errors[key] = `${key === "parLevel" ? "PAR" : key === "moq" ? "Minimum order quantity" : "Preferred reorder quantity"} must be a non-negative number.`;
   }
-  for (const key of ["imageUrl", "alavontImageUrl", "luciferCruzImageUrl"] as const) {
+  for (const key of ["imageUrl", "alavontImageUrl", "luciferCruzImageUrl", "merchantImage"] as const) {
     const value = optionalText(form, key);
     if (value && !isHttpUrl(value)) errors[key] = "Image URL must be a valid HTTP or HTTPS URL.";
   }
@@ -59,6 +59,9 @@ export function createCatalogProductPayload(form: CatalogProductDraft): Record<s
     luciferCruzCategory: String(form.luciferCruzCategory || "").trim() || null,
     luciferCruzDescription: String(form.luciferCruzDescription || "").trim() || null,
     luciferCruzImageUrl: String(form.luciferCruzImageUrl || "").trim() || null,
+    merchantCategory: optionalText(form, "merchantCategory") ?? null,
+    merchantImage: optionalText(form, "merchantImage") ?? null,
+    merchantSku: optionalText(form, "merchantSku") ?? null,
     customerSafeName: String(form.customerSafeName || "").trim() || null,
     customerSafeDescription: String(form.customerSafeDescription || "").trim() || null,
     category: canonicalText(form, "category", "alavontCategory"),

@@ -117,16 +117,14 @@ describe("catalog product submission", () => {
     expect(source).toContain('id="catalog-field-description"');
   });
 
-  it("explains base, Alavont, Lucifer Cruz, safe checkout, and optional presentation fields", () => {
+  it("keeps vendor fields separate from the canonical safe checkout fields", () => {
     const source = readFileSync(new URL("../../pages/admin/edit-catalog.tsx", import.meta.url), "utf8");
-    expect(source).toContain("These fields describe the Alavont customer catalogue.");
-    expect(source).toContain("Canonical base product name for the record and operations.");
-    expect(source).toContain("A mapping alone does not publish an Alavont item in the Lucifer Cruz storefront");
-    expect(source).toContain("This is the final discreet presentation used in the converted checkout/order review");
-    expect(source).toContain("Fallback name in the converted POS preview");
-    expect(source).toContain("The current POS preview does not display this field.");
-    expect(source).toContain("Gallery images/videos appear in product details and rotate through the catalogue-card preview.");
-    expect(source.match(/input\("LC Category", "luciferCruzCategory"/g)).toHaveLength(1);
-    expect(source.match(/input\("LC Image URL", "luciferCruzImageUrl"/g)).toHaveLength(1);
+    expect(source).toContain('input("Vendor Name", "alavontName"');
+    expect(source).toContain('input("Alavont Image URL", "alavontImageUrl"');
+    expect(source).toContain('input("Safe Name", "customerSafeName"');
+    expect(source).toContain('input("Safe Category", "merchantCategory"');
+    expect(source).toContain('input("Safe Image URL", "merchantImage"');
+    expect(source).toContain('input("Safe SKU", "merchantSku"');
+    expect(source).not.toContain('input("LC Display Name"');
   });
 });

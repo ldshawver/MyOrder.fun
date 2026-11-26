@@ -57,7 +57,20 @@ const nullableBlankHttpUrl = z.preprocess(
   value => value == null || (typeof value === "string" && value.trim() === "") ? null : value,
   z.string().trim().url().refine(value => value.startsWith("http://") || value.startsWith("https://"), "Expected an HTTP or HTTPS URL").nullable().optional(),
 );
+const merchantCatalogFields = {
+  merchantCategory: z.string().trim().max(120).nullable().optional(),
+  merchantImage: nullableBlankHttpUrl,
+  merchantSku: z.string().trim().max(120).nullable().optional(),
+};
+const adminCatalogListResponse = ListCatalogItemsResponse.extend({
+  items: z.array(ListCatalogItemsResponse.shape.items.element.extend({
+    merchantCategory: z.string().nullable(),
+    merchantImage: z.string().nullable(),
+    merchantSku: z.string().nullable(),
+  })),
+});
 const createCatalogItemRequest = CreateCatalogItemBody.extend({
+  ...merchantCatalogFields,
   description: optionalBlankText,
   sku: optionalBlankText,
   imageUrl: optionalBlankHttpUrl,
@@ -68,6 +81,8 @@ const createCatalogItemRequest = CreateCatalogItemBody.extend({
   commissionEligibility: z.enum(["eligible", "membership", "excluded", "unclassified"]).optional(),
 });
 const updateCatalogItemRequest = UpdateCatalogItemBody.strict().extend({
+  ...merchantCatalogFields,
+  alavontImageUrl: nullableBlankHttpUrl,
   showCatalogueStockIndicator: z.boolean().optional(),
   activeSale: z.boolean().optional(),
   commissionEligibility: z.enum(["eligible", "membership", "excluded", "unclassified"]).optional(),
@@ -492,10 +507,11 @@ router.get("/catalog", async (req, res): Promise<void> => {
     "catalog list"
   );
 
-  res.json(ListCatalogItemsResponse.parse({
+  const responseSchema = isCustomerView ? ListCatalogItemsResponse : adminCatalogListResponse;
+  res.json(responseSchema.parse({
     items: paged.map(i => {
       const item = { ...mapItem(i, alavontOnly, stockByCatalogId.get(i.id)), sellableProduct: sellableByCatalogId.get(i.id) };
-      if (!isCustomerView) return item;
+      if (!isCustomerView) return { ...item, merchantCategory: i.merchantCategory ?? null, merchantImage: i.merchantImage ?? null, merchantSku: i.merchantSku ?? null };
       return {
         ...item,
         price: customerUnitPrice(i, employeeView),

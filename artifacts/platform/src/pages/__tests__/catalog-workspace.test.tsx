@@ -41,6 +41,8 @@ it("shows one inventory row with location columns and distinguishes zero from mi
 
 it("edits product details inline beside the matching variant and shared location counts", async () => {
   const item = { id: 17, name: "Legacy name", alavontName: "Vendor product", customerSafeName: "Safe product",
+    alavontDescription: "Vendor description", alavontImageUrl: "https://example.com/vendor.png",
+    merchantCategory: "Safe category", merchantImage: "https://example.com/safe.png", merchantSku: "SAFE-17",
     luciferCruzName: "Legacy alias", luciferCruzDescription: "Legacy description", category: "Test category",
     price: 10, isAvailable: true, lifecycleStatus: "customer_visible" };
   const writes: Record<string, unknown>[] = [];
@@ -71,14 +73,23 @@ it("edits product details inline beside the matching variant and shared location
     await act(async () => host.querySelector<HTMLButtonElement>('button[title="Edit"]')!.click());
     await vi.waitFor(() => expect(host.querySelector('input[aria-label="Storefront on hand"]')).not.toBeNull());
     expect(host.querySelector('section[aria-label="Product details"]')?.textContent).toContain("Vendor Name");
-    expect(host.querySelector('section[aria-label="Product details"]')?.textContent).toContain("Safe Name");
+    const details = host.querySelector('section[aria-label="Product details"]')?.textContent;
+    for (const label of ["Safe Name", "Alavont Description", "Alavont Image URL", "Alavont Category", "Safe Description",
+      "Safe Image URL", "Safe Category", "Safe SKU", "Safe stock", "Safe PAR", "Safe Price",
+      "Safe Sale Price", "Safe Regular / Compare-at Price", "Safe Employee Discount", "Available for ordering",
+      "Show stock count", "Sale marker", "Sale (charge sale price)"]) expect(details).toContain(label);
     expect(host.querySelector('section[aria-label="Product details"]')?.textContent).not.toContain("LC Display Name");
     expect(host.querySelector('input[aria-label="Backstock on hand"]')?.getAttribute("placeholder")).toBe("Not counted");
     expect(host.textContent).toContain("Shared inventory pool #34");
     const save = [...host.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save Changes");
     await act(async () => save!.click());
     await vi.waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0]).toMatchObject({ alavontName: "Vendor product", customerSafeName: "Safe product" });
+    expect(writes[0]).toMatchObject({
+      alavontName: "Vendor product", alavontDescription: "Vendor description", alavontImageUrl: "https://example.com/vendor.png",
+      customerSafeName: "Safe product", merchantCategory: "Safe category", merchantImage: "https://example.com/safe.png", merchantSku: "SAFE-17",
+      isSaleFeatured: false, activeSale: false,
+    });
+    expect(writes[0]).not.toHaveProperty("stockQuantity");
     expect(writes[0]).not.toHaveProperty("luciferCruzName");
     expect(writes[0]).not.toHaveProperty("luciferCruzDescription");
   } finally {

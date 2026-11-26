@@ -26,6 +26,9 @@ type CatalogProduct = {
   luciferCruzCategory: string | null;
   luciferCruzDescription: string | null;
   luciferCruzImageUrl: string | null;
+  merchantCategory?: string | null;
+  merchantImage?: string | null;
+  merchantSku?: string | null;
   customerSafeName: string | null;
   customerSafeDescription: string | null;
   alavontCategory: string | null;
@@ -129,11 +132,14 @@ function ProductEditor({
     regularPrice: fieldVal(item?.regularPrice),
     compareAtPrice: fieldVal(item?.compareAtPrice),
     homiePrice: fieldVal(item?.homiePrice),
-    imageUrl: fieldVal(item?.imageUrl),
+    alavontImageUrl: fieldVal(item?.alavontImageUrl),
+    alavontDescription: fieldVal(item?.alavontDescription),
+    merchantCategory: fieldVal(item?.merchantCategory),
+    merchantImage: fieldVal(item?.merchantImage),
+    merchantSku: fieldVal(item?.merchantSku),
     showCatalogueStockIndicator: item?.showCatalogueStockIndicator !== false,
     customerSafeName: fieldVal(item?.customerSafeName),
     customerSafeDescription: fieldVal(item?.customerSafeDescription),
-    sku: fieldVal(item?.sku),
     isAvailable: item?.isAvailable !== false,
     isTaxable: item?.isTaxable !== false,
     isFeatured: item?.isFeatured === true,
@@ -221,36 +227,58 @@ function ProductEditor({
               {item?.lifecycleStatus === "compliance_hold" ? "Release compliance hold" : "Place compliance hold"}
             </Button>
           </section>}
-          <div className="grid gap-4 sm:grid-cols-2">
-            {input("Vendor Name", "alavontName", isWoo)}
-            {input("Safe Name", "customerSafeName", false, "text", "Used on checkout and payment records.")}
-            {input("Category", "alavontCategory", isWoo)}
-            {input("SKU", "sku")}
-            {input("Price ($)", "price", isWoo, "number")}
-            {input("Regular / Compare-at Price ($)", "regularPrice", false, "number")}
-            {input("Sale Price ($)", "compareAtPrice", false, "number")}
-            {input("Employee Price ($)", "homiePrice", false, "number")}
-          </div>
-          <label className="block text-sm font-medium">Safe Description
-            <textarea id="catalog-editor-safe-description" value={fieldVal(form.customerSafeDescription)}
-              onChange={set("customerSafeDescription")} disabled={requestPending} rows={3}
+      <div className="grid gap-5 lg:grid-cols-2">
+        <section className="space-y-3 rounded-lg border border-border/60 p-4">
+          <h3 className="font-semibold">Alavont / Vendor</h3>
+          {input("Vendor Name", "alavontName", isWoo)}
+          {input("Alavont Image URL", "alavontImageUrl", isWoo)}
+          {input("Alavont Category", "alavontCategory", isWoo)}
+          <label className="block text-sm font-medium">Alavont Description
+            <textarea value={fieldVal(form.alavontDescription)} onChange={set("alavontDescription")}
+              disabled={isWoo || requestPending} rows={3}
               className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
           </label>
-          <details className="rounded-md border border-border/60 p-3">
-            <summary className="cursor-pointer text-sm font-semibold">Image and stock settings</summary>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              {input("Image URL", "imageUrl")}
-              {input("PAR", "parLevel", false, "number")}
-              {input("Minimum Order Quantity", "moq", false, "number")}
-              {input("Preferred Reorder Quantity", "preferredReorderQuantity", false, "number")}
-            </div>
-          </details>
+        </section>
+        <section className="space-y-3 rounded-lg border border-border/60 p-4">
+          <h3 className="font-semibold">Safe checkout</h3>
+          {input("Safe Name", "customerSafeName")}
+          {input("Safe Image URL", "merchantImage")}
+          {input("Safe Category", "merchantCategory")}
+          {input("Safe SKU", "merchantSku")}
+          <label className="block text-sm font-medium">Safe Description
+            <textarea value={fieldVal(form.customerSafeDescription)} onChange={set("customerSafeDescription")}
+              disabled={requestPending} rows={3}
+              className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+          </label>
+        </section>
+      </div>
+      <section className="space-y-3 rounded-lg border border-border/60 p-4">
+        <h3 className="font-semibold">Pricing and stock</h3>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {input("Safe Price ($)", "price", isWoo, "number")}
+          {input("Safe Sale Price ($)", "compareAtPrice", false, "number")}
+          {input("Safe Regular / Compare-at Price ($)", "regularPrice", false, "number")}
+          {input("Safe Employee Discount ($)", "homiePrice", false, "number")}
+          {input("Safe PAR", "parLevel", false, "number")}
+          <div>
+            <p className="text-xs font-medium text-muted-foreground">Safe stock</p>
+            <p className="text-sm">{isNew ? "Count stock after creating the product." : "See current quantities under Inventory by location."}</p>
+          </div>
+        </div>
+        <details>
+          <summary className="cursor-pointer text-sm font-medium">Reorder settings</summary>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2">
+            {input("Minimum Order Quantity", "moq", false, "number")}
+            {input("Preferred Reorder Quantity", "preferredReorderQuantity", false, "number")}
+          </div>
+        </details>
+      </section>
 
           {/* Availability */}
           {!isWoo && (
             <div>
               <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Availability</div>
-              <p className="mb-2 text-xs text-muted-foreground">Sale Price is charged only when “Use Sale Price at checkout” is enabled. The sale marker is visual only.</p>
+              <p className="mb-2 text-xs text-muted-foreground">Sale Price is charged only when “Sale (charge sale price)” is enabled. The sale marker is visual only.</p>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -267,7 +295,7 @@ function ProductEditor({
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.showCatalogueStockIndicator)} onChange={e => setForm(f => ({ ...f, showCatalogueStockIndicator: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
-                <span className="text-sm">Show catalogue stock indicator</span>
+                <span className="text-sm">Show stock count</span>
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.isFeatured)} onChange={e => setForm(f => ({ ...f, isFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
@@ -275,11 +303,11 @@ function ProductEditor({
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.isSaleFeatured)} onChange={e => setForm(f => ({ ...f, isSaleFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
-                <span className="text-sm">Show sale badge</span>
+                <span className="text-sm">Sale marker</span>
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.activeSale)} onChange={e => setForm(f => ({ ...f, activeSale: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
-                <span className="text-sm">Use Sale Price at checkout</span>
+                <span className="text-sm">Sale (charge sale price)</span>
               </label>
             </div>
           )}
