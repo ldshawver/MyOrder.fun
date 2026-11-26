@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { useAuth } from "@clerk/react";
 import {
   Save, ClipboardList, DollarSign, RefreshCw, Calendar,
@@ -1796,6 +1796,7 @@ function CombinedInventoryTab({ getToken }: { getToken: () => Promise<string | n
     }]);
   }
   const fullyInventoriedCount = catalogue.filter(item => item.inventoryStatus !== "missing_balance").length;
+  const supplyBalanceByLocation = new Map(balances.map(balance => [`${balance.itemId}:${balance.locationId}`, balance]));
   const stockForSupply = (itemId: number) => locationId
     ? normalize(balances.find(balance => balance.itemId === itemId && balance.locationId === selectedLocation)?.quantityOnHand)
     : balances.filter(balance => balance.itemId === itemId).reduce((sum, balance) => sum + normalize(balance.quantityOnHand), 0);
@@ -1870,17 +1871,157 @@ function CombinedInventoryTab({ getToken }: { getToken: () => Promise<string | n
     {detail && <InventoryLedgerDetail getToken={getToken} entityType={detail.entityType} itemId={detail.itemId} openAction={detail.action} onClose={() => { setDetail(null); void load(); }} />}
     {replenishment && <section className="rounded-xl border border-primary/30 bg-primary/5 p-4"><div className="mb-3 flex items-center justify-between"><div><h2 className="font-semibold">Replenishment settings — {replenishment.item.name}</h2><p className="text-xs text-muted-foreground">PAR is location-specific; MOQ and preferred reorder quantity apply to the catalogue item. Neither changes stock.</p></div><Button size="sm" variant="ghost" onClick={() => setReplenishment(null)}>Cancel</Button></div><div className="grid gap-3 md:grid-cols-4"><label className="text-xs text-muted-foreground"><span className="mb-1 block">Location</span><select className="h-9 w-full rounded-md border bg-background px-2" value={replenishment.locationId} onChange={event => { const next = event.target.value; setReplenishment(current => current ? { ...current, locationId: next, parLevel: String(current.item.locations.find(row => row.locationId === Number(next))?.par ?? 0) } : current); }}>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">PAR</span><Input type="number" min="0" value={replenishment.parLevel} onChange={event => setReplenishment(current => current ? { ...current, parLevel: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">MOQ</span><Input type="number" min="0" value={replenishment.moq} onChange={event => setReplenishment(current => current ? { ...current, moq: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Preferred Reorder Quantity</span><Input type="number" min="0" value={replenishment.preferredReorderQuantity} onChange={event => setReplenishment(current => current ? { ...current, preferredReorderQuantity: event.target.value } : current)} /></label></div><div className="mt-3 flex justify-end"><Button size="sm" onClick={() => void saveReplenishment()}>Save replenishment settings</Button></div></section>}
     {supplyEditor && <section className="rounded-xl border border-primary/30 bg-primary/5 p-4"><div className="mb-3 flex items-center justify-between"><div><h2 className="font-semibold">{supplyEditor.id ? "Edit" : "Create"} non-catalogue item</h2><p className="text-xs text-muted-foreground">Operational inventory remains separate from the catalogue business model.</p></div><Button size="sm" variant="ghost" onClick={() => setSupplyEditor(null)}>Cancel</Button></div><div className="grid gap-3 md:grid-cols-3"><label className="text-xs text-muted-foreground"><span className="mb-1 block">Name</span><Input value={supplyEditor.name} onChange={event => setSupplyEditor(current => current ? { ...current, name: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Description</span><Input value={supplyEditor.description} onChange={event => setSupplyEditor(current => current ? { ...current, description: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Section</span><select className="h-9 w-full rounded-md border bg-background px-2" value={supplyEditor.sectionId} onChange={event => setSupplyEditor(current => current ? { ...current, sectionId: event.target.value } : current)}><option value="">Unsectioned</option>{sections.filter(section => section.isActive).map(section => <option key={section.id} value={section.id}>{section.name}</option>)}</select></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Unit</span><Input value={supplyEditor.unitOfMeasure} onChange={event => setSupplyEditor(current => current ? { ...current, unitOfMeasure: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">PAR</span><Input type="number" min="0" value={supplyEditor.parLevel} onChange={event => setSupplyEditor(current => current ? { ...current, parLevel: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">MOQ</span><Input type="number" min="0" value={supplyEditor.moq} onChange={event => setSupplyEditor(current => current ? { ...current, moq: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Current/default unit cost</span><Input type="number" min="0" value={supplyEditor.unitCost} onChange={event => setSupplyEditor(current => current ? { ...current, unitCost: event.target.value } : current)} /></label></div><div className="mt-3 flex justify-end"><Button size="sm" disabled={!supplyEditor.name.trim()} onClick={() => void saveSupply()}>{supplyEditor.id ? "Save item" : "Create item"}</Button></div></section>}
-    {typeFilter !== "non_catalog" && <section className="rounded-xl border border-border/40 overflow-hidden"><div className="flex items-center gap-2 border-b border-border/40 bg-muted/20 px-4 py-3"><Package size={15} /><div><h2 className="font-semibold">Catalogue Inventory</h2><p className="text-xs text-muted-foreground">Inventoried: {fullyInventoriedCount} of {catalogue.length} eligible items. Missing balances remain visible as Not counted.</p></div></div>{[...catalogueByCategory.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([category, items]) => { const key = `catalogue:${category}`; return <div key={key} className="border-b border-border/30 last:border-0"><button className="flex w-full items-center gap-2 px-4 py-3 text-left font-semibold" onClick={() => toggle(key)}>{isOpen(key) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}{category}<span className="text-xs font-normal text-muted-foreground">({items.length})</span></button>{isOpen(key) && <div className="space-y-2 px-4 pb-4">{items.map(item => <CombinedItemCard key={item.id} title={item.name} secondary={item.customerSafeName && item.customerSafeName !== item.name ? item.customerSafeName : null} meta={`${item.stockUnit} · SKU ${item.sku ?? "—"} · MOQ ${item.moq} · Preferred reorder ${item.preferredReorderQuantity}`} stock={item.totalStock} par={item.parLevel} locationRows={item.locations} onReplenishment={() => beginReplenishment(item)} actions={{ opening: () => trigger("catalog", item.id, "opening"), receive: () => trigger("catalog", item.id, "receipt"), transfer: () => trigger("catalog", item.id, "transfer"), adjust: () => trigger("catalog", item.id, "adjustment"), loss: () => trigger("catalog", item.id, "loss"), history: () => trigger("catalog", item.id) }} />)}</div>}</div>; })}{catalogueByCategory.size === 0 && <div className="px-4 py-8 text-sm text-muted-foreground">No catalogue inventory matches these filters.</div>}</section>}
-    {typeFilter !== "catalog" && <section className="rounded-xl border border-border/40 overflow-hidden"><div className="flex items-center justify-between gap-2 border-b border-border/40 bg-muted/20 px-4 py-3"><div className="flex items-center gap-2"><Archive size={15} /><div><h2 className="font-semibold">Non-Catalogue Inventory</h2><p className="text-xs text-muted-foreground">Operational supplies, kept in their own canonical item model.</p></div></div><Button size="sm" onClick={() => beginSupplyEditor()}><Plus size={13} /> Add item</Button></div>{[...sections.filter(section => section.isActive), { id: -1, name: "Unsectioned", isActive: true }].map(section => { const items = suppliesFor(section.id === -1 ? null : section.id); const key = `supply:${section.id}`; return <div key={key} className="border-b border-border/30 last:border-0"><button className="flex w-full items-center gap-2 px-4 py-3 text-left font-semibold" onClick={() => toggle(key)}>{isOpen(key) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}{section.name}<span className="text-xs font-normal text-muted-foreground">({items.length})</span></button>{isOpen(key) && <div className="space-y-2 px-4 pb-4">{items.map(item => <CombinedItemCard key={item.id} title={item.name} secondary={item.description} meta={`${item.unitOfMeasure} · MOQ ${item.moq} · Preferred reorder ${item.preferredReorderQuantity}${item.sku ? ` · ${item.sku}` : ""}`} stock={stockForSupply(item.id)} par={normalize(item.parLevel)} onEdit={() => beginSupplyEditor(item)} locationRows={locations.map(location => ({ locationId: location.id, name: location.name, qty: normalize(balances.find(balance => balance.itemId === item.id && balance.locationId === location.id)?.quantityOnHand), par: normalize(item.parLevel), hasBalance: true }))} actions={{ receive: () => trigger("non_catalog", item.id, "receipt"), transfer: () => trigger("non_catalog", item.id, "transfer"), adjust: () => trigger("non_catalog", item.id, "adjustment"), loss: () => trigger("non_catalog", item.id, "loss"), history: () => trigger("non_catalog", item.id) }} />)}{items.length === 0 && <div className="py-2 text-sm text-muted-foreground">No matching active items.</div>}</div>}</div>; })}</section>}
+    {typeFilter !== "non_catalog" && (
+      <section className="overflow-hidden rounded-xl border border-border/40">
+        <div className="flex items-center gap-2 border-b border-border/40 bg-muted/20 px-4 py-3">
+          <Package size={15} />
+          <div>
+            <h2 className="font-semibold">Catalogue Inventory</h2>
+            <p className="text-xs text-muted-foreground">Inventoried: {fullyInventoriedCount} of {catalogue.length} eligible items.</p>
+          </div>
+        </div>
+        {[...catalogueByCategory.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([category, items]) => {
+          const key = `catalogue:${category}`;
+          return (
+            <div key={key} className="border-b border-border/30 last:border-0">
+              <button type="button" className="flex w-full items-center gap-2 px-4 py-3 text-left font-semibold"
+                aria-expanded={isOpen(key)} onClick={() => toggle(key)}>
+                {isOpen(key) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                {category}<span className="text-xs font-normal text-muted-foreground">({items.length})</span>
+              </button>
+              {isOpen(key) && <InventoryLocationTable label={category} locations={locations} selectedLocation={selectedLocation}>
+                {items.map(item => <CombinedItemRow key={item.id} locations={locations} title={item.name}
+                  secondary={item.customerSafeName && item.customerSafeName !== item.name ? item.customerSafeName : null}
+                  meta={`${item.stockUnit} · SKU ${item.sku ?? "—"} · MOQ ${item.moq} · Preferred reorder ${item.preferredReorderQuantity}`}
+                  stock={item.totalStock} par={item.parLevel} locationRows={item.locations}
+                  onReplenishment={() => beginReplenishment(item)}
+                  actions={{
+                    opening: () => trigger("catalog", item.id, "opening"), receive: () => trigger("catalog", item.id, "receipt"),
+                    transfer: () => trigger("catalog", item.id, "transfer"), adjust: () => trigger("catalog", item.id, "adjustment"),
+                    loss: () => trigger("catalog", item.id, "loss"), history: () => trigger("catalog", item.id),
+                  }} />)}
+              </InventoryLocationTable>}
+            </div>
+          );
+        })}
+        {catalogueByCategory.size === 0 && <p className="px-4 py-8 text-sm text-muted-foreground">No catalogue inventory matches these filters.</p>}
+      </section>
+    )}
+    {typeFilter !== "catalog" && (
+      <section className="overflow-hidden rounded-xl border border-border/40">
+        <div className="flex items-center justify-between gap-2 border-b border-border/40 bg-muted/20 px-4 py-3">
+          <div className="flex items-center gap-2"><Archive size={15} /><h2 className="font-semibold">Non-Catalogue Inventory</h2></div>
+          <Button size="sm" onClick={() => beginSupplyEditor()}><Plus size={13} /> Add item</Button>
+        </div>
+        {[...sections.filter(section => section.isActive), { id: -1, name: "Unsectioned" }].map(section => {
+          const items = suppliesFor(section.id === -1 ? null : section.id);
+          const key = `supply:${section.id}`;
+          return (
+            <div key={key} className="border-b border-border/30 last:border-0">
+              <button type="button" className="flex w-full items-center gap-2 px-4 py-3 text-left font-semibold"
+                aria-expanded={isOpen(key)} onClick={() => toggle(key)}>
+                {isOpen(key) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                {section.name}<span className="text-xs font-normal text-muted-foreground">({items.length})</span>
+              </button>
+              {isOpen(key) && (items.length ? <InventoryLocationTable label={section.name} locations={locations} selectedLocation={selectedLocation}>
+                {items.map(item => <CombinedItemRow key={item.id} locations={locations} title={item.name} secondary={item.description}
+                  meta={`${item.unitOfMeasure} · MOQ ${item.moq} · Preferred reorder ${item.preferredReorderQuantity}${item.sku ? ` · SKU ${item.sku}` : ""}`}
+                  stock={stockForSupply(item.id)} par={normalize(item.parLevel)} onEdit={() => beginSupplyEditor(item)}
+                  locationRows={locations.map(location => {
+                    const balance = supplyBalanceByLocation.get(`${item.id}:${location.id}`);
+                    return { locationId: location.id, qty: balance ? normalize(balance.quantityOnHand) : null,
+                      par: normalize(item.parLevel), hasBalance: !!balance };
+                  })}
+                  actions={{
+                    receive: () => trigger("non_catalog", item.id, "receipt"), transfer: () => trigger("non_catalog", item.id, "transfer"),
+                    adjust: () => trigger("non_catalog", item.id, "adjustment"), loss: () => trigger("non_catalog", item.id, "loss"),
+                    history: () => trigger("non_catalog", item.id),
+                  }} />)}
+              </InventoryLocationTable> : <p className="px-4 pb-4 text-sm text-muted-foreground">No matching active items.</p>)}
+            </div>
+          );
+        })}
+      </section>
+    )}
   </div>;
 }
 
-function CombinedItemCard({ title, secondary, meta, stock, par, locationRows, onReplenishment, onEdit, actions }: { title: string; secondary: string | null; meta: string; stock: number | null; par: number | null; locationRows: Array<{ locationId: number; name: string; qty: number | null; par: number | null; hasBalance: boolean }>; onReplenishment?: () => void; onEdit?: () => void; actions: { opening?: () => void; receive: () => void; transfer: () => void; adjust: () => void; loss: () => void; history: () => void } }) {
-  const [showLocations, setShowLocations] = useState(false);
-  const visibleLocations = locationRows;
-  const missing = visibleLocations.some(row => !row.hasBalance);
+function InventoryLocationTable({ label, locations, selectedLocation, children }: {
+  label: string;
+  locations: NonCatalogLocation[];
+  selectedLocation: number;
+  children: ReactNode;
+}) {
+  return (
+    <div className="overflow-x-auto" tabIndex={0} aria-label={`${label} inventory columns`}>
+      <table className="w-full text-sm" aria-label={`${label} inventory`}>
+        <thead className="bg-muted/40 text-xs text-muted-foreground">
+          <tr>
+            <th scope="col" className="min-w-48 px-4 py-2 text-left">Item</th>
+            {locations.map(location => (
+              <th key={location.id} scope="col" className="min-w-24 px-3 py-2 text-right"
+                aria-current={location.id === selectedLocation ? "true" : undefined}>{location.name}</th>
+            ))}
+            <th scope="col" className="whitespace-nowrap px-3 py-2 text-right">{selectedLocation ? "Selected stock" : "Total stock"}</th>
+            <th scope="col" className="px-3 py-2 text-left">Actions</th>
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function CombinedItemRow({ locations, title, secondary, meta, stock, par, locationRows, onReplenishment, onEdit, actions }: {
+  locations: NonCatalogLocation[];
+  title: string;
+  secondary: string | null;
+  meta: string;
+  stock: number | null;
+  par: number | null;
+  locationRows: Array<{ locationId: number; qty: number | null; par: number | null; hasBalance: boolean }>;
+  onReplenishment?: () => void;
+  onEdit?: () => void;
+  actions: { opening?: () => void; receive: () => void; transfer: () => void; adjust: () => void; loss: () => void; history: () => void };
+}) {
+  const balancesByLocation = new Map(locationRows.map(row => [row.locationId, row]));
+  const missing = locations.some(location => !balancesByLocation.get(location.id)?.hasBalance);
   const low = stock != null && par != null && par > 0 && stock < par;
-  return <div className="rounded-lg border border-border/40 bg-background/30 p-3"><div className="flex flex-wrap items-start gap-3"><div className="min-w-52 flex-1"><div className="font-semibold">{title}</div>{secondary && <div className="mt-0.5 text-xs text-muted-foreground">{secondary}</div>}<div className="mt-1 text-xs font-medium text-muted-foreground">{meta}</div>{missing && <div className="mt-1 text-xs font-semibold text-amber-500">Inventory setup incomplete — record an opening count at each missing location.</div>}<button type="button" className="mt-2 flex items-center gap-1 text-xs text-primary" aria-expanded={showLocations} onClick={() => setShowLocations(open => !open)}>{showLocations ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Quantities by location ({visibleLocations.length})</button>{showLocations && <div className="mt-2 flex flex-wrap gap-2 text-xs" role="list" aria-label={`${title} quantities by location`}>{visibleLocations.map(row => <span role="listitem" key={row.locationId} className={`rounded px-2 py-1 ${row.hasBalance ? "bg-muted" : "border border-amber-500/40 bg-amber-500/10 text-amber-500"}`}>{row.name}: <b>{row.hasBalance ? row.qty : "Not counted"}</b>{row.hasBalance && row.par != null && row.par > 0 && <> <span className="text-muted-foreground"> PAR</span> {row.par}</>}</span>)}</div>}</div><div className="min-w-24 text-right"><div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Stock</div><div className="text-2xl font-bold">{stock == null ? "Unknown" : stock}</div><div className={`text-xs ${low || stock == null ? "text-amber-500" : "text-muted-foreground"}`}>{stock == null ? "Missing balance" : low ? `Below PAR ${par}` : `PAR ${par ?? 0}`}</div></div><div className="flex flex-wrap gap-1">{missing && actions.opening && <Button size="sm" onClick={actions.opening}>Opening Count</Button>}<Button size="sm" onClick={actions.receive}>Receive</Button><Button size="sm" variant="outline" onClick={actions.transfer}>Transfer</Button><Button size="sm" variant="outline" onClick={actions.adjust}>Adjust</Button><Button size="sm" variant="outline" onClick={actions.loss}>Loss</Button>{onReplenishment && <Button size="sm" variant="ghost" onClick={onReplenishment}>PAR / MOQ</Button>}{onEdit && <Button size="sm" variant="ghost" onClick={onEdit}>Edit</Button>}<Button size="sm" variant="ghost" onClick={actions.history}>History</Button></div></div></div>;
+  return (
+    <tr className="border-t border-border/30 align-top">
+      <th scope="row" className="px-4 py-3 text-left font-normal">
+        <div className="font-semibold">{title}</div>
+        {secondary && <div className="text-xs text-muted-foreground">{secondary}</div>}
+        <div className="mt-1 text-xs text-muted-foreground">{meta}</div>
+      </th>
+      {locations.map(location => {
+        const row = balancesByLocation.get(location.id);
+        return <td key={location.id} className="px-3 py-3 text-right tabular-nums">
+          {row?.hasBalance ? (
+            <><div className="font-semibold">{row.qty}</div>{row.par != null && row.par > 0 && <div className="text-xs text-muted-foreground">PAR {row.par}</div>}</>
+          ) : <span className="text-xs text-amber-500">Not counted</span>}
+        </td>;
+      })}
+      <td className="px-3 py-3 text-right tabular-nums">
+        <div className="font-semibold">{stock ?? "Unknown"}</div>
+        <div className={`text-xs ${low || stock == null ? "text-amber-500" : "text-muted-foreground"}`}>
+          {stock == null ? "Missing balance" : low ? `Below PAR ${par}` : `PAR ${par ?? 0}`}
+        </div>
+      </td>
+      <td className="min-w-52 px-3 py-2">
+        <div className="flex flex-wrap gap-1">
+          {missing && actions.opening && <Button size="sm" onClick={actions.opening}>Opening Count</Button>}
+          <Button size="sm" onClick={actions.receive}>Receive</Button>
+          <Button size="sm" variant="outline" onClick={actions.transfer}>Transfer</Button>
+          <Button size="sm" variant="outline" onClick={actions.adjust}>Adjust</Button>
+          <Button size="sm" variant="outline" onClick={actions.loss}>Loss</Button>
+          {onReplenishment && <Button size="sm" variant="ghost" onClick={onReplenishment}>PAR / MOQ</Button>}
+          {onEdit && <Button size="sm" variant="ghost" onClick={onEdit}>Edit</Button>}
+          <Button size="sm" variant="ghost" onClick={actions.history}>History</Button>
+        </div>
+      </td>
+    </tr>
+  );
 }
 
 // These older, route-unreachable presentation tabs are kept temporarily for
@@ -1909,7 +2050,7 @@ export default function AdminInventory() {
   }, [getToken]);
 
   return (
-    <div className="max-w-5xl mx-auto p-4 sm:p-6 space-y-6">
+    <div className="mx-auto p-4 sm:p-6 space-y-6">
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
