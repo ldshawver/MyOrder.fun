@@ -21,8 +21,8 @@ function api(path: string): string {
 
 // Production release authorization is pinned to the reviewed candidate identity.
 const approvedProduction = {
-  sha: "7dacc7f7054bd41fc48a7024782db5568196187c",
-  tree: "b905414a4c31cfa43cad6cbc8ff89b5004745062",
+  sha: "360f6747d7b319516bbf60d0ebfb0078c7b4183f",
+  tree: "32d26c8ad96d53263681bbd464c0e77266f3d11f",
 };
 
 function productionPinGuard(workflow: string): string {
@@ -81,7 +81,9 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
     expect(layout).not.toContain('label: "Reprint Receipts"');
     expect(layout).not.toContain('label: "WooCommerce"');
     expect(layout).not.toContain('label: "Integrations"');
-    expect(layout).toContain('label: isCustomer ? "Order Status" : "Orders"');
+    expect(layout).toContain('href: "/staff/orders", label: "Orders"');
+    expect(layout).toContain('href: "/orders"');
+    expect(app).toContain('path="/staff/orders"');
     expect(layout).toContain('{ href: "/cart", label: isCustomer ? "My Cart" : "Cart"');
     expect(app).toContain('path="/cart" component={NewOrder}');
     expect(app).toContain('path="/orders/new" component={LegacyCartRedirect}');
@@ -494,6 +496,7 @@ describe("admin/POS/security cleanup regressions", () => {
     expect(queue).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_at" timestamptz');
     expect(queue).toContain('CREATE INDEX IF NOT EXISTS "orders_archived_at_idx"');
     expect(queue).toContain('router.get("/shift-queue/orders"');
+    expect(queue).toContain('eq(ordersTable.paymentStatus, "paid")');
   });
 
   it("repairs missing shift_routing_config and falls back when tenant row is absent", () => {
@@ -556,7 +559,7 @@ describe("admin/POS/security cleanup regressions", () => {
     expect(orders).toContain('csrDeliveryDistanceMiles > 2');
     expect(orders).toContain('CSR personal delivery is only available within 2 miles');
     expect(orders).toContain('explicitDeliveryMethod === "uber_direct" || isCsrDelivery');
-    expect(orders).toContain('deliveryFee = trustedUberQuote ? trustedUberQuote.feeCents / 100 : 0');
+    expect(orders).toContain('const deliveryFee = (trustedUberQuote?.feeCents ?? 0) / 100 + (trustedCarrierQuote?.feeCents ?? 0) / 100');
     expect(orders).not.toContain('BigInt(dollarsToCents(subtotal)) * 3n');
   });
 

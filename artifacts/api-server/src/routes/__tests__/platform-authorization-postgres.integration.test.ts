@@ -95,6 +95,10 @@ pgSuite("platform authorization boundaries against disposable PostgreSQL 16", ()
         reconciliation_state text NOT NULL DEFAULT 'not_required', created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       );
+      -- Reports read the verified provider funding source when it exists.
+      -- The P0 compatibility fixture may already contain this table, so make
+      -- the current nullable reporting column explicit in either case.
+      ALTER TABLE public.payment_attempts ADD COLUMN IF NOT EXISTS funding_source text;
       CREATE TABLE IF NOT EXISTS public.order_notes (id serial PRIMARY KEY, order_id integer NOT NULL, author_id integer NOT NULL, content text NOT NULL, is_encrypted text NOT NULL DEFAULT 'false', is_internal text NOT NULL DEFAULT 'false', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
       CREATE TABLE IF NOT EXISTS public.onboarding_requests (id serial PRIMARY KEY, company_name text NOT NULL, contact_name text NOT NULL, contact_email text NOT NULL, contact_phone text, business_output text NOT NULL, website text, description text, expected_order_volume text, status text NOT NULL DEFAULT 'submitted', review_notes text, reviewed_by integer, tenant_id integer, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
     `);
@@ -218,22 +222,24 @@ pgSuite("platform authorization boundaries against disposable PostgreSQL 16", ()
     expect((await supertest(onboardingApp).get(`/api/onboarding/requests/${onboardingId}`)).status).toBe(200);
   });
 
-  it("scopes tenant reports and CSV to authorized tenant A while global admin can view both tenants", async () => {
+  it("scopes tenant reports and CSV to the selected authorized tenant", async () => {
     as(`boundary-a-${process.pid}`);
     const report = await supertest(reportsApp).get("/api/admin/reports/summary");
     expect(report.status, JSON.stringify(report.body)).toBe(200);
     expect(report.body.totals).toMatchObject({ orderCount: 1, revenue: 15, activeShiftCount: 1 });
-    expect(JSON.stringify(report.body)).not.toMatch(/Tenant B secret|900|private-b@/);
+    expect(JSON.stringify(report.body)).not.toMatch(/Tenant B secret|private-b@|"[^"]+":900(?=[,}])/);
     const csv = await supertest(reportsApp).get("/api/admin/reports/export.csv");
     expect(csv.status).toBe(200);
-    expect(csv.text).not.toMatch(/Tenant B secret|900|private-b@/);
+    expect(csv.text).not.toMatch(/Tenant B secret|private-b@|(?:^|,)"?900(?:\.00)?"?(?=,|$)/m);
     expect((await supertest(reportsApp).get("/api/admin/reports/summary?tenantId=" + tenantB)).status).toBe(403);
 
     as("platform-owner-fixture");
-    const globalReport = await supertest(reportsApp).get("/api/admin/reports/summary");
+    expect((await supertest(reportsApp).get("/api/admin/reports/summary")).status).toBe(403);
+    const globalReport = await supertest(reportsApp).get(`/api/admin/reports/summary?tenantId=${tenantB}`);
     expect(globalReport.status).toBe(200);
-    expect(globalReport.body.totals.orderCount).toBeGreaterThanOrEqual(2);
+    expect(globalReport.body.totals.orderCount).toBe(1);
     expect(JSON.stringify(globalReport.body)).toContain("Tenant B secret");
+    expect(JSON.stringify(globalReport.body)).not.toContain("private-a@");
   });
 
   it("keeps onboarding approval separate from account approval and audits tenant creation", async () => {

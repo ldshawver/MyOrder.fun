@@ -1585,6 +1585,8 @@ components:
           type: boolean
         isSaleFeatured:
           type: boolean
+        activeSale:
+          type: boolean
         alavontName:
           type: string
           nullable: true
@@ -1716,6 +1718,8 @@ components:
         isFeatured:
           type: boolean
         isSaleFeatured:
+          type: boolean
+        activeSale:
           type: boolean
         tags:
           type: array
@@ -1880,6 +1884,8 @@ components:
         isFeatured:
           type: boolean
         isSaleFeatured:
+          type: boolean
+        activeSale:
           type: boolean
         tags:
           type: array
@@ -2297,9 +2303,12 @@ components:
           required: [acceptedAllSalesFinal, legalDisclaimerText]
         deliveryQuote:
           $ref: "#/components/schemas/DeliveryQuoteSelection"
+        carrierQuoteId:
+          type: string
+          minLength: 1
         deliveryMethod:
           type: string
-          enum: [pickup, manual_delivery, uber_direct, uber_courier, csr_delivery]
+          enum: [pickup, manual_delivery, uber_direct, uber_courier, csr_delivery, carrier]
           nullable: true
         pickupLocationId:
           type: integer

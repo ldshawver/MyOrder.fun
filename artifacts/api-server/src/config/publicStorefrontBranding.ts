@@ -81,3 +81,16 @@ export function resolveStagingPublicBrandingAlias(
   const matches = records.filter((record) => record.tenantId === tenantId);
   return matches.length === 1 ? publicBrandingFromRecord(matches[0]) : null;
 }
+
+/** Explicit production alias; never infer a public tenant from signup/auth data. */
+export function resolveProductionPublicBrandingAlias(
+  host: string, records: StorefrontBrandingRecord[], config: StagingAliasConfig,
+): PublicStorefrontBranding | null {
+  if (config.runtimeEnvironment !== "production" || normalizeStorefrontHost(config.host) !== host) return null;
+  const tenantId = Number(config.tenantId);
+  if (!Number.isSafeInteger(tenantId) || tenantId < 1) return null;
+  // An alias must not override an existing (including ambiguous) domain owner.
+  if (records.some(record => storefrontHostFromUrl(record.storefrontUrl) === host)) return null;
+  const matches = records.filter(record => record.tenantId === tenantId);
+  return matches.length === 1 ? publicBrandingFromRecord(matches[0]) : null;
+}

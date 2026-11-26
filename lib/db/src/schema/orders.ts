@@ -112,9 +112,47 @@ export const ordersTable = pgTable("orders", {
   tenantPickupLocation: foreignKey({ name: "orders_tenant_pickup_location_fk", columns: [table.tenantId, table.pickupLocationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
 }));
 
+// Immutable server-created fulfillment partitions. Legacy orders may have no
+// groups, but every mixed-cart order written after group checkout is enabled
+// binds each line to exactly one group through the composite FK below.
+export const orderFulfillmentGroupsTable = pgTable("order_fulfillment_groups", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  orderId: integer("order_id").notNull().references(() => ordersTable.id),
+  groupKey: text("group_key").notNull(),
+  provider: text("provider").notNull(),
+  inventoryOwnerSnapshot: text("inventory_owner_snapshot").notNull(),
+  fulfillmentOriginSnapshot: jsonb("fulfillment_origin_snapshot").notNull(),
+  method: text("method").notNull(),
+  destinationSnapshot: jsonb("destination_snapshot").notNull(),
+  quoteId: text("quote_id"),
+  quoteSnapshot: jsonb("quote_snapshot"),
+  merchandiseSubtotal: numeric("merchandise_subtotal", { precision: 12, scale: 2 }).notNull(),
+  fee: numeric("fee", { precision: 12, scale: 2 }).notNull().default("0"),
+  tax: numeric("tax", { precision: 12, scale: 2 }).notNull().default("0"),
+  total: numeric("total", { precision: 12, scale: 2 }).notNull(),
+  currency: text("currency").notNull().default("usd"),
+  taxSnapshot: jsonb("tax_snapshot").notNull(),
+  status: text("status").notNull().default("submitted"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  orderGroupKeyUnique: unique("order_fulfillment_groups_order_key_unique").on(table.orderId, table.groupKey),
+  orderIdIdUnique: unique("order_fulfillment_groups_order_id_id_unique").on(table.orderId, table.id),
+  tenantOrderFk: foreignKey({
+    name: "order_fulfillment_groups_tenant_order_fk",
+    columns: [table.tenantId, table.orderId],
+    foreignColumns: [ordersTable.tenantId, ordersTable.id],
+  }),
+  providerCheck: check("order_fulfillment_groups_provider_check", sql`${table.provider} IN ('alavont', 'lucifer_direct', 'cj')`),
+  methodCheck: check("order_fulfillment_groups_method_check", sql`${table.method} IN ('pickup', 'uber_direct', 'csr_delivery', 'carrier', 'standard_shipping')`),
+  amountsCheck: check("order_fulfillment_groups_amounts_check", sql`${table.merchandiseSubtotal} >= 0 AND ${table.fee} >= 0 AND ${table.tax} >= 0 AND ${table.total} = ${table.merchandiseSubtotal} + ${table.fee} + ${table.tax}`),
+}));
+
 export const orderItemsTable = pgTable("order_items", {
   id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull().references(() => ordersTable.id),
+  fulfillmentGroupId: integer("fulfillment_group_id"),
   catalogItemId: integer("catalog_item_id").notNull().references(() => catalogItemsTable.id),
   catalogItemName: text("catalog_item_name").notNull(),
   optionId: integer("option_id"),
@@ -141,6 +179,11 @@ export const orderItemsTable = pgTable("order_items", {
   inventoryDeductions: jsonb("inventory_deductions").default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
+  fulfillmentGroupOrderFk: foreignKey({
+    name: "order_items_fulfillment_group_order_fk",
+    columns: [table.orderId, table.fulfillmentGroupId],
+    foreignColumns: [orderFulfillmentGroupsTable.orderId, orderFulfillmentGroupsTable.id],
+  }),
   commissionEligibilitySnapshotCheck: check("order_items_commission_eligibility_snapshot_check", sql`${table.commissionEligibilitySnapshot} IN ('eligible', 'membership', 'excluded', 'unclassified')`),
   commissionAmountsCheck: check("order_items_commission_amounts_check", sql`${table.commissionGrossAmount} >= 0 AND ${table.commissionDiscountAmount} >= 0 AND ${table.commissionDiscountAmount} <= ${table.commissionGrossAmount}`),
 }));
@@ -212,6 +255,8 @@ export type Order = typeof ordersTable.$inferSelect;
 export type InsertOrder = typeof ordersTable.$inferInsert;
 export type OrderItem = typeof orderItemsTable.$inferSelect;
 export type InsertOrderItem = typeof orderItemsTable.$inferInsert;
+export type OrderFulfillmentGroup = typeof orderFulfillmentGroupsTable.$inferSelect;
+export type InsertOrderFulfillmentGroup = typeof orderFulfillmentGroupsTable.$inferInsert;
 export type OrderNote = typeof orderNotesTable.$inferSelect;
 export type InsertOrderNote = typeof orderNotesTable.$inferInsert;
 export type InventoryReservation = typeof inventoryReservationsTable.$inferSelect;

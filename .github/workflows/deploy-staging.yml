@@ -1,0 +1,227 @@
+name: Deploy to staging
+
+# Manually triggered, staging-only release of one verified commit to
+# staging.myorder.fun. Uses the same Tailscale + pinned-SSH pattern as
+# deploy.yml but ONLY staging-scoped credentials from the protected `staging`
+# GitHub environment. All container/database/image checks are done on the host
+# by deploy/safe-compose.mjs (verified-release mode). See deploy/STAGING-RELEASE.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: preflight | deploy | migrate-and-deploy | bootstrap-synthetic (empty staging VM only)
+        required: true
+        type: choice
+        default: preflight
+        options:
+          - preflight
+          - deploy
+          - migrate-and-deploy
+          - bootstrap-synthetic
+      release_sha:
+        description: Full 40-character commit SHA to release
+        required: true
+        type: string
+      release_tree:
+        description: Git tree SHA of release_sha (git rev-parse <sha>^{tree})
+        required: true
+        type: string
+      migration_confirmation:
+        description: For migrate-and-deploy type APPLY_STAGING_MIGRATIONS; for bootstrap-synthetic type BOOTSTRAP_SYNTHETIC_STAGING
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging-myorderfun
+  cancel-in-progress: false
+
+jobs:
+  verify-release:
+    name: Verify release identity and CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      ACTION: ${{ inputs.action }}
+      RELEASE_SHA: ${{ inputs.release_sha }}
+      RELEASE_TREE: ${{ inputs.release_tree }}
+      MIGRATION_CONFIRMATION: ${{ inputs.migration_confirmation }}
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase 40-character SHA"; exit 1; }
+          [[ "$RELEASE_TREE" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_tree must be a full lowercase 40-character SHA"; exit 1; }
+          if [ "$ACTION" = "migrate-and-deploy" ]; then
+            [ "$MIGRATION_CONFIRMATION" = "APPLY_STAGING_MIGRATIONS" ] || { echo "::error::migrate-and-deploy requires migration_confirmation=APPLY_STAGING_MIGRATIONS"; exit 1; }
+          elif [ "$ACTION" = "bootstrap-synthetic" ]; then
+            [ "$MIGRATION_CONFIRMATION" = "BOOTSTRAP_SYNTHETIC_STAGING" ] || { echo "::error::bootstrap-synthetic requires migration_confirmation=BOOTSTRAP_SYNTHETIC_STAGING"; exit 1; }
+          else
+            [ -z "$MIGRATION_CONFIRMATION" ] || { echo "::error::migration_confirmation is only accepted with a mutating staging action"; exit 1; }
+          fi
+
+      - name: Checkout release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release identity and staging eligibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA" || { echo "::error::Checked-out commit is not release_sha"; exit 1; }
+          test "$(git rev-parse 'HEAD^{tree}')" = "$RELEASE_TREE" || { echo "::error::release_tree does not match release_sha"; exit 1; }
+          grep -q 'RELEASE_MODE_VALUE = "verified-release"' deploy/safe-compose.mjs || { echo "::error::This release predates verified-release staging tooling; update the branch from main"; exit 1; }
+          base="$(grep -oE 'const RELEASE_BASE_SHA = "[0-9a-f]{40}"' deploy/safe-compose.mjs | grep -oE '[0-9a-f]{40}')"
+          git merge-base --is-ancestor "$base" HEAD || { echo "::error::Release does not descend from the staging guard's authorized release base"; exit 1; }
+          echo "Release journal migrations: $(node -p 'require("./lib/db/drizzle/meta/_journal.json").entries.length')"
+
+      - name: Require successful CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${RELEASE_SHA}&per_page=20" \
+            --jq '[.workflow_runs[] | select(.status == "completed")] | sort_by(.created_at) | last | .conclusion // "missing"')"
+          echo "Latest completed CI run for ${RELEASE_SHA}: ${conclusion}"
+          [ "$conclusion" = "success" ] || { echo "::error::The latest completed CI run for this commit is not successful (${conclusion})"; exit 1; }
+
+  deploy:
+    name: Staging ${{ inputs.action }}
+    needs: verify-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: staging
+      url: https://staging.myorder.fun
+    permissions:
+      contents: read
+    env:
+      ACTION: ${{ inputs.action }}
+      RELEASE_SHA: ${{ inputs.release_sha }}
+      RELEASE_TREE: ${{ inputs.release_tree }}
+      MIGRATION_CONFIRMATION: ${{ inputs.migration_confirmation }}
+      # Staging-scoped configuration only. Nothing here names a production
+      # secret, environment, path or Compose project.
+      STAGING_VPS_TAILSCALE_HOST: ${{ vars.STAGING_VPS_TAILSCALE_HOST }}
+      STAGING_VPS_USER: ${{ vars.STAGING_VPS_USER }}
+      STAGING_VPS_PORT: ${{ vars.STAGING_VPS_PORT || '22' }}
+      MYORDER_STAGING_SOURCE_REPO: ${{ vars.MYORDER_STAGING_SOURCE_REPO }}
+      MYORDER_STAGING_ENV_FILE: ${{ vars.MYORDER_STAGING_ENV_FILE }}
+      STAGING_VPS_HOST_KEY_ALIAS: ${{ secrets.STAGING_VPS_HOST_KEY_ALIAS }}
+      STAGING_VPS_KNOWN_HOSTS: ${{ secrets.STAGING_VPS_KNOWN_HOSTS }}
+      STAGING_VPS_SSH_KEY: ${{ secrets.STAGING_VPS_SSH_KEY }}
+    steps:
+      - name: Checkout staging release tooling (this workflow's revision)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: deploy/staging-release-remote.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Validate staging configuration (fail closed)
+        env:
+          STAGING_TS_OAUTH_CLIENT_ID: ${{ secrets.STAGING_TS_OAUTH_CLIENT_ID }}
+          STAGING_TS_OAUTH_SECRET: ${{ secrets.STAGING_TS_OAUTH_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in STAGING_TS_OAUTH_CLIENT_ID STAGING_TS_OAUTH_SECRET STAGING_VPS_SSH_KEY STAGING_VPS_KNOWN_HOSTS STAGING_VPS_HOST_KEY_ALIAS \
+                      STAGING_VPS_TAILSCALE_HOST STAGING_VPS_USER MYORDER_STAGING_SOURCE_REPO MYORDER_STAGING_ENV_FILE; do
+            [ -n "${!name:-}" ] || missing+=("$name")
+          done
+          [ ${#missing[@]} -eq 0 ] || { echo "::error::Missing staging environment secrets/variables: ${missing[*]}"; exit 1; }
+          [[ "$STAGING_VPS_TAILSCALE_HOST" =~ ^100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || { echo "::error::STAGING_VPS_TAILSCALE_HOST must be a Tailscale 100.x address"; exit 1; }
+          [[ "$STAGING_VPS_PORT" =~ ^[0-9]{1,5}$ ]] || { echo "::error::STAGING_VPS_PORT is invalid"; exit 1; }
+          [[ "$STAGING_VPS_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "::error::STAGING_VPS_USER is invalid"; exit 1; }
+          for p in "$MYORDER_STAGING_SOURCE_REPO" "$MYORDER_STAGING_ENV_FILE"; do
+            [[ "$p" =~ ^/[A-Za-z0-9._/-]+$ && "$p" != *..* ]] || { echo "::error::Staging paths must be absolute and simple"; exit 1; }
+            case "$p" in /opt/alavont|/opt/alavont/*) echo "::error::Staging paths must not point at the production deployment"; exit 1;; esac
+          done
+
+      - name: Install staging SSH key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$STAGING_VPS_SSH_KEY" > ~/.ssh/staging_deploy_key
+          chmod 600 ~/.ssh/staging_deploy_key
+          ssh-keygen -y -f ~/.ssh/staging_deploy_key >/dev/null
+          printf '%s\n' "$STAGING_VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -F "$STAGING_VPS_HOST_KEY_ALIAS" -f ~/.ssh/known_hosts >/dev/null || { echo "::error::STAGING_VPS_KNOWN_HOSTS has no pinned key for STAGING_VPS_HOST_KEY_ALIAS"; exit 1; }
+
+      - name: Connect to Tailscale (staging tag)
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.STAGING_TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.STAGING_TS_OAUTH_SECRET }}
+          tags: tag:github-actions-staging
+
+      - name: Verify Tailscale route and pinned SSH identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            nc -z -w 5 "$STAGING_VPS_TAILSCALE_HOST" "$STAGING_VPS_PORT" && break
+            [ "$attempt" = 12 ] && { echo "::error::Staging SSH is not reachable over Tailscale"; exit 1; }
+            sleep 5
+          done
+          ssh -i ~/.ssh/staging_deploy_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "HostKeyAlias=${STAGING_VPS_HOST_KEY_ALIAS}" -o ConnectTimeout=20 -p "$STAGING_VPS_PORT" \
+            "${STAGING_VPS_USER}@${STAGING_VPS_TAILSCALE_HOST}" 'echo "SSH OK: $(whoami)@$(hostname)"'
+
+      - name: Run guarded staging ${{ inputs.action }} on the host
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/staging_deploy_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "HostKeyAlias=${STAGING_VPS_HOST_KEY_ALIAS}" -o ServerAliveInterval=30 -p "$STAGING_VPS_PORT" \
+            "${STAGING_VPS_USER}@${STAGING_VPS_TAILSCALE_HOST}" \
+            bash -s -- "$ACTION" "$RELEASE_SHA" "$RELEASE_TREE" "$MYORDER_STAGING_SOURCE_REPO" "$MYORDER_STAGING_ENV_FILE" "$MIGRATION_CONFIRMATION" \
+            < deploy/staging-release-remote.sh | tee remote.log
+
+      - name: Verify public staging release identity
+        if: ${{ inputs.action != 'preflight' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 20); do
+            sha="$(curl -fsS --max-time 10 https://staging.myorder.fun/api/healthz | jq -r '.status + ":" + .sha' || true)"
+            [ "$sha" = "ok:${RELEASE_SHA}" ] && { echo "staging.myorder.fun reports ${RELEASE_SHA}"; exit 0; }
+            sleep 6
+          done
+          echo "::error::staging.myorder.fun does not report a healthy ${RELEASE_SHA}"
+          exit 1
+
+      - name: Release summary and rollback reference
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "### Staging ${ACTION}: \`${RELEASE_SHA}\`"
+            echo '```'
+            grep -E '^STAGING_(PREVIOUS_SHA|MIGRATION_STATUS|PREFLIGHT_OK|DEPLOYED_SHA|RELEASE_BACKUP|MIGRATIONS_APPLIED)=' remote.log 2>/dev/null || echo "(no host markers recorded)"
+            echo '```'
+            echo "Rollback: rerun this workflow with action=deploy and the STAGING_PREVIOUS_SHA above (and its tree)."
+            echo "If migrations were applied, see deploy/STAGING-RELEASE.md before rolling back."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove staging SSH material
+        if: ${{ always() }}
+        shell: bash
+        run: rm -f ~/.ssh/staging_deploy_key ~/.ssh/known_hosts remote.log

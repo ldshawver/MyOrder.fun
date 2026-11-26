@@ -8,6 +8,9 @@ vi.mock("@workspace/db", () => ({
   db: { execute: vi.fn(() => Promise.resolve()) },
   catalogItemsTable: {},
   adminSettingsTable: {},
+  ordersTable: {},
+  orderItemsTable: {},
+  customerCreditAccountsTable: {},
 }));
 
 import { DEFAULT_AI_CONCIERGE_PROMPT, renderConciergePrompt } from "../ai";

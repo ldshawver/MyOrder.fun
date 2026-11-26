@@ -52,16 +52,23 @@ describe("production readiness workflow coverage", () => {
     expect(orders).toContain('ORDER_STALE_SUBMITTED_ARCHIVED');
   });
 
-  it("renders mutually exclusive authoritative queue states for supervisors and managers", () => {
+  it("keeps the operational queue tenant-scoped and hidden from customer presentation", () => {
     const layout = component("layout.tsx");
     const queue = api("shift-queue.ts");
+    const visibility = readFileSync(join(root, "../../platform/src/lib/queueVisibility.ts"), "utf8");
     expect(layout).toContain('["global_admin", "admin", "supervisor"].includes(userRole)');
     expect(layout).toContain("General Queue Active");
-    expect(layout).toContain("Active CSR");
     expect(layout).toContain("View General Queue");
-    expect(layout).toContain("View Shift/Queue");
+    expect(layout).toContain("shouldShowGeneralQueueBanner");
     expect(layout).toContain("/api/shift-queue/status");
+    expect(visibility).toContain("!isCustomer");
+    expect(visibility).toContain("!hasActiveShift");
+    expect(visibility).toContain("hasQueueStatus");
+    expect(queue).toContain("router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext)");
+    expect(queue).toContain('router.get("/shift-queue/status", requirePermission("queue.view")');
+    expect(queue).toContain("listActiveCsrs(tenantId)");
+    expect(queue).toContain("eq(labTechShiftsTable.tenantId, tenantId)");
     expect(queue).toContain(': "General Queue Active"');
-    expect(queue).toContain("activeCsr:");
+    expect(queue).not.toContain('sql`lower(${usersTable.role}) = \'csr\'`');
   });
 });

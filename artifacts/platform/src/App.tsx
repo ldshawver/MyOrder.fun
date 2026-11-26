@@ -31,6 +31,7 @@ import CatalogItemDetail from "@/pages/catalog-item";
 import Orders from "@/pages/orders";
 import OrderDetail from "@/pages/order-detail";
 import NewOrder from "@/pages/new-order";
+import SpeedOrder from "@/pages/speed-order";
 import AiConcierge from "@/pages/ai-concierge";
 import GlobalAdmin from "@/pages/global-admin";
 import GlobalAdminOnboarding from "@/pages/global-admin/onboarding";
@@ -47,6 +48,8 @@ import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
+import StorefrontClosures from "@/pages/admin/storefront-closures";
+import { StorefrontClosureNotice } from "@/components/StorefrontClosureNotice";
 import AdminSettingsPage from "@/pages/admin/settings-page";
 import OrderNotifications from "@/pages/admin/order-notifications";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
@@ -541,6 +544,8 @@ function AuthenticatedApp() {
           {/* Keep this direct route ahead of conditional route fragments. Wouter's
               Switch treats a fragment as a candidate, which previously shadowed
               /staff for supervisor and admin sessions. */}
+          {isStaff && <Route path="/staff/orders">{() => protect(<Orders />)}</Route>}
+          {isStaff && <Route path="/staff/speed-order">{() => protect(<SpeedOrder />)}</Route>}
           {isStaff && <Route path="/staff">{() => protect(<StaffQueue />)}</Route>}
 
           {appRole === "global_admin" && (
@@ -556,6 +561,8 @@ function AuthenticatedApp() {
           {isStaff && <Route path="/admin/inventory">{() => protect(<AdminInventory />)}</Route>}
           {isStaff && <Route path="/admin/catalogue-products">{() => protect(<AdminCatalogueProducts />)}</Route>}
 
+          {["global_admin", "admin", "supervisor"].includes(appRole) &&
+            <Route path="/admin/settings/store-closures">{() => protect(<StorefrontClosures />)}</Route>}
           {["global_admin", "admin"].includes(appRole) && (
             <>
               <Route path="/admin/users">{() => protect(<AdminUsers />)}</Route>
@@ -670,6 +677,7 @@ function ClerkProviderWithRoutes() {
         <QueryClientProvider client={queryClient}>
           <ClerkAuthTokenSetter />
           <ClerkQueryClientCacheInvalidator />
+          <StorefrontClosureNotice />
           <Router />
         </QueryClientProvider>
       </CartProvider>

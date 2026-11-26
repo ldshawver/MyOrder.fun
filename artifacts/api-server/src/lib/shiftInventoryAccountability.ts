@@ -45,6 +45,25 @@ export type ShiftInventoryAccountability = {
   total: string;
 };
 
+export function isUnavailableCountBlocker(
+  blocker: ShiftInventoryAccountability["blockers"][number],
+  legacyIds: ReadonlySet<number>,
+): boolean {
+  return blocker.code === "PHYSICAL_COUNT_REQUIRED" ||
+    (blocker.code === "INVALID_QUANTITY" && blocker.message.startsWith("countedQuantity ") &&
+      legacyIds.has(blocker.shiftInventoryItemId));
+}
+
+export function inventoryExceptionMatches(
+  blockers: ShiftInventoryAccountability["blockers"],
+  unavailableIds: ReadonlySet<number>,
+  legacyIds: ReadonlySet<number>,
+): boolean {
+  return blockers.length === unavailableIds.size && blockers.every(blocker =>
+    unavailableIds.has(blocker.shiftInventoryItemId) && isUnavailableCountBlocker(blocker, legacyIds),
+  );
+}
+
 function quantityUnits(value: unknown, field: string): bigint {
   const text = typeof value === "number" && Number.isFinite(value) ? String(value) : typeof value === "string" ? value.trim() : "";
   if (!QUANTITY.test(text)) throw new Error(`${field} must be a non-negative quantity with at most three decimal places`);
@@ -56,7 +75,9 @@ function signedQuantityUnits(value: unknown, field: string): bigint {
   const text = typeof value === "number" && Number.isFinite(value) ? String(value) : typeof value === "string" ? value.trim() : "";
   const negative = text.startsWith("-");
   const unsigned = negative ? text.slice(1) : text;
-  const units = quantityUnits(unsigned, field);
+  // PostgreSQL emits movement deltas at the ledger column's full decimal scale.
+  const exactQuantity = unsigned.replace(/(\.\d*?[1-9])0+$|\.0+$/, "$1");
+  const units = quantityUnits(exactQuantity, field);
   return negative ? -units : units;
 }
 

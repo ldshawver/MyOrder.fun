@@ -80,6 +80,10 @@ export interface DepositSlipData {
   /** Cash the employee counted at close-out (their reported count). */
   readonly countedCashCents: number | null;
   readonly varianceCents: number | null;
+  /** Finalized supervisor-closeout facts; never recalculate these at print time. */
+  readonly eligibleSalesCents?: number | null;
+  readonly commissionPercent?: number | null;
+  readonly commissionCents?: number | null;
   readonly paymentTotals: ReadonlyArray<{ readonly label: string; readonly cents: number }>;
 }
 
@@ -100,6 +104,13 @@ export function buildDepositSlip(data: DepositSlipData): ReceiptLine[] {
     pair("Expected cash", formatMoney(data.expectedCashCents), true),
     pair("Counted cash (reported)", data.countedCashCents === null ? "not entered" : formatMoney(data.countedCashCents)),
     pair("Variance", data.varianceCents === null ? "-" : formatMoney(data.varianceCents), true),
+    ...(data.eligibleSalesCents == null ? [] : [
+      rule("dashed"),
+      left("COMMISSION", true),
+      pair("Commissionable sales", formatMoney(data.eligibleSalesCents)),
+      pair("Selected commission", data.commissionPercent == null ? "-" : `${data.commissionPercent}%`),
+      pair("Commission amount", data.commissionCents == null ? "-" : formatMoney(data.commissionCents), true),
+    ]),
     ...(data.paymentTotals.length ? [rule("dashed"), left("Sales by payment", true), ...data.paymentTotals.map((total) => pair(total.label, formatMoney(total.cents)))] : []),
     rule(),
     left("Counted by: ____________________"),
@@ -109,26 +120,25 @@ export function buildDepositSlip(data: DepositSlipData): ReceiptLine[] {
   ];
 }
 
-function orderHeader(data: ReceiptData, title: string): ReceiptLine[] {
-  return [
-    center(title, true),
-    center(`#${data.order.number}`, true, "large"),
-    ...(data.order.fulfillment ? [center(data.order.fulfillment.toUpperCase(), true, "tall")] : []),
-    center(when(data.order.placedAt, data.order.timezone)),
-    ...(data.customer.safeName ? [center(data.customer.safeName)] : []),
-    rule("double"),
-  ];
-}
-
 /** Expo: fast to read at the pass. Order number, fulfilment, items, notes. No prices. */
 export function buildExpoTicket(data: ReceiptData): ReceiptLine[] {
-  const lines = orderHeader(data, "EXPO");
+  // Expo is read at a distance in a fast-moving workflow. Keep normal-width
+  // columns for product-name capacity, but use the printer's double-height
+  // mode for every operational text line (the order number remains large).
+  const lines: ReceiptLine[] = [
+    center("EXPO", true, "tall"),
+    center(`#${data.order.number}`, true, "large"),
+    ...(data.order.fulfillment ? [center(data.order.fulfillment.toUpperCase(), true, "tall")] : []),
+    center(when(data.order.placedAt, data.order.timezone), false, "tall"),
+    ...(data.customer.safeName ? [center(data.customer.safeName, false, "tall")] : []),
+    rule("double"),
+  ];
   for (const item of data.items) {
     lines.push({ kind: "text", text: `${item.quantity} x ${item.displayName}`, align: "left", bold: true, size: "tall" });
-    if (item.optionLabel) lines.push({ kind: "text", text: item.optionLabel, align: "left", bold: false, size: "normal", indent: 4 });
-    if (item.note) lines.push({ kind: "text", text: `* ${item.note}`, align: "left", bold: false, size: "normal", indent: 4 });
+    if (item.optionLabel) lines.push({ kind: "text", text: item.optionLabel, align: "left", bold: false, size: "tall", indent: 4 });
+    if (item.note) lines.push({ kind: "text", text: `* ${item.note}`, align: "left", bold: false, size: "tall", indent: 4 });
   }
-  if (data.order.note) lines.push(rule("dashed"), left(`NOTE: ${data.order.note}`, true));
+  if (data.order.note) lines.push(rule("dashed"), { kind: "text", text: clean(`NOTE: ${data.order.note}`, 200), align: "left", bold: true, size: "tall" });
   lines.push(rule("double"), feed(2));
   return lines;
 }
@@ -183,7 +193,7 @@ export interface ShiftInventoryRow {
 export type ShiftInventoryKind = "beginning" | "ending" | "restock";
 
 export function restockQuantity(row: ShiftInventoryRow): number {
-  if (!row.par || row.par <= 0 || row.counted === null) return 0;
+  if (!row.par || row.par <= 0 || row.counted === null || !Number.isFinite(row.counted) || row.counted < 0) return 0;
   return Math.max(0, row.par - row.counted);
 }
 

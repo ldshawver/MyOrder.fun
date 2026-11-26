@@ -653,7 +653,6 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
   onCancel: () => void;
 }) {
   // Pre-populate actual counts with computed expected values
-  const initialCounts: Record<number, string> = {};
   const shiftInventory = safeArray<EnrichedItem>(shift.inventory);
   const shiftStats = {
     ...emptyShiftStats(),
@@ -661,28 +660,26 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
     byItem: safeArray<ShiftStats["byItem"][number]>(shift.stats?.byItem),
     byCustomer: safeArray<ShiftStats["byCustomer"][number]>(shift.stats?.byCustomer),
   };
-  for (const item of shiftInventory) {
-    if (item.rowType === "item") {
-      initialCounts[item.id] = String(expectedEndingQuantity(item));
-    }
-  }
-
   const expectedCash = (shift.cashBankStart ?? 0) + (shift.accountableCash ?? shiftStats.cashSales ?? 0);
 
-  const [actualCounts, setActualCounts] = useState<Record<number, string>>(initialCounts);
-  const [cashBankEnd, setCashBankEnd] = useState(expectedCash.toFixed(2));
+  const [actualCounts, setActualCounts] = useState<Record<number, string>>({});
+  const [cashBankEnd, setCashBankEnd] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const countable = shiftInventory.filter(item => item.rowType === "item");
+  const isCount = (value: string | undefined) => Boolean(value?.trim()) && Number.isFinite(Number(value)) && Number(value) >= 0;
+  const missingCounts = countable.filter(item => !isCount(actualCounts[item.id])).length;
+  const canSubmit = missingCounts === 0 && isCount(cashBankEnd);
 
   const handleSubmit = async () => {
+    if (!canSubmit) return;
     setSubmitting(true);
     try {
-      const endingInventory = shiftInventory
-        .filter(i => i.rowType === "item")
+      const endingInventory = countable
         .map(i => ({
           shiftInventoryItemId: i.id,
-          quantityEndActual: parseFloat(actualCounts[i.id] ?? "0") || 0,
+          quantityEndActual: Number(actualCounts[i.id]),
         }));
-      await onConfirm({ endingInventory, cashBankEnd: parseFloat(cashBankEnd) || 0 });
+      await onConfirm({ endingInventory, cashBankEnd: Number(cashBankEnd) });
     } finally {
       setSubmitting(false);
     }
@@ -818,7 +815,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
                             type="number"
                             min="0"
                             step={item.unitType === "G" ? "0.1" : "1"}
-                            value={actualCounts[item.id] ?? String(expected)}
+                            value={actualCounts[item.id] ?? ""}
                             onChange={e => setActualCounts(prev => ({ ...prev, [item.id]: e.target.value }))}
                             className={`h-7 w-20 text-right text-xs font-mono rounded-lg bg-background/50 ${hasDisc && disc > 0 ? "border-red-500/40 text-red-400" : "border-border/50"}`}
                           />
@@ -832,6 +829,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
           </div>
         </div>
 
+        {!canSubmit && <p className="px-6 pb-2 text-xs text-muted-foreground">Enter counted cash and all ending quantities. {missingCounts} item counts remaining.</p>}
         <div className="px-6 pb-6 flex gap-3">
           <Button variant="outline" className="flex-1 rounded-xl border-border/50" onClick={onCancel} disabled={submitting}>
             Cancel
@@ -839,7 +837,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
           <Button
             className="flex-1 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold shadow-lg shadow-orange-500/20"
             onClick={handleSubmit}
-            disabled={submitting}
+            disabled={submitting || !canSubmit}
             data-testid="button-clock-out"
           >
             <LogOut size={14} className="mr-2" />

@@ -1,10 +1,22 @@
+import { sql } from "drizzle-orm";
 import { formatMoneyCents, requiredNonNegativeMoneyCents } from "./shiftCloseoutFinancials";
+
+// Shared by closeout and post-closeout refund recovery. Legacy orders before
+// commission snapshots stored the merchandise value on the order line.
+export const shiftSaleGrossAmount = sql`CASE
+  WHEN o.tax_snapshot #>> '{commission,schemaVersion}' IS NULL
+    AND oi.commission_gross_amount = 0 AND oi.commission_discount_amount = 0
+  THEN oi.total_price
+  ELSE oi.commission_gross_amount
+END`;
 
 export type CommissionEligibility = "eligible" | "membership" | "excluded" | "unclassified";
 export type ShiftEarningOrder = {
   orderId: number;
   routeSource: string | null;
   paymentStatus: string;
+  employeeSale?: boolean;
+  paymentMethod?: string | null;
   deliveryMethod: string | null;
   fulfillmentStatus?: string | null;
   uberRequestState?: string | null;
@@ -29,7 +41,21 @@ export type ShiftEarningLine = {
   metadata: Record<string, unknown>;
 };
 
-export function calculateShiftEarnings(orders: ShiftEarningOrder[], commissionPercent: 15 | 16 | 17 | 18) {
+export type CommissionPercent = 15 | 16 | 17 | 18;
+
+/** The closeout contract intentionally permits only whole supervisor-selected rates. */
+export function requireCommissionPercent(value: unknown): CommissionPercent {
+  if (value === 15 || value === 16 || value === 17 || value === 18) return value;
+  throw new Error("Commission percentage must be one of 15, 16, 17, or 18");
+}
+
+/**
+ * The canonical commission calculation. All inputs are converted to integer
+ * cents and the percentage is rounded once, half-up, for the whole shift.
+ * Order allocations use largest remainder so their sum always matches it.
+ */
+export function calculateShiftEarnings(orders: ShiftEarningOrder[], selectedCommissionPercent: CommissionPercent) {
+  const commissionPercent = requireCommissionPercent(selectedCommissionPercent);
   let commissionBasis = 0n;
   let customerTips = 0n;
   let csrDelivery = 0n;
@@ -40,10 +66,10 @@ export function calculateShiftEarnings(orders: ShiftEarningOrder[], commissionPe
 
   for (const order of orders) {
     const commissionEligibleOrder = ["paid", "partially_refunded"].includes(order.paymentStatus)
-      && order.routeSource !== "general_account" && order.routeSource !== "general_queue";
+      && order.routeSource !== "general_account" && order.routeSource !== "general_queue"
+      && !order.employeeSale && order.paymentMethod !== "comp";
     if (commissionEligibleOrder) {
       for (const item of order.lines) {
-        if (item.eligibility !== "eligible") continue;
         const gross = requiredNonNegativeMoneyCents(item.grossAmount, `orderItem.${item.orderItemId}.commissionGrossAmount`);
         const discount = requiredNonNegativeMoneyCents(item.discountAmount, `orderItem.${item.orderItemId}.commissionDiscountAmount`);
         const refunded = requiredNonNegativeMoneyCents(item.refundedAmount, `orderItem.${item.orderItemId}.refundedAmount`);

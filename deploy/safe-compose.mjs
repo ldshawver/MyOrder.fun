@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -10,11 +10,13 @@ const PROJECT = { staging: "myorder-staging", production: "deploy" };
 const ENVIRONMENT = { staging: "staging", production: "production" };
 const DATABASE = { staging: "myorder_staging", production: "alavont" };
 const WORKTREES_ROOT = "/home/serveradmin/worktrees";
+const STAGING_VM_WORKTREES_ROOT = "/srv/myorder-staging/worktrees";
 const STAGING_BACKUP_ROOT = "/home/serveradmin/release-backups";
 const P0_PATCH_SHA256 = "cd496d318643c3f485a563445ae5d3f59b3f4ea79d991108b2e7c17dd83db54a";
 const ROOTS = { production: "/opt/alavont" };
 const RELEASE_BASE_SHA = "8744d8e34ab8627555919aec337abde0c3291e0f";
 const EXPECTED_DOCKER_DAEMON_ID = "90b592a4-aee8-4d61-99a2-1a6a8b58ed55";
+const STAGING_VM_DOCKER_DAEMON_ID = "fe9efaf7-eae3-48af-9e85-a7bef881d2f8";
 const EXPECTED_ARCH = "amd64";
 const PINNED_CANDIDATE = {
   sha: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
@@ -34,7 +36,9 @@ const PINNED_ROLLBACK = {
   },
 };
 const TOOLING_ONLY_PATHS = new Set(["deploy/docker-compose.staging.yml", "deploy/safe-compose.mjs", "deploy/safe-compose.test.mjs"]);
-const ACTIONS = new Set(["config", "build", "up", "migrate", "p0", "bootstrap", "stop"]);
+const ACTIONS = new Set(["config", "build", "up", "migrate", "migrations", "p0", "bootstrap", "bootstrap-synthetic", "stop"]);
+const RELEASE_MODE_ACTIONS = new Set(["config", "build", "migrations", "up", "migrate", "bootstrap-synthetic"]);
+const SYNTHETIC_BOOTSTRAP_KIND = "synthetic-empty-vm-v1";
 
 export function validatePinnedImageMetadata({ daemonId, expectedDaemonId = EXPECTED_DOCKER_DAEMON_ID, image, expected, revision, architecture = EXPECTED_ARCH }) {
   if (daemonId !== expectedDaemonId) throw new Error("Docker daemon identity does not match the approved staging host");
@@ -149,7 +153,7 @@ export function validateCandidateIdentity({ root, environment, status, headSha, 
 function isApprovedRoot(environment, root) {
   const resolved = path.resolve(root);
   if (environment === "production") return resolved === ROOTS.production;
-  return environment === "staging" && resolved.startsWith(`${WORKTREES_ROOT}/`) && path.dirname(resolved) === WORKTREES_ROOT;
+  return environment === "staging" && [WORKTREES_ROOT, STAGING_VM_WORKTREES_ROOT].includes(path.dirname(resolved));
 }
 
 export function validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooExternalEnabled, wooSafeTenantCount }) {
@@ -157,6 +161,84 @@ export function validateStagingDatabasePreflight({ p0Ready, recognizedLineage, w
   if (!recognizedLineage) throw new Error("Staging migration lineage is not recognized through 0076");
   if (typeof wooExternalEnabled !== "boolean") throw new Error("Staging WooCommerce external integration policy is not explicit");
   if (wooExternalEnabled && (!Number.isSafeInteger(wooSafeTenantCount) || wooSafeTenantCount < 1)) throw new Error("Staging WooCommerce test integration is missing or required tenant credentials are absent");
+  return true;
+}
+
+export function validateSyntheticBootstrapState({ serviceContainerIds, projectContainerIds, databaseVolumeInspectStatus }) {
+  if (!Array.isArray(serviceContainerIds) || !Array.isArray(projectContainerIds)) throw new Error("Synthetic bootstrap state is unavailable");
+  if (serviceContainerIds.length || projectContainerIds.length) throw new Error("Synthetic bootstrap requires an empty staging project");
+  if (databaseVolumeInspectStatus === 0) throw new Error("Synthetic bootstrap refused because the staging database volume already exists");
+  if (databaseVolumeInspectStatus !== 1) throw new Error("Could not safely determine whether the staging database volume exists");
+  return true;
+}
+
+// ── Verified-release mode (staging only) ────────────────────────────────────
+// The original staging path is pinned to one approved candidate. Verified-
+// release mode lets the GitHub "Deploy to staging" workflow release any
+// CI-verified commit through this same guard. It is opt-in, staging-only, and
+// keeps every other check (worktree, project, database, network, volume,
+// ports, side effects, P0 schema). Images are built locally from the exact
+// clean checkout and must carry that commit's labels. Migrations are never run
+// implicitly: `up` refuses while any are pending, and `migrate` needs an
+// explicit confirmation plus a fresh verified backup.
+export const RELEASE_MODE_VALUE = "verified-release";
+export const STAGING_MIGRATION_CONFIRMATION = "APPLY_STAGING_MIGRATIONS";
+export const RELEASE_IMAGE_SERVICES = ["api", "platform", "migrate"];
+
+export function isVerifiedReleaseMode({ environment, deploySha, mode }) {
+  if (mode === undefined || mode === "") return false;
+  if (mode !== RELEASE_MODE_VALUE) throw new Error("Unknown staging release mode");
+  if (environment !== "staging") throw new Error("Verified-release mode is staging-only");
+  if (!/^[a-f0-9]{40}$/.test(deploySha ?? "")) throw new Error("Verified-release mode requires a full release SHA");
+  if (deploySha === PINNED_CANDIDATE.sha) throw new Error("The pinned candidate uses its immutable pinned path, not verified-release mode");
+  return true;
+}
+
+export function classifyMigrationValidatorOutput(output) {
+  const text = String(output ?? "");
+  const applied = [...text.matchAll(/\[migration-ledger\] APPLIED (\S+)/g)].map(m => m[1]);
+  const pending = [...text.matchAll(/\[migration-ledger\] PENDING (\S+)/g)].map(m => m[1]);
+  const summary = text.match(/\[migration-ledger\] recognized lineage preserved: (\d+)\/(\d+)/);
+  if (!summary) throw new Error("Migration validator did not confirm a recognized staging lineage");
+  const [appliedCount, journalCount] = [Number(summary[1]), Number(summary[2])];
+  if (applied.length + pending.length !== journalCount || applied.length < appliedCount) throw new Error("Migration validator output is inconsistent");
+  return { applied, pending, journalCount };
+}
+
+export function validateReleaseMigrationPlan({ action, pending, confirmation }) {
+  if (!Array.isArray(pending)) throw new Error("Migration status is unavailable");
+  if (action === "up" && pending.length) throw new Error(`Release requires ${pending.length} pending staging migration(s); run the guarded migrate action first: ${pending.join(", ")}`);
+  if (action === "migrate") {
+    if (confirmation !== STAGING_MIGRATION_CONFIRMATION) throw new Error("Staging migrations require the explicit migration confirmation");
+    if (!pending.length) throw new Error("No pending staging migrations; refusing an unnecessary migration run");
+  }
+  return true;
+}
+
+export function validateReleaseImageMetadata({ daemonId, expectedDaemonId = EXPECTED_DOCKER_DAEMON_ID, image, service, revision, architecture = EXPECTED_ARCH }) {
+  if (daemonId !== expectedDaemonId) throw new Error("Docker daemon identity does not match the approved staging host");
+  if (!RELEASE_IMAGE_SERVICES.includes(service)) throw new Error("Unexpected release image service");
+  const tag = `myorder-${service}:${revision}`;
+  if (!image || !Array.isArray(image.RepoTags) || !image.RepoTags.includes(tag)) throw new Error(`Release image ${tag} was not built on this host`);
+  if (image.Os !== "linux" || image.Architecture !== architecture) throw new Error("Release image architecture does not match the staging host");
+  if (image.Config?.Labels?.["org.opencontainers.image.revision"] !== revision || image.Config?.Labels?.["com.myorder.deploy-sha"] !== revision) throw new Error("Release image source labels do not match the selected release");
+  return tag;
+}
+
+export function validateDeployedReleaseContainer({ container, service, revision }) {
+  const tag = `myorder-${service}:${revision}`;
+  if (container?.Config?.Image !== tag) throw new Error(`Staging ${service} is not running ${tag}`);
+  if (container?.Config?.Labels?.["com.myorder.deploy-sha"] !== revision) throw new Error(`Staging ${service} container source label does not match the release`);
+  if (container?.State?.Running !== true) throw new Error(`Staging ${service} container is not running`);
+  return true;
+}
+
+export function validateReleaseBackupArtifact({ backupPath, size, mode, isFile, isSymlink, restoreListOk }) {
+  const root = path.resolve(STAGING_BACKUP_ROOT);
+  if (!path.resolve(backupPath ?? "").startsWith(`${root}/`)) throw new Error("Release backup must be inside the protected release-backups directory");
+  if (!isFile || isSymlink || (mode & 0o077) !== 0) throw new Error("Release backup must be a restricted regular file");
+  if (!(size > 0)) throw new Error("Release backup is empty");
+  if (!restoreListOk) throw new Error("Release backup could not be read back by pg_restore");
   return true;
 }
 
@@ -174,7 +256,7 @@ export function validateContainer({ environment, project, service, labels, envVa
   const sourceDir = path.resolve(labels["com.docker.compose.project.working_dir"] ?? "");
   if (environment === "production") {
     if (!sourceFiles.includes(path.resolve(composeFile)) || sourceDir !== path.resolve(composeWorkingDir)) throw new Error(`Resolved ${service} container belongs to another production Compose source`);
-  } else if (sourceFiles.length !== 1 || path.basename(sourceFiles[0]) !== "docker-compose.staging.yml" || !sourceDir.startsWith("/home/serveradmin/worktrees/") || path.basename(sourceDir) !== "deploy") {
+  } else if (sourceFiles.length !== 1 || path.basename(sourceFiles[0]) !== "docker-compose.staging.yml" || ![WORKTREES_ROOT, STAGING_VM_WORKTREES_ROOT].includes(path.dirname(path.dirname(sourceDir))) || path.basename(sourceDir) !== "deploy") {
     // Staging may be converging containers created by earlier staging builds;
     // ownership still must be the staging project, and no production checkout
     // or Compose file is accepted as an existing target.
@@ -277,6 +359,23 @@ function recognizedStagingLineage(prefix, env = process.env) {
   return validator.includes("recognized lineage preserved: 49/51") && appliedMigrations.length === 51 && !hasPendingMigrations && validator.includes("APPLIED 0075_catalogue_variant_attributes ") && validator.includes("APPLIED 0076_tenant_woo_store_url_no_default ");
 }
 
+function recognizedSyntheticStagingLineage(prefix, env = process.env) {
+  const status = releaseMigrationStatus(prefix, env);
+  return status.pending.length === 0 && status.applied.length === status.journalCount;
+}
+
+function stagingP0Ready(prefix, dbUser) {
+  return stageQuery(prefix, dbUser, "SELECT (SELECT count(*) FROM public.myorder_hotfix_migrations WHERE migration_id='p0_owner_approval_provenance')=1 AND to_regclass('public.users_owner_approval_provenance_idx') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_at' AND data_type='timestamp with time zone' AND is_nullable='YES')=1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_by_clerk_id' AND data_type='text' AND is_nullable='YES')=1 AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='users_owner_approval_provenance_idx' AND i.indisvalid AND i.indisready AND pg_get_expr(i.indpred, i.indrelid) = '(status = ''approved''::text)')") === "t";
+}
+
+function applyStagingP0Patch(prefix, dbUser) {
+  const patch = readFileSync(path.join(ROOT, "deploy", "hotfix-owner-approval.sql"));
+  if (createHash("sha256").update(patch).digest("hex") !== P0_PATCH_SHA256) throw new Error("Approved P0 compatibility patch checksum mismatch");
+  const applied = spawnSync("docker", [...prefix, "exec", "-i", "db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", dbUser, "-d", DATABASE.staging], { input: patch, encoding: "utf8" });
+  if (applied.error) throw applied.error;
+  if (applied.status !== 0) throw new Error(`Approved staging P0 patch failed with status ${applied.status}`);
+}
+
 function verifyStagingP0Patch(prefix, resolved) {
   if (resolved.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED !== "false") throw new Error("The staging P0 patch action requires external WooCommerce explicitly disabled");
   const dbUser = resolved.services.db.environment.POSTGRES_USER;
@@ -292,26 +391,19 @@ function verifyStagingP0Patch(prefix, resolved) {
   const ledgerBefore = ledgerFingerprint();
   if (!ledgerBefore.startsWith("49:")) throw new Error("Staging migration ledger count does not match the recognized 49-row lineage");
 
-  const patchPath = path.join(ROOT, "deploy", "hotfix-owner-approval.sql");
-  const patch = readFileSync(patchPath);
-  if (createHash("sha256").update(patch).digest("hex") !== P0_PATCH_SHA256) throw new Error("Approved P0 compatibility patch checksum mismatch");
-  const applied = spawnSync("docker", [...prefix, "exec", "-i", "db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", dbUser, "-d", DATABASE.staging], { input: patch, encoding: "utf8" });
-  if (applied.error) throw applied.error;
-  if (applied.status !== 0) throw new Error(`Approved staging P0 patch failed with status ${applied.status}`);
+  applyStagingP0Patch(prefix, dbUser);
 
-  const p0Ready = stageQuery(prefix, dbUser, "SELECT (SELECT count(*) FROM public.myorder_hotfix_migrations)=1 AND (SELECT count(*) FROM public.myorder_hotfix_migrations WHERE migration_id='p0_owner_approval_provenance')=1 AND to_regclass('public.users_owner_approval_provenance_idx') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_at' AND data_type='timestamp with time zone' AND is_nullable='YES')=1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_by_clerk_id' AND data_type='text' AND is_nullable='YES')=1 AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='users_owner_approval_provenance_idx' AND i.indisvalid AND i.indisready AND pg_get_expr(i.indpred, i.indrelid) = '(status = ''approved''::text)')");
-  if (p0Ready !== "t") throw new Error("Staging P0 marker/provenance verification failed after patch");
+  if (!stagingP0Ready(prefix, dbUser)) throw new Error("Staging P0 marker/provenance verification failed after patch");
   if (ledgerFingerprint() !== ledgerBefore) throw new Error("Staging Drizzle migration ledger changed during P0 compatibility patch");
   console.log("Staging P0 patch applied and verified; recognized 49-row ledger unchanged.");
 }
 
-function verifyStagingMutationPreflight(prefix, resolved, env) {
+function verifyStagingMutationPreflight(prefix, resolved, env, release) {
   const dbUser = resolved.services.db.environment.POSTGRES_USER;
   const markerTableExists = stageQuery(prefix, dbUser, "SELECT to_regclass('public.myorder_hotfix_migrations') IS NOT NULL");
   let p0Ready = false;
   if (markerTableExists === "t") {
-    const marker = stageQuery(prefix, dbUser, "SELECT (SELECT count(*) FROM public.myorder_hotfix_migrations WHERE migration_id='p0_owner_approval_provenance')=1 AND to_regclass('public.users_owner_approval_provenance_idx') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_at' AND data_type='timestamp with time zone' AND is_nullable='YES')=1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_by_clerk_id' AND data_type='text' AND is_nullable='YES')=1 AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='users_owner_approval_provenance_idx' AND i.indisvalid AND i.indisready AND pg_get_expr(i.indpred, i.indrelid) = '(status = ''approved''::text)')");
-    p0Ready = marker === "t";
+    p0Ready = stagingP0Ready(prefix, dbUser);
   }
   if (!p0Ready) throw new Error("Staging P0 marker/provenance schema is not verified");
   const wooExternalEnabled = resolved.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED === "true";
@@ -321,8 +413,64 @@ function verifyStagingMutationPreflight(prefix, resolved, env) {
     const escapedOrigin = expectedWooOrigin.replaceAll("'", "''");
     wooSafeTenantCount = Number(stageQuery(prefix, dbUser, `SELECT count(*) FROM public.admin_settings WHERE wc_store_url='${escapedOrigin}' AND wc_webhook_secret IS NOT NULL AND wc_consumer_key IS NOT NULL AND wc_consumer_secret IS NOT NULL`));
   }
-  const recognizedLineage = recognizedStagingLineage(prefix, env);
+  let recognizedLineage;
+  let migrationStatus;
+  if (!release) recognizedLineage = recognizedStagingLineage(prefix, env) || recognizedSyntheticStagingLineage(prefix, env);
+  else if (release.action === "build") recognizedLineage = true; // images for this release do not exist yet; build mutates nothing
+  else { migrationStatus = releaseMigrationStatus(prefix, env); recognizedLineage = true; }
   validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooExternalEnabled, wooSafeTenantCount });
+  return migrationStatus;
+}
+
+function releaseMigrationStatus(prefix, env) {
+  // Runs the release's own validator against the staging ledger: it fails on an
+  // unrecognized or altered ledger and lists every APPLIED / PENDING migration.
+  const result = spawnSync("docker", [...prefix, ...pinnedRunArgs("migrate", "pnpm"), "--filter", "@workspace/db", "db:validate-migrations"], { encoding: "utf8", env, stdio: ["ignore", "pipe", "inherit"] });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error("Migration validator rejected the staging ledger for this release");
+  return classifyMigrationValidatorOutput(result.stdout);
+}
+
+function verifyReleaseImages(services, revision) {
+  const daemonId = run("docker", ["info", "--format", "{{.ID}}"], { capture: true }).trim();
+  const expectedDaemonId = path.dirname(ROOT) === STAGING_VM_WORKTREES_ROOT
+    ? STAGING_VM_DOCKER_DAEMON_ID
+    : EXPECTED_DOCKER_DAEMON_ID;
+  for (const service of services) {
+    const raw = run("docker", ["image", "inspect", `myorder-${service}:${revision}`, "--format", "{{json .}}"], { capture: true });
+    validateReleaseImageMetadata({ daemonId, expectedDaemonId, image: JSON.parse(raw), service, revision });
+  }
+}
+
+function verifyDeployedReleaseServices(prefix, services, revision) {
+  for (const service of services) {
+    const ids = run("docker", [...prefix, "ps", "--all", "--quiet", service], { capture: true }).trim().split(/\s+/).filter(Boolean);
+    if (ids.length !== 1) throw new Error(`Expected one staging ${service} container after deployment`);
+    validateDeployedReleaseContainer({ container: JSON.parse(run("docker", ["inspect", ids[0], "--format", "{{json .}}"], { capture: true })), service, revision });
+  }
+}
+
+function createReleaseBackup(prefix, dbUser, revision) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dir = path.join(STAGING_BACKUP_ROOT, `staging-release-${revision.slice(0, 12)}-${stamp}`);
+  mkdirSync(dir, { mode: 0o700 });
+  const backupPath = path.join(dir, "staging.dump");
+  const out = openSync(backupPath, "wx", 0o600);
+  try {
+    const dump = spawnSync("docker", [...prefix, "exec", "-T", "db", "pg_dump", "-U", dbUser, "-d", DATABASE.staging, "-Fc"], { stdio: ["ignore", out, "inherit"] });
+    if (dump.error) throw dump.error;
+    if (dump.status !== 0) throw new Error("Staging pre-migration backup failed");
+  } finally { closeSync(out); }
+  const input = openSync(backupPath, "r");
+  let restoreListOk = false;
+  try {
+    const list = spawnSync("docker", [...prefix, "exec", "-T", "db", "pg_restore", "--list"], { stdio: [input, "ignore", "inherit"] });
+    restoreListOk = !list.error && list.status === 0;
+  } finally { closeSync(input); }
+  const stat = lstatSync(backupPath);
+  validateReleaseBackupArtifact({ backupPath, size: stat.size, mode: stat.mode, isFile: stat.isFile(), isSymlink: stat.isSymbolicLink(), restoreListOk });
+  console.log(`STAGING_RELEASE_BACKUP=${backupPath}`);
+  return backupPath;
 }
 
 function main() {
@@ -330,6 +478,7 @@ function main() {
   if (!ACTIONS.has(action)) throw new Error("Usage: safe-compose.mjs <staging|production> <config|build|up|migrate|p0|bootstrap|stop> [services] [--authorize-production]");
   if (!(environment in PROJECT)) throw new Error("Unknown deployment environment");
   if (action === "p0" && environment !== "staging") throw new Error("The P0 compatibility patch action is staging-only");
+  if (action === "bootstrap-synthetic" && environment !== "staging") throw new Error("Synthetic bootstrap is staging-only");
   const authorization = rest.includes("--authorize-production") && process.env.PRODUCTION_DEPLOY_CONFIRMATION === "DEPLOY-PRODUCTION" ? "DEPLOY-PRODUCTION" : undefined;
   if (rest.includes("--authorize-production") && !authorization) throw new Error("Production authorization flag and confirmation must both be present");
   if (environment === "production" && !authorization) throw new Error("Production requires explicit authorization before Compose can be resolved");
@@ -353,7 +502,7 @@ function main() {
   if (action === "up" && (!services.length || services.some(service => !["db", "api", "platform", "nginx"].includes(service)))) throw new Error("up requires an explicit allowlisted service list");
   if (environment === "staging" && action === "up" && (services.length !== 2 || !services.includes("api") || !services.includes("platform"))) throw new Error("Pinned staging release up is restricted to the API and platform services");
   if ((action === "migrate" || action === "p0") && services.length) throw new Error(`${action} does not accept service arguments`);
-  if ((action === "bootstrap" || action === "build" || action === "config") && services.length) throw new Error(`${action} does not accept service arguments`);
+  if ((action === "bootstrap" || action === "bootstrap-synthetic" || action === "build" || action === "config" || action === "migrations") && services.length) throw new Error(`${action} does not accept service arguments`);
 
   const project = PROJECT[environment];
   const composeFile = path.join(ROOT, "deploy", environment === "production" ? "docker-compose.yml" : "docker-compose.staging.yml");
@@ -368,9 +517,16 @@ function main() {
   delete composeEnv.MYORDER_MIGRATE_IMAGE;
   let resolved = JSON.parse(run("docker", [...prefix, "config", "--format", "json"], { capture: true, env: composeEnv }));
   validatePlan({ environment, root: ROOT, project, config: resolved, authorization, deploySha: process.env.DEPLOY_SHA });
+  const releaseMode = isVerifiedReleaseMode({ environment, deploySha: process.env.DEPLOY_SHA, mode: process.env.MYORDER_STAGING_RELEASE_MODE });
+  if (action === "migrations" && !releaseMode) throw new Error("The migrations status action is only available in verified-release mode");
+  if (releaseMode && !RELEASE_MODE_ACTIONS.has(action)) throw new Error(`Action ${action} is not available in verified-release mode`);
+  if (releaseMode && process.env.DEPLOY_SHA !== headSha) throw new Error("Verified-release mode requires the clean checkout to be exactly the release commit");
   let pins;
   let pinnedEnv;
-  if (environment === "staging" && (action === "up" || action === "migrate")) {
+  if (releaseMode && (action === "up" || action === "migrate" || action === "migrations")) {
+    verifyReleaseImages(action === "up" ? services : ["migrate"], process.env.DEPLOY_SHA);
+    pinnedEnv = composeEnv;
+  } else if (environment === "staging" && (action === "up" || action === "migrate")) {
     if (process.env.DEPLOY_SHA !== PINNED_CANDIDATE.sha || process.env.DEPLOY_TREE !== PINNED_CANDIDATE.tree) throw new Error("Pinned local images are approved only for the validated candidate commit/tree");
     pins = verifyPinnedArtifacts();
     pinnedEnv = { ...composeEnv, ...pins.composeEnvironment };
@@ -378,6 +534,27 @@ function main() {
     validatePlan({ environment, root: ROOT, project, config: resolved, authorization, deploySha: process.env.DEPLOY_SHA, pinnedImages: PINNED_CANDIDATE.images });
   }
   validateBuildPolicy({ environment, action, deploySha: process.env.DEPLOY_SHA });
+
+  if (action === "bootstrap-synthetic") {
+    const serviceContainerIds = ["db", "api", "platform", "nginx"].flatMap(service => run("docker", [...prefix, "ps", "--all", "--quiet", service], { capture: true }).trim().split(/\s+/).filter(Boolean));
+    const projectContainerIds = run("docker", ["ps", "--all", "--quiet", "--filter", `label=com.docker.compose.project=${project}`], { capture: true }).trim().split(/\s+/).filter(Boolean);
+    const databaseVolumeInspectStatus = spawnSync("docker", ["volume", "inspect", `${project}_postgres_data`], { stdio: "ignore" }).status;
+    validateSyntheticBootstrapState({ serviceContainerIds, projectContainerIds, databaseVolumeInspectStatus });
+    run("docker", [...prefix, "build"]);
+    verifyReleaseImages(RELEASE_IMAGE_SERVICES, process.env.DEPLOY_SHA);
+    run("docker", [...prefix, "up", "-d", "db"]);
+    run("docker", [...prefix, "run", "--rm", "migrate"]);
+    if (!recognizedSyntheticStagingLineage(prefix, composeEnv)) throw new Error("Synthetic bootstrap migration ledger is not fully recognized");
+    const dbUser = resolved.services.db.environment.POSTGRES_USER;
+    const p0Absent = stageQuery(prefix, dbUser, "SELECT to_regclass('public.myorder_hotfix_migrations') IS NULL AND to_regclass('public.users_owner_approval_provenance_idx') IS NULL");
+    if (p0Absent !== "t") throw new Error("Synthetic bootstrap found pre-existing P0 objects");
+    applyStagingP0Patch(prefix, dbUser);
+    if (!stagingP0Ready(prefix, dbUser)) throw new Error("Synthetic bootstrap P0 verification failed");
+    run("docker", [...prefix, "up", "-d", "api", "platform", "nginx"]);
+    verifyDeployedReleaseServices(prefix, ["api", "platform"], process.env.DEPLOY_SHA);
+    console.log(`STAGING_SYNTHETIC_BOOTSTRAP=${process.env.DEPLOY_SHA} kind=${SYNTHETIC_BOOTSTRAP_KIND}`);
+    return;
+  }
 
   if (action === "bootstrap") {
     const existing = ["db", "api", "platform", "nginx"].flatMap(service => run("docker", [...prefix, "ps", "--all", "--quiet", service], { capture: true }).trim().split(/\s+/).filter(Boolean));
@@ -420,8 +597,35 @@ function main() {
     verifyStagingP0Patch(prefix, resolved);
     return;
   }
+  let migrationStatus;
   if (environment === "staging" && action !== "config") {
-    verifyStagingMutationPreflight(prefix, resolved, pinnedEnv ?? composeEnv);
+    migrationStatus = verifyStagingMutationPreflight(prefix, resolved, pinnedEnv ?? composeEnv, releaseMode ? { action } : undefined);
+  }
+
+  if (releaseMode) {
+    const revision = process.env.DEPLOY_SHA;
+    if (action === "config") { console.log(`STAGING_RELEASE_ELIGIBLE=${revision}`); return; }
+    if (action === "build") { run("docker", [...prefix, "build"]); verifyReleaseImages(RELEASE_IMAGE_SERVICES, revision); return; }
+    if (action === "migrations") {
+      console.log(`STAGING_MIGRATION_STATUS=${JSON.stringify({ revision, applied: migrationStatus.applied.length, journal: migrationStatus.journalCount, pending: migrationStatus.pending })}`);
+      return;
+    }
+    if (action === "migrate") {
+      validateReleaseMigrationPlan({ action, pending: migrationStatus.pending, confirmation: process.env.MYORDER_STAGING_MIGRATION_CONFIRMATION });
+      createReleaseBackup(prefix, resolved.services.db.environment.POSTGRES_USER, revision);
+      run("docker", [...prefix, ...pinnedRunArgs("migrate")], { env: pinnedEnv });
+      const after = releaseMigrationStatus(prefix, pinnedEnv);
+      if (after.pending.length) throw new Error(`Staging migrations still pending after migrate: ${after.pending.join(", ")}`);
+      console.log(`STAGING_MIGRATIONS_APPLIED=${migrationStatus.pending.join(",")}`);
+      return;
+    }
+    if (action === "up") {
+      validateReleaseMigrationPlan({ action, pending: migrationStatus.pending });
+      run("docker", [...prefix, ...pinnedUpArgs(services)], { env: pinnedEnv });
+      verifyDeployedReleaseServices(prefix, services, revision);
+      console.log(`STAGING_RELEASE_DEPLOYED=${revision}`);
+      return;
+    }
   }
 
   if (action === "config") return;

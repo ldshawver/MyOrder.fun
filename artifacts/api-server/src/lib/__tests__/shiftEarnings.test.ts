@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculatePostCloseoutCommissionRecovery, calculateShiftEarnings, refundedCommissionBasisAfterCloseout, type ShiftEarningOrder } from "../shiftEarnings";
+import { calculatePostCloseoutCommissionRecovery, calculateShiftEarnings, refundedCommissionBasisAfterCloseout, requireCommissionPercent, type ShiftEarningOrder } from "../shiftEarnings";
 import { ShiftCloseoutSerializationError, withSerializableRetry } from "../shiftCloseoutFinancials";
 
 const order = (patch: Partial<ShiftEarningOrder> = {}): ShiftEarningOrder => ({
@@ -11,6 +11,16 @@ describe("shift earnings", () => {
   it("calculates commission from discounted eligible product sales", () => {
     expect(calculateShiftEarnings([order()], 15)).toMatchObject({ commissionBasis: "80.00", commissionAmount: "12.00", customerTips: "0.00" });
   });
+  it.each([15, 18] as const)("accepts the supervisor-selected %i%% boundary", rate => {
+    expect(calculateShiftEarnings([order({ lines: [{ ...order().lines[0]!, grossAmount: "1000.00", discountAmount: "0.00" }] })], rate).commissionAmount).toBe(rate === 15 ? "150.00" : "180.00");
+  });
+  it.each([14, 19, 15.5, "16", null])("rejects an invalid commission percentage", rate => {
+    expect(() => requireCommissionPercent(rate)).toThrow(/15, 16, 17, or 18/);
+  });
+  it("excludes tax and delivery fees because only eligible product line snapshots form the basis", () => {
+    const result = calculateShiftEarnings([order({ deliveryFee: "50.00", lines: [{ ...order().lines[0]!, grossAmount: "1000.00", discountAmount: "0.00" }] })], 16);
+    expect(result).toMatchObject({ commissionBasis: "1000.00", commissionAmount: "160.00" });
+  });
   it("allocates cent rounding per order without changing the established shift total", () => {
     const orders = [order({ orderId: 2, lines: [{ orderItemId: 20, eligibility: "eligible", grossAmount: "0.03", discountAmount: "0.00", refundedAmount: "0.00" }] }),
       order({ orderId: 1, lines: [{ orderItemId: 10, eligibility: "eligible", grossAmount: "0.03", discountAmount: "0.00", refundedAmount: "0.00" }] })];
@@ -19,9 +29,16 @@ describe("shift earnings", () => {
     expect(result.orderCommissions.reduce((sum, item) => sum + Math.round(Number(item.commissionAmount) * 100), 0)).toBe(1);
     expect(result.orderCommissions.find(item => item.orderId === 1)?.commissionAmount).toBe("0.01");
   });
-  it("excludes memberships, explicitly excluded, unclassified, and General Queue sales", () => {
-    const excluded = ["membership", "excluded", "unclassified"].map((eligibility, i) => order({ orderId: i + 1, lines: [{ ...order().lines[0]!, eligibility: eligibility as never }] }));
-    expect(calculateShiftEarnings([...excluded, order({ orderId: 9, routeSource: "general_account" })], 18).commissionBasis).toBe("0.00");
+  it("includes ordinary paid shift sales regardless of item classification and excludes employee, comp, and queue sales", () => {
+    const sales = (["membership", "excluded", "unclassified"] as const).map((eligibility, i) =>
+      order({ orderId: i + 1, lines: [{ ...order().lines[0]!, eligibility }] }));
+    const result = calculateShiftEarnings([...sales,
+      order({ orderId: 4, employeeSale: true, tipAmount: "5.00" }),
+      order({ orderId: 5, paymentMethod: "comp" }),
+      order({ orderId: 6, routeSource: "general_account" }),
+      order({ orderId: 7, paymentStatus: "unpaid" }),
+    ], 17);
+    expect(result).toMatchObject({ commissionBasis: "240.00", commissionAmount: "40.80", customerTips: "5.00" });
   });
   it("keeps tips and CSR 80/20 delivery separate", () => {
     expect(calculateShiftEarnings([order({ deliveryMethod: "csr_delivery", fulfillmentStatus: "completed", deliveryFee: "10.01", tipAmount: "7.25" })], 15)).toMatchObject({ customerTips: "7.25", csrDeliveryEarnings: "8.01", houseDeliveryShare: "2.00", csrPayout: "27.26" });

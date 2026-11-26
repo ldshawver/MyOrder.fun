@@ -141,6 +141,40 @@ describe("print job status integrity", () => {
     expect(requestBody.text).not.toContain("\x1bp\x00\x19\x19");
   });
 
+  it("sends the existing drawer pulse once before a PDF receipt", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    });
+    await dispatchReceiptJob({ id: 46, tenantId: 1, locationId: null, retryCount: 0, maxRetries: 1, renderedText: "TEST", renderFormat: "pdf", payloadJson: { openCashDrawer: true, pdfBase64: "JVBERi0=" } } as never,
+      { id: 1, tenantId: 1, locationId: null, routingScope: "general", isActive: true, connectionType: "bridge", bridgeUrl: "http://mac.test:3100", bridgePrinterName: "Brightek_POS80", supportsCashDrawer: true } as never);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toMatchObject({ role: "cash_drawer", raw: true, copies: 1, text: "\x1b@\x1bp\x00\x19\x19" });
+    expect(bodies[1]).toMatchObject({ raw: false, openCashDrawer: false, documentBase64: "JVBERi0=" });
+    expect(updateSets.some(update => (update.payloadJson as Record<string, unknown>)?.drawerPulseQueued === true)).toBe(true);
+  });
+
+  it("refuses to repeat a PDF drawer pulse whose outcome is uncertain", async () => {
+    const send = vi.spyOn(globalThis, "fetch");
+    await dispatchReceiptJob({ id: 47, tenantId: 1, locationId: null, retryCount: 0, maxRetries: 1, renderedText: "TEST", renderFormat: "pdf", payloadJson: { openCashDrawer: true, drawerPulseAttempted: true, pdfBase64: "JVBERi0=" } } as never,
+      { id: 1, tenantId: 1, locationId: null, routingScope: "general", isActive: true, connectionType: "bridge", bridgeUrl: "http://mac.test:3100", bridgePrinterName: "Brightek_POS80", supportsCashDrawer: true } as never);
+    expect(send).not.toHaveBeenCalled();
+    expect(updateSets.at(-1)).toMatchObject({ status: "failed", errorMessage: expect.stringContaining("staff verification") });
+  });
+
+  it("retries a PDF slip without repeating an already confirmed drawer pulse", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    });
+    await dispatchReceiptJob({ id: 48, tenantId: 1, locationId: null, retryCount: 0, maxRetries: 1, renderedText: "TEST", renderFormat: "pdf", payloadJson: { openCashDrawer: true, drawerPulseAttempted: true, drawerPulseQueued: true, pdfBase64: "JVBERi0=" } } as never,
+      { id: 1, tenantId: 1, locationId: null, routingScope: "general", isActive: true, connectionType: "bridge", bridgeUrl: "http://mac.test:3100", bridgePrinterName: "Brightek_POS80", supportsCashDrawer: true } as never);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].documentBase64).toBe("JVBERi0=");
+  });
+
   it("fails jobs stranded in sending instead of resending them", async () => {
     claimRows.rows = [{ id: 7 }];
     const now = new Date("2026-09-29T12:00:00.000Z");
@@ -469,4 +503,16 @@ describe("print job status integrity", () => {
       expect(await sentKey(printer({ bridgeProfileId: null }))).toBe("central-secret");
     });
   });
+});
+
+it("prints and pulses a cash receipt only after a paid cash closeout", async () => {
+  const { automaticOrderReceiptPolicy } = await import("../printService");
+  const cash = { selectedPaymentMethod: "cash", paymentMethod: "cash", paymentStatus: "unpaid" };
+  expect(automaticOrderReceiptPolicy(cash)).toEqual({ printReceipt: false, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy({ ...cash, cashCloseout: true })).toEqual({ printReceipt: false, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy({ ...cash, paymentStatus: "paid" })).toEqual({ printReceipt: false, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy({ ...cash, cashCloseout: true, paymentStatus: "paid", paymentMethod: "customer_credit+cash" }))
+    .toEqual({ printReceipt: true, openCashDrawer: true });
+  expect(automaticOrderReceiptPolicy({ paymentMethod: "paypal", paymentStatus: "paid" }))
+    .toEqual({ printReceipt: true, openCashDrawer: false });
 });

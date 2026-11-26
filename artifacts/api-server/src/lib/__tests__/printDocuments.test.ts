@@ -103,20 +103,29 @@ describe("thermal documents", () => {
       businessName: "Shop", locationName: null, employeeName: "Casey J.", shiftRef: "42", timezone: "UTC",
       clockedInAt: "2026-09-28T08:00:00.000Z", clockedOutAt: "2026-09-28T16:00:00.000Z",
       cashBankStartCents: 10000, cashSalesCents: 4500, expectedCashCents: 14500, countedCashCents: 14450, varianceCents: -50,
+      eligibleSalesCents: 100000, commissionPercent: 16, commissionCents: 16000,
       paymentTotals: [{ label: "Cash", cents: 4500 }],
     }));
     expect(text).toMatch(/Expected cash\s+\$145\.00/);
     expect(text).toMatch(/Counted cash \(reported\)\s+\$144\.50/);
     expect(text).toMatch(/Variance\s+-\$0\.50/);
+    expect(text).toMatch(/Commissionable sales\s+\$1,000\.00/);
+    expect(text).toMatch(/Selected commission\s+16%/);
+    expect(text).toMatch(/Commission amount\s+\$160\.00/);
     expect(text).toContain("Verified by:");
   });
 
   it("expo tickets carry order number, fulfilment and items but no prices", () => {
-    const text = plain(buildExpoTicket(SAMPLE_RECEIPT_DATA));
+    const ticket = buildExpoTicket(SAMPLE_RECEIPT_DATA);
+    const text = plain(ticket);
     expect(text).toContain("#SAMPLE-0001");
     expect(text).toContain("2 x Sample Product");
     expect(text).toContain("Sample Option");
     expect(text).not.toMatch(/\$\d/);
+    expect(ticket.filter((line) => line.kind === "text").every((line) => line.size === "tall" || line.size === "large")).toBe(true);
+    const encoded = encodeReceiptEscPos(fitReceiptLines(ticket, 48));
+    expect(encoded).toContain("\x1d!\x01");
+    expect(encoded).toContain("\x1d!\x11");
   });
 
   it("work tickets list items with check boxes and no prices or customer", () => {

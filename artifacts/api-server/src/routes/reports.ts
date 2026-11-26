@@ -1,8 +1,7 @@
 import { Router, type IRouter } from "express";
 import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
-import { db, labTechShiftsTable, orderItemsTable, ordersTable, orderTaxSnapshotsTable, usersTable } from "@workspace/db";
+import { db, labTechShiftsTable, orderItemsTable, ordersTable, orderTaxSnapshotsTable, paymentAttemptsTable, usersTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
-import { isGlobalAdmin } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
 import { buildSalesTaxReportFromRows } from "../lib/salesTaxReport";
 import {
@@ -16,59 +15,20 @@ import {
 } from "../lib/reportSeries";
 
 const router: IRouter = Router();
-function requireReportTenantContext(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
-  if (isGlobalAdmin(req.dbUser) && req.query.tenantId === undefined) {
-    req.authorizedTenantId = undefined;
-    next();
-    return;
+const authChain = [requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"), requireTenantContext] as const;
+const REPORT_MAX_ROWS = 10_000;
+
+class ReportTooLargeError extends Error {
+  status = 413;
+  constructor(resource: string) {
+    super(`${resource} exceeds the ${REPORT_MAX_ROWS.toLocaleString()}-row report limit. Narrow the report filters and try again.`);
+    this.name = "ReportTooLargeError";
   }
-  requireTenantContext(req, res, next);
 }
 
-const authChain = [requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"), requireReportTenantContext] as const;
-let reportSchemaEnsured = false;
-
-async function ensureReportSchema(): Promise<void> {
-  if (reportSchemaEnsured) return;
-  const statements = [
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "tracking_url" text`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_tech_id" integer`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_shift_id" integer`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "fulfillment_status" text`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_csr_user_id" integer`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "route_source" text`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "routed_at" timestamp with time zone`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "accepted_at" timestamp with time zone`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "promised_minutes" integer DEFAULT 30`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "estimated_ready_at" timestamp with time zone`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "ready_at" timestamp with time zone`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "eta_adjusted_by_supervisor" boolean NOT NULL DEFAULT false`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "purged_at" timestamp with time zone`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "audit_token" text`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "alavont_cart_snapshot" jsonb`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "lucifer_checkout_snapshot" jsonb`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "final_confirmation_at" timestamp with time zone`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "legal_disclaimer_accepted" boolean NOT NULL DEFAULT false`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "legal_disclaimer_text" text`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "checkout_conversion_snapshot" jsonb`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "selected_payment_method" text`,
-    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "payment_method" text`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "cash_bank_start" numeric(10,2) DEFAULT 0`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "cash_bank_end" numeric(10,2)`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "cash_bank_end_reported" numeric(10,2)`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "tip_percent_selected" numeric(5,2)`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "tip_amount" numeric(10,2)`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "difference_amount" numeric(10,2) DEFAULT 0`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "deposit_amount" numeric(10,2)`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "supervisor_id" integer`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "supervisor_confirmed_at" timestamp with time zone`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "payment_totals_json" json`,
-    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "summary" json`,
-  ];
-  for (const stmt of statements) {
-    await db.execute(sql.raw(stmt));
-  }
-  reportSchemaEnsured = true;
+function requireCompleteReportRows<T>(rows: T[], resource: string): T[] {
+  if (rows.length > REPORT_MAX_ROWS) throw new ReportTooLargeError(resource);
+  return rows;
 }
 
 function money(value: unknown): number {
@@ -113,6 +73,20 @@ function parseFilters(query: Record<string, unknown>): ReportFilters {
 
 type ReportOrder = Pick<typeof ordersTable.$inferSelect, "id" | "tenantId" | "createdAt" | "assignedCsrUserId" | "paymentMethod" | "paymentStatus" | "total">;
 
+function paymentReportLabel(order: ReportOrder, fundingSource: string | null | undefined): string {
+  const method = order.paymentMethod ?? "cash";
+  if (!method.includes("paypal")) return method === "customer_credit" ? "Customer credit" : method === "cash" ? "Cash" : method;
+  switch (fundingSource) {
+    case "paypal": return "PayPal";
+    case "venmo": return "Venmo";
+    case "apple_pay": return "Apple Pay";
+    case "google_pay": return "Google Pay";
+    case "credit": return "Credit card";
+    case "debit": return "Debit card";
+    default: return "Unspecified digital";
+  }
+}
+
 function filterOrders<T extends ReportOrder>(orders: T[], filters: ReportFilters): T[] {
   return orders.filter((order) => {
     const createdAt = new Date(order.createdAt);
@@ -124,8 +98,11 @@ function filterOrders<T extends ReportOrder>(orders: T[], filters: ReportFilters
   });
 }
 
-function csvEscape(value: unknown): string {
-  const s = String(value ?? "");
+export function csvEscape(value: unknown): string {
+  const raw = String(value ?? "");
+  // Spreadsheet applications evaluate these prefixes as formulas. Preserve
+  // the literal value in exports without mutating report data.
+  const s = /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -143,11 +120,10 @@ function personName(user: { firstName?: string | null; lastName?: string | null 
   return name || `CSR #${id}`;
 }
 
-async function loadStockRows(tenantId: number | undefined): Promise<StockLocationRow[]> {
-  if (tenantId == null) return [];
+async function loadStockRows(tenantId: number): Promise<StockLocationRow[]> {
   const probe = resultRows<{ present: string | null }>(await db.execute(sql`SELECT to_regclass('public.inventory_balances') AS present`));
   if (!probe[0]?.present) return [];
-  return resultRows<Record<string, unknown>>(await db.execute(sql`
+  const rows = requireCompleteReportRows(resultRows<Record<string, unknown>>(await db.execute(sql`
     SELECT DISTINCT ON (ii.id, il.id)
       ii.id AS "inventoryItemId",
       cp.name AS "productName",
@@ -185,8 +161,9 @@ async function loadStockRows(tenantId: number | undefined): Promise<StockLocatio
       AND COALESCE(ci.metadata->>'safeOnlyDuplicate', 'false') <> 'true'
       AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
     ORDER BY ii.id, il.id, co.id
-    LIMIT 800
-  `)).map((row): StockLocationRow => ({
+    LIMIT ${REPORT_MAX_ROWS + 1}
+  `)), "Inventory report rows");
+  return rows.map((row): StockLocationRow => ({
     inventoryItemId: Number(row.inventoryItemId),
     productName: String(row.productName ?? "Item"),
     optionLabel: String(row.optionLabel ?? "Standard"),
@@ -202,25 +179,23 @@ async function loadStockRows(tenantId: number | undefined): Promise<StockLocatio
   }));
 }
 
-async function buildReport(tenantId: number | undefined, query: Record<string, unknown>) {
-  await ensureReportSchema();
+async function buildReport(tenantId: number, query: Record<string, unknown>) {
   const filters = parseFilters(query);
-  const [orders, shifts, users] = await Promise.all([
-    tenantId == null
-      ? db.select({ id: ordersTable.id, tenantId: ordersTable.tenantId, createdAt: ordersTable.createdAt, assignedCsrUserId: ordersTable.assignedCsrUserId, paymentMethod: ordersTable.paymentMethod, paymentStatus: ordersTable.paymentStatus, total: ordersTable.total }).from(ordersTable).orderBy(desc(ordersTable.createdAt)).limit(500)
-      : db.select({ id: ordersTable.id, tenantId: ordersTable.tenantId, createdAt: ordersTable.createdAt, assignedCsrUserId: ordersTable.assignedCsrUserId, paymentMethod: ordersTable.paymentMethod, paymentStatus: ordersTable.paymentStatus, total: ordersTable.total }).from(ordersTable).where(eq(ordersTable.tenantId, tenantId)).orderBy(desc(ordersTable.createdAt)).limit(500),
-    tenantId == null
-      ? db.select({ id: labTechShiftsTable.id, tenantId: labTechShiftsTable.tenantId, createdAt: labTechShiftsTable.createdAt, techId: labTechShiftsTable.techId, status: labTechShiftsTable.status, clockedInAt: labTechShiftsTable.clockedInAt, clockedOutAt: labTechShiftsTable.clockedOutAt, summary: labTechShiftsTable.summary, differenceAmount: labTechShiftsTable.differenceAmount, depositAmount: labTechShiftsTable.depositAmount }).from(labTechShiftsTable).orderBy(desc(labTechShiftsTable.createdAt)).limit(200)
-      : db.select({ id: labTechShiftsTable.id, tenantId: labTechShiftsTable.tenantId, createdAt: labTechShiftsTable.createdAt, techId: labTechShiftsTable.techId, status: labTechShiftsTable.status, clockedInAt: labTechShiftsTable.clockedInAt, clockedOutAt: labTechShiftsTable.clockedOutAt, summary: labTechShiftsTable.summary, differenceAmount: labTechShiftsTable.differenceAmount, depositAmount: labTechShiftsTable.depositAmount }).from(labTechShiftsTable).where(eq(labTechShiftsTable.tenantId, tenantId)).orderBy(desc(labTechShiftsTable.createdAt)).limit(200),
-    tenantId == null
-      ? db.select({ id: usersTable.id, tenantId: usersTable.tenantId, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email }).from(usersTable)
-      : db.select({ id: usersTable.id, tenantId: usersTable.tenantId, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email }).from(usersTable).where(eq(usersTable.tenantId, tenantId)),
+  const [orders, shifts, users, paymentAttempts] = await Promise.all([
+    db.select({ id: ordersTable.id, tenantId: ordersTable.tenantId, createdAt: ordersTable.createdAt, assignedCsrUserId: ordersTable.assignedCsrUserId, paymentMethod: ordersTable.paymentMethod, paymentStatus: ordersTable.paymentStatus, total: ordersTable.total }).from(ordersTable).where(eq(ordersTable.tenantId, tenantId)).orderBy(desc(ordersTable.createdAt)).limit(REPORT_MAX_ROWS + 1),
+    db.select({ id: labTechShiftsTable.id, tenantId: labTechShiftsTable.tenantId, createdAt: labTechShiftsTable.createdAt, techId: labTechShiftsTable.techId, status: labTechShiftsTable.status, clockedInAt: labTechShiftsTable.clockedInAt, clockedOutAt: labTechShiftsTable.clockedOutAt, summary: labTechShiftsTable.summary, differenceAmount: labTechShiftsTable.differenceAmount, depositAmount: labTechShiftsTable.depositAmount }).from(labTechShiftsTable).where(eq(labTechShiftsTable.tenantId, tenantId)).orderBy(desc(labTechShiftsTable.createdAt)).limit(REPORT_MAX_ROWS + 1),
+    db.select({ id: usersTable.id, tenantId: usersTable.tenantId, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email }).from(usersTable).where(eq(usersTable.tenantId, tenantId)).limit(REPORT_MAX_ROWS + 1),
+    db.select({ orderId: paymentAttemptsTable.orderId, fundingSource: paymentAttemptsTable.fundingSource, createdAt: paymentAttemptsTable.createdAt }).from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, tenantId), eq(paymentAttemptsTable.state, "captured"))).orderBy(desc(paymentAttemptsTable.createdAt)).limit(REPORT_MAX_ROWS + 1),
   ]);
+  requireCompleteReportRows(orders, "Orders");
+  requireCompleteReportRows(shifts, "Shifts");
+  requireCompleteReportRows(users, "Users");
+  requireCompleteReportRows(paymentAttempts, "Payment attempts");
   // Order items have no tenant column. Resolve their IDs only through orders
   // already selected in the authenticated tenant scope.
   const orderIds = orders.map((order) => order.id);
   const items = orderIds.length
-    ? await db.select({ orderId: orderItemsTable.orderId, catalogItemName: orderItemsTable.catalogItemName, quantity: orderItemsTable.quantity, totalPrice: orderItemsTable.totalPrice, createdAt: orderItemsTable.createdAt }).from(orderItemsTable).where(inArray(orderItemsTable.orderId, orderIds)).orderBy(desc(orderItemsTable.createdAt)).limit(2000)
+    ? requireCompleteReportRows(await db.select({ orderId: orderItemsTable.orderId, catalogItemName: orderItemsTable.catalogItemName, quantity: orderItemsTable.quantity, totalPrice: orderItemsTable.totalPrice, createdAt: orderItemsTable.createdAt }).from(orderItemsTable).where(inArray(orderItemsTable.orderId, orderIds)).orderBy(desc(orderItemsTable.createdAt)).limit(REPORT_MAX_ROWS + 1), "Order items")
     : [];
 
   let filteredOrders = filterOrders(orders, filters);
@@ -240,6 +215,8 @@ async function buildReport(tenantId: number | undefined, query: Record<string, u
   });
   const filteredShifts = filters.csrId ? shifts.filter((shift) => shift.techId === filters.csrId) : shifts;
   const paidOrders = filteredOrders.filter((order) => order.paymentStatus === "paid");
+  const fundingByOrder = new Map<number, string | null>();
+  for (const attempt of paymentAttempts) if (!fundingByOrder.has(attempt.orderId)) fundingByOrder.set(attempt.orderId, attempt.fundingSource);
   const revenue = paidOrders.reduce((sum, order) => sum + money(order.total), 0);
   const averageOrderValue = paidOrders.length > 0 ? revenue / paidOrders.length : 0;
 
@@ -254,7 +231,7 @@ async function buildReport(tenantId: number | undefined, query: Record<string, u
 
   const byPayment = new Map<string, { method: string; orders: number; revenue: number }>();
   for (const order of paidOrders) {
-    const method = order.paymentMethod ?? "cash";
+    const method = paymentReportLabel(order, fundingByOrder.get(order.id));
     const row = byPayment.get(method) ?? { method, orders: 0, revenue: 0 };
     row.orders += 1;
     row.revenue += money(order.total);
@@ -328,12 +305,12 @@ async function buildReport(tenantId: number | undefined, query: Record<string, u
       activeShiftCount: filteredShifts.filter((shift) => shift.status === "active").length,
       discrepancyTotal: workforce.reduce((sum, row) => sum + row.differenceAmount, 0),
     },
-    salesTrend: Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date)).slice(-30),
+    salesTrend: Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date)),
     salesByCsr: Array.from(byCsr.values()).sort((a, b) => b.revenue - a.revenue),
     hourOfDay: hours,
     weekdayTrend: weekdays,
     paymentTrend: Array.from(byPayment.values()).sort((a, b) => b.revenue - a.revenue),
-    productPerformance: Array.from(byProduct.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 30),
+    productPerformance: Array.from(byProduct.values()).sort((a, b) => b.revenue - a.revenue),
     inventory: inventoryRollup(stock),
     inventoryLocations: stock.filter((row) => row.eligible).map((row) => ({
       product: row.optionLabel === "Standard" ? row.productName : `${row.productName} — ${row.optionLabel}`,
@@ -345,7 +322,7 @@ async function buildReport(tenantId: number | undefined, query: Record<string, u
     suggestedOrder: suggestedOrderLines(stock),
     csrOptions: [...csrIds].map((id) => ({ id, name: personName(usersById.get(id), id) })).sort((a, b) => a.name.localeCompare(b.name)),
     workforce,
-    receipts: filteredOrders.slice(0, 50).map((order) => ({
+    receipts: filteredOrders.map((order) => ({
       orderId: order.id,
       createdAt: order.createdAt,
       total: money(order.total),
@@ -356,11 +333,13 @@ async function buildReport(tenantId: number | undefined, query: Record<string, u
 }
 
 router.get("/admin/reports/summary", ...authChain, async (req, res): Promise<void> => {
-  res.json(await buildReport(req.authorizedTenantId, req.query));
+  try { res.json(await buildReport(req.authorizedTenantId!, req.query)); }
+  catch (error) { res.status((error as { status?: number }).status ?? 500).json({ error: (error as Error).message }); }
 });
 
 router.get("/admin/reports/export.csv", ...authChain, async (req, res): Promise<void> => {
-  const report = await buildReport(req.authorizedTenantId, req.query);
+  try {
+  const report = await buildReport(req.authorizedTenantId!, req.query);
   const lines = [
     ["section", "name", "count", "revenue"].map(csvEscape).join(","),
     ...report.salesTrend.map(row => ["sales_trend", row.date, row.orders, row.revenue].map(csvEscape).join(",")),
@@ -376,6 +355,7 @@ router.get("/admin/reports/export.csv", ...authChain, async (req, res): Promise<
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", "attachment; filename=\"myorder-reports.csv\"");
   res.send(`${lines.join("\n")}\n`);
+  } catch (error) { res.status((error as { status?: number }).status ?? 500).json({ error: (error as Error).message }); }
 });
 
 export async function salesTaxReport(tenantId: number, query: Record<string, unknown>) {

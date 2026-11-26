@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeStorefrontHost, resolvePublicBrandingForHost, resolveStagingPublicBrandingAlias, type StorefrontBrandingRecord } from "../publicStorefrontBranding";
+import { normalizeStorefrontHost, resolvePublicBrandingForHost, resolveStagingPublicBrandingAlias, resolveProductionPublicBrandingAlias, type StorefrontBrandingRecord } from "../publicStorefrontBranding";
 
 const lucifer: StorefrontBrandingRecord = {
   tenantId: 1,
@@ -53,6 +53,16 @@ describe("public storefront branding", () => {
     expect(resolvePublicBrandingForHost("shop.lucifercruz.com", [lucifer, other])?.customer.displayName).toBe("Lucifer Cruz");
     expect(resolveStagingPublicBrandingAlias("other.example.test", [lucifer, other], config)).toBeNull();
     expect(resolveStagingPublicBrandingAlias("staging.myorder.fun", [lucifer, other], { ...config, tenantId: "2" })?.customer.displayName).toBe("Other Store");
+  });
+
+  it("requires an explicit production alias and never overrides canonical domain ownership", () => {
+    const config = { runtimeEnvironment: "production", host: "myorder.fun", tenantId: "1" };
+    expect(resolveProductionPublicBrandingAlias("myorder.fun", [lucifer, other], config)?.customer.displayName).toBe("Lucifer Cruz");
+    expect(resolveProductionPublicBrandingAlias("evil.test", [lucifer, other], config)).toBeNull();
+    expect(resolveProductionPublicBrandingAlias("myorder.fun", [lucifer, other], { ...config, tenantId: undefined })).toBeNull();
+    expect(resolveProductionPublicBrandingAlias("myorder.fun", [lucifer, other], { ...config, runtimeEnvironment: "staging" })).toBeNull();
+    expect(resolveProductionPublicBrandingAlias("myorder.fun", [lucifer, { ...other, storefrontUrl: "https://myorder.fun" }], config)).toBeNull();
+    expect(resolvePublicBrandingForHost("shop.lucifercruz.com", [lucifer, other])?.customer.displayName).toBe("Lucifer Cruz");
   });
 
   it("fails closed when the alias is incomplete, malformed, or outside staging", () => {

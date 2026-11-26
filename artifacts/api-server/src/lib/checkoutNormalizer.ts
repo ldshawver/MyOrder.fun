@@ -165,11 +165,10 @@ function generatedSafeMerchantSku(catalogItemId: number): string {
   return `LC-${catalogItemId}`;
 }
 
-function saleIsActive(metadata: unknown): boolean {
-  return Boolean(metadata && typeof metadata === "object" && !Array.isArray(metadata)
-    && (metadata as Record<string, unknown>).activeSale === true);
-}
-
+/**
+ * An explicit activeSale setting takes precedence. Older catalogue entries
+ * can use their Sale flag when a sale price was also configured.
+ */
 export function resolveEffectiveCatalogUnitPrice(input: {
   price: string | number;
   regularPrice?: string | number | null;
@@ -181,20 +180,19 @@ export function resolveEffectiveCatalogUnitPrice(input: {
     ? input.price
     : input.regularPrice;
   const regularCents = dollarsToCents(regular);
-  const importedSale = saleIsActive(input.metadata);
-  // The catalog Sale checkbox is isSaleFeatured. A filled Sale Price
-  // (compareAtPrice) is charged when that option is on.
-  const clickedSale = input.isSaleFeatured === true;
-  if (!importedSale && !clickedSale) return regularCents / 100;
-  if (input.compareAtPrice == null || String(input.compareAtPrice).trim() === "") {
-    if (importedSale) throw new Error("Active sale requires a sale price");
-    return regularCents / 100;
+  const activeSale = input.metadata != null
+    && typeof input.metadata === "object"
+    && !Array.isArray(input.metadata)
+    ? (input.metadata as Record<string, unknown>).activeSale
+    : undefined;
+
+  const hasSalePrice = input.compareAtPrice != null && String(input.compareAtPrice).trim() !== "";
+  if (activeSale !== true && !(activeSale === undefined && input.isSaleFeatured === true && hasSalePrice)) return regularCents / 100;
+  if (!hasSalePrice) {
+    throw new Error("Active sale requires a sale price");
   }
-  const saleCents = dollarsToCents(input.compareAtPrice);
-  if (saleCents > regularCents) {
-    if (importedSale) throw new Error("Sale price cannot exceed regular price");
-    return regularCents / 100;
-  }
+  const saleCents = dollarsToCents(input.compareAtPrice!);
+  if (saleCents > regularCents) throw new Error("Sale price cannot exceed regular price");
   return saleCents / 100;
 }
 
@@ -305,6 +303,9 @@ export async function normalizeCheckoutCart(
     ) ?? "Converted into a customer-ready branded checkout presentation.";
     const customer_safe_name = branded_name;
     const customer_safe_description = customerSafeDescription;
+    // The explicitly curated merchant category is the canonical customer-safe
+    // category. The mapped Lucifer Cruz category remains a legacy fallback;
+    // neither raw catalog nor supplier categories are accepted here.
     const customer_safe_category = firstNonEmpty(ci.merchantCategory, ci.luciferCruzCategory);
     const customer_safe_image = firstNonEmpty(ci.merchantImage);
     if (requireCompleteSafeFields) {
@@ -322,17 +323,17 @@ export async function normalizeCheckoutCart(
         );
       }
     }
-    let effectiveRetailPrice: number;
+    let retailUnitPrice: number;
     try {
-      effectiveRetailPrice = resolveEffectiveCatalogUnitPrice(ci);
+      retailUnitPrice = resolveEffectiveCatalogUnitPrice(ci);
     } catch (error) {
       throw new CheckoutMappingError(
         line.catalogItemId,
         "invalid_sale_price_configuration",
-        error instanceof Error ? error.message : "Sale price configuration is invalid",
+        error instanceof Error ? error.message : "Invalid sale price configuration",
       );
     }
-    const unit_price = resolveEmployeeUnitPrice(effectiveRetailPrice, ci.homiePrice as string | null, employeePricing?.isCurrentEmployee === true);
+    const unit_price = resolveEmployeeUnitPrice(retailUnitPrice, ci.homiePrice as string | null, employeePricing?.isCurrentEmployee === true);
     const line_subtotal = parseFloat((unit_price * line.quantity).toFixed(2));
 
     const normalizedLine: NormalizedCartLine = {

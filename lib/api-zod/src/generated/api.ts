@@ -285,6 +285,7 @@ export const ListCatalogItemsResponse = zod.object({
   "metadata": zod.record(zod.string(), zod.unknown()).optional(),
   "isFeatured": zod.boolean().optional(),
   "isSaleFeatured": zod.boolean().optional(),
+  "activeSale": zod.boolean().optional(),
   "alavontName": zod.string().nullish(),
   "alavontDescription": zod.string().nullish(),
   "alavontCategory": zod.string().nullish(),
@@ -343,6 +344,7 @@ export const CreateCatalogItemBody = zod.object({
 })).optional(),
   "isFeatured": zod.boolean().optional(),
   "isSaleFeatured": zod.boolean().optional(),
+  "activeSale": zod.boolean().optional(),
   "tags": zod.array(zod.string()).optional(),
   "internalName": zod.string().nullish(),
   "internalDescription": zod.string().nullish(),
@@ -444,6 +446,7 @@ export const GetCatalogItemResponse = zod.object({
   "metadata": zod.record(zod.string(), zod.unknown()).optional(),
   "isFeatured": zod.boolean().optional(),
   "isSaleFeatured": zod.boolean().optional(),
+  "activeSale": zod.boolean().optional(),
   "alavontName": zod.string().nullish(),
   "alavontDescription": zod.string().nullish(),
   "alavontCategory": zod.string().nullish(),
@@ -510,6 +513,7 @@ export const UpdateCatalogItemBody = zod.object({
 })).optional(),
   "isFeatured": zod.boolean().optional(),
   "isSaleFeatured": zod.boolean().optional(),
+  "activeSale": zod.boolean().optional(),
   "tags": zod.array(zod.string()).optional(),
   "internalName": zod.string().nullish(),
   "internalDescription": zod.string().nullish(),
@@ -828,7 +832,8 @@ export const CreateOrderBody = zod.object({
   "special_instructions": zod.string().optional()
 })).optional()
 }).optional(),
-  "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery']).nullish(),
+  "carrierQuoteId": zod.string().min(1).optional(),
+  "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery', 'carrier']).nullish(),
   "pickupLocationId": zod.number().min(1).optional(),
   "pickupAt": zod.coerce.date().optional(),
   "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).nullish()

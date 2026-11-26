@@ -144,6 +144,10 @@ vi.mock("../../config/tenantConfig", () => ({
 vi.mock("../../config/brandingConfig", () => ({ getBranding: async () => ({ supplier: { displayName: "Lucifer Cruz" } }) }));
 vi.mock("../../lib/logger", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } }));
 vi.mock("sharp", () => ({ default: vi.fn() }));
+vi.mock("../../lib/print/receiptLogo", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../lib/print/receiptLogo")>(),
+  composeLuciferReceiptPdf: async () => Buffer.from("%PDF-TEST-RECEIPT"),
+}));
 
 const { default: printRouter } = await import("../print");
 const { renderOrderReceipt, loadReceiptData } = await import("../../lib/print/receiptPipeline");
@@ -367,6 +371,11 @@ describe("automatic and reprint receipts share one path (source contract)", () =
     expect(receiptBranch).toContain("renderAutomaticReceipt(tenantId, order.id, printOrder, columns)");
     expect(receiptBranch).toContain('documentType: "ORDER_RECEIPT"');
     expect(receiptBranch).toContain('loadReceiptData(tenantId, order.id, "alavont_only")');
+    expect(receiptBranch).toContain('documentType: "EXPO"');
+    expect(receiptBranch).toContain('jobType: "expo_ticket"');
+    expect(receiptBranch).not.toContain('documentType: "WORK"');
+    expect(receiptBranch).not.toContain('jobType: "order_ticket"');
+    expect(receiptBranch).not.toContain("buildWorkTicket");
     expect(receiptBranch).not.toContain("renderCustomerReceipt(printOrder)");
   });
 

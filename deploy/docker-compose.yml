@@ -58,6 +58,9 @@ services:
     environment:
       PORT: "8080"
       NODE_ENV: production
+      # Explicit public alias; independent of signup and authenticated identities.
+      PUBLIC_STOREFRONT_HOST: ${PUBLIC_STOREFRONT_HOST:-}
+      PUBLIC_STOREFRONT_TENANT_ID: ${PUBLIC_STOREFRONT_TENANT_ID:-}
       DATABASE_URL: ${DATABASE_URL}
       # Pass DEPLOY_SHA straight from the deploy shell into the container at
       # runtime (the bare-key form looks up the variable in the host env every

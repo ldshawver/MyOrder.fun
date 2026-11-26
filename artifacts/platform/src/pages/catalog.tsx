@@ -84,6 +84,7 @@ type ExtendedCatalogItem = CatalogItem & {
   mediaGallery?: Array<{ type?: "image" | "video"; src: string; alt?: string | null }>;
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  activeSale?: boolean;
   parLevel?: string | number | null;
   moq?: string | number | null;
   preferredReorderQuantity?: string | number | null;
@@ -175,15 +176,16 @@ function CatalogItemCard({
   const primaryImage = isLC
     ? (item.luciferCruzImageUrl?.trim() || media[0]?.src?.trim() || item.imageUrl?.trim() || null)
     : (item.imageUrl?.trim() || item.alavontImageUrl?.trim() || media[0]?.src?.trim() || null);
-  const hasSale = item.isSaleFeatured || (item.compareAtPrice && Number(item.compareAtPrice) > Number(item.price));
-  const customerView = customerPreview || !canEdit;
-  const salePrice = item.isSaleFeatured && item.compareAtPrice != null
-    && Number(item.compareAtPrice) <= Number(item.regularPrice ?? item.price)
-    ? item.compareAtPrice
+  // The sale badge is intentionally independent from whether checkout charges
+  // the configured sale price.
+  const hasSale = item.isSaleFeatured === true;
+  const regularPrice = Number(item.regularPrice ?? item.price);
+  const activeSalePrice = item.activeSale === true
+    && item.compareAtPrice != null
+    && Number(item.compareAtPrice) <= regularPrice
+    ? Number(item.compareAtPrice)
     : null;
-  const listedPrice = selectedOption?.price
-    ?? (!customerView ? salePrice : null)
-    ?? (isLC && item.regularPrice && !(customerView && item.isSaleFeatured) ? item.regularPrice : item.price);
+  const listedPrice = selectedOption?.price ?? activeSalePrice ?? (isLC && item.regularPrice ? item.regularPrice : item.price);
 
   return (
     <div
@@ -306,6 +308,11 @@ function CatalogItemCard({
                 ? "Select an option for price"
                 : `$${parseFloat(String(listedPrice)).toFixed(2)}`}
             </span>
+            {!selectedOption && activeSalePrice != null && item.regularPrice != null && (
+              <span className="text-xs text-muted-foreground line-through">
+                ${regularPrice.toFixed(2)}
+              </span>
+            )}
           </div>
           {item.showCatalogueStockIndicator !== false && item.stockQuantity !== undefined && !isLC && (!product || product.options.length === 1) && (
             <span className={`text-[10px] font-mono ${item.stockQuantity === 0 ? "text-red-400" : "text-muted-foreground/70"}`}>

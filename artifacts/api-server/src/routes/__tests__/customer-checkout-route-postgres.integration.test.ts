@@ -180,7 +180,7 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
     // inventory item from the catalogue row; checkout requires them active.
     const option = await pool.query("SELECT 1 FROM catalogue_options co JOIN catalogue_products cp ON cp.id = co.product_id WHERE co.tenant_id = $1 AND co.catalog_item_id = $2 AND co.active AND cp.active AND co.inventory_item_id IS NOT NULL", [tenantId, item.id]);
     if (option.rowCount !== 1) throw new Error("Expected an active storefront catalogue option for the checkout fixture item");
-    // Pickup open all day, every day, so immediate pickup is always valid.
+    // Provide a noon pickup slot every day, including when CI runs at midnight.
     const allDay = Array.from({ length: 7 }, (_, dayOfWeek) => ({ dayOfWeek, intervals: [{ open: "00:00", close: "23:59" }] }));
     await pool.query(
       "INSERT INTO location_pickup_schedules(tenant_id,location_id,time_zone,weekly_hours,exceptions,slot_minutes,max_advance_days,version) VALUES($1,$2,'UTC',$3::jsonb,'[]'::jsonb,15,7,1)",
@@ -217,8 +217,10 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
     const quantity = options.quantity ?? 1;
     const converted = await convert(who, quantity);
     expect(converted.status, converted.text).toBe(200);
+    const now = new Date();
+    const pickupAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 12)).toISOString();
     const quote = await as(who).post("/api/checkout/quote").send({
-      items: [{ catalogItemId, quantity }], paymentMethod: "cash", deliveryMethod: "pickup", pickupLocationId,
+      items: [{ catalogItemId, quantity }], paymentMethod: "cash", deliveryMethod: "pickup", pickupLocationId, pickupAt,
     });
     expect(quote.status, quote.text).toBe(200);
     const confirmed = { ...confirmation(), paymentMethod: options.paymentMethod ?? "cash", checkoutTaxQuoteToken: quote.body.checkoutTaxQuoteToken, ...options.confirmation };
@@ -230,6 +232,7 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
       selectedPaymentMethod: options.paymentMethod ?? "cash",
       paymentMethod: options.paymentMethod ?? "cash",
       pickupLocationId,
+      pickupAt,
       checkoutConfirmation: confirmed,
       ...options.extra,
     });
@@ -254,6 +257,11 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
 
     const created = await placeOrder("legacyCustomer");
     expect(created.status, created.text).toBe(201);
+    const orderId = created.body.id;
+    for (const path of ["/api/orders", `/api/orders/${orderId}`, `/api/orders/${orderId}/stage`, `/api/orders/${orderId}/notes`]) {
+      const response = await as("legacyCustomer").get(path);
+      expect(response.status, response.text).toBe(200);
+    }
 
     // Server-side pricing: the catalogue price is authoritative. Cash does
     // not add sales tax. Client totals are ignored.

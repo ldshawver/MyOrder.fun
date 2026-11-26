@@ -36,8 +36,8 @@ import { requirePermission } from "../lib/roles";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
 import { quantityUnits } from "../lib/exactQuantity";
 import { formatMoneyCents, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents, ShiftCloseoutConflictError, ShiftCloseoutSerializationError, withSerializableRetry } from "../lib/shiftCloseoutFinancials";
-import { calculateShiftEarnings, type ShiftEarningOrder } from "../lib/shiftEarnings";
-import { applyAccountabilityOffsets, calculateShiftInventoryAccountability, CONTRACTOR_SHORTAGE_REMAINDER_POLICY, type ShiftInventoryAccountabilityInput } from "../lib/shiftInventoryAccountability";
+import { calculateShiftEarnings, shiftSaleGrossAmount, type ShiftEarningOrder } from "../lib/shiftEarnings";
+import { applyAccountabilityOffsets, calculateShiftInventoryAccountability, inventoryExceptionMatches, isUnavailableCountBlocker, CONTRACTOR_SHORTAGE_REMAINDER_POLICY, type ShiftInventoryAccountabilityInput } from "../lib/shiftInventoryAccountability";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
 import { locallyManagedSellableCatalogWhere } from "../lib/localInventoryEligibility";
 import { shiftDeliveryMode, type ShiftDeliveryMode } from "../lib/shiftDeliveryMode";
@@ -138,7 +138,7 @@ function logAndSendShiftDatabaseError(
  */
 async function printShiftDocuments(
   args: { tenantId: number | null; shiftId: number; operatorUserId: number },
-  event: { kind: "clock_in" } | { kind: "clock_out"; figures: import("../lib/print/shiftDocuments").ClockOutFigures },
+  event: { kind: "clock_in" } | { kind: "clock_out"; figures: import("../lib/print/shiftDocuments").ClockOutFigures } | { kind: "supervisor_checkout"; figures: import("../lib/print/shiftDocuments").FinalizedDepositFigures },
 ): Promise<void> {
   if (!args.tenantId) return;
   const tenantId = args.tenantId;
@@ -154,7 +154,8 @@ async function printShiftDocuments(
       await getOperatorProfile(tenantId, args.operatorUserId), { tenantId, shiftId: args.shiftId },
     )).primary;
     if (event.kind === "clock_in") await shiftDocs.printClockInDocuments(ctx, legacyFallback);
-    else await shiftDocs.printClockOutDocuments(ctx, event.figures, legacyFallback);
+    else if (event.kind === "clock_out") await shiftDocs.printClockOutDocuments(ctx, event.figures, legacyFallback);
+    else await shiftDocs.printFinalizedDepositSlip(ctx, event.figures, legacyFallback);
   } catch {
     // Printing must never block shift start/end.
   }
@@ -916,17 +917,20 @@ async function loadShiftEarningOrders(executor: Pick<typeof db, "execute">, tena
   const result = await executor.execute(sql`
     SELECT o.id AS "orderId",o.route_source AS "routeSource",o.payment_status AS "paymentStatus",o.fulfillment_status AS "fulfillmentStatus",
       o.delivery_method AS "deliveryMethod",coalesce(o.delivery_fee,0)::text AS "deliveryFee",
+      o.payment_method AS "paymentMethod",
+      coalesce((o.tax_snapshot #> '{commission,employeeSale}') = 'true'::jsonb, buyer.is_current_employee, false) AS "employeeSale",
       udf.request_state AS "uberRequestState",udf.provider_delivery_id AS "uberProviderDeliveryId",udf.provider_status AS "uberProviderStatus",
       coalesce(o.checkout_conversion_snapshot#>>'{tip,amount}','0') AS "tipAmount",
       oi.id AS "orderItemId",oi.commission_eligibility_snapshot AS "eligibility",
-      oi.commission_gross_amount::text AS "grossAmount",oi.commission_discount_amount::text AS "discountAmount",
+      (${shiftSaleGrossAmount})::text AS "grossAmount",oi.commission_discount_amount::text AS "discountAmount",
       coalesce(sum(CASE WHEN rt.status='completed' THEN rl.unit_value ELSE 0 END),0)::text AS "refundedAmount"
     FROM orders o JOIN order_items oi ON oi.order_id=o.id
+    LEFT JOIN users buyer ON buyer.id=o.customer_id AND (buyer.tenant_id=o.tenant_id OR buyer.tenant_id IS NULL)
     LEFT JOIN uber_delivery_fulfillments udf ON udf.tenant_id=o.tenant_id AND udf.order_id=o.id
     LEFT JOIN return_transactions rt ON rt.tenant_id=o.tenant_id AND rt.order_id=o.id
     LEFT JOIN return_lines rl ON rl.return_transaction_id=rt.id AND rl.order_item_id=oi.id
     WHERE o.tenant_id=${tenantId} AND o.assigned_shift_id=${shiftId}
-    GROUP BY o.id,oi.id,udf.request_state,udf.provider_delivery_id,udf.provider_status
+    GROUP BY o.id,oi.id,buyer.is_current_employee,udf.request_state,udf.provider_delivery_id,udf.provider_status
     ORDER BY o.id,oi.id
   `);
   const rows = Array.isArray(result) ? result as Array<Record<string, unknown>> : ((result as { rows?: Array<Record<string, unknown>> }).rows ?? []);
@@ -935,7 +939,7 @@ async function loadShiftEarningOrders(executor: Pick<typeof db, "execute">, tena
     const orderId = Number(row.orderId);
     let order = byOrder.get(orderId);
     if (!order) {
-      order = { orderId, routeSource: row.routeSource == null ? null : String(row.routeSource), paymentStatus: String(row.paymentStatus), deliveryMethod: row.deliveryMethod == null ? null : String(row.deliveryMethod), fulfillmentStatus: row.fulfillmentStatus == null ? null : String(row.fulfillmentStatus), uberRequestState: row.uberRequestState == null ? null : String(row.uberRequestState), uberProviderDeliveryId: row.uberProviderDeliveryId == null ? null : String(row.uberProviderDeliveryId), uberProviderStatus: row.uberProviderStatus == null ? null : String(row.uberProviderStatus), deliveryFee: row.deliveryFee, tipAmount: row.tipAmount, lines: [] };
+      order = { orderId, routeSource: row.routeSource == null ? null : String(row.routeSource), paymentStatus: String(row.paymentStatus), employeeSale: row.employeeSale === true, paymentMethod: row.paymentMethod == null ? null : String(row.paymentMethod), deliveryMethod: row.deliveryMethod == null ? null : String(row.deliveryMethod), fulfillmentStatus: row.fulfillmentStatus == null ? null : String(row.fulfillmentStatus), uberRequestState: row.uberRequestState == null ? null : String(row.uberRequestState), uberProviderDeliveryId: row.uberProviderDeliveryId == null ? null : String(row.uberProviderDeliveryId), uberProviderStatus: row.uberProviderStatus == null ? null : String(row.uberProviderStatus), deliveryFee: row.deliveryFee, tipAmount: row.tipAmount, lines: [] };
       byOrder.set(orderId, order);
     }
     order.lines.push({ orderItemId: Number(row.orderItemId), eligibility: String(row.eligibility) as ShiftEarningOrder["lines"][number]["eligibility"], grossAmount: row.grossAmount, discountAmount: row.discountAmount, refundedAmount: row.refundedAmount });
@@ -1540,13 +1544,18 @@ router.post(
 
     if (!activeShift) { res.status(404).json({ error: "No active shift" }); return; }
 
-    const {
-      endingInventory,
-      cashBankEnd,
-    } = req.body as {
-      endingInventory?: { shiftInventoryItemId: number; quantityEndActual: number }[];
-      cashBankEnd?: number; // rep-reported ending cash bank
-    };
+    const submitted = z.object({
+      endingInventory: z.array(z.object({
+        shiftInventoryItemId: z.number().int().positive(),
+        quantityEndActual: z.number().finite().nonnegative(),
+      }).strict()),
+      cashBankEnd: z.number().finite().nonnegative(),
+    }).strict().safeParse(req.body);
+    if (!submitted.success) {
+      res.status(422).json({ error: "Enter valid ending inventory and cash counts before ending the shift." });
+      return;
+    }
+    const { endingInventory, cashBankEnd } = submitted.data;
 
     const stats = await computeShiftStats(activeShift.id, activeShift.tenantId ?? null, req);
 
@@ -1560,8 +1569,13 @@ router.post(
 
     // Apply actual ending counts from form if provided
     const actualMap = new Map<number, number>(
-      (endingInventory ?? []).map(e => [e.shiftInventoryItemId, e.quantityEndActual])
+      endingInventory.map(e => [e.shiftInventoryItemId, e.quantityEndActual])
     );
+    const countable = enriched.filter(item => item.rowType === "item");
+    if (actualMap.size !== endingInventory.length || actualMap.size !== countable.length || countable.some(item => !actualMap.has(item.id))) {
+      res.status(422).json({ error: "Enter one physical ending count for each item on this shift." });
+      return;
+    }
 
     // Persist ending quantities and actual counts
     for (const item of enriched) {
@@ -2300,6 +2314,83 @@ router.get("/shifts/:id/print-assignment", requireRole("global_admin", "admin", 
   res.json({ assignment });
 });
 
+function hasLegacyCalculatedEnding(row: Pick<typeof shiftInventoryItemsTable.$inferSelect, "quantityStart" | "quantitySold" | "quantityEndActual">): boolean {
+  return Number(row.quantityStart) === 0 && row.quantityEndActual !== null &&
+    Number(row.quantitySold) > 0 && Number(row.quantityEndActual) === -Number(row.quantitySold);
+}
+
+const closeoutCorrectionQuantity = z.string().regex(/^\d{1,7}(\.\d{1,3})?$/);
+const closeoutInventoryCorrection = z.object({
+  reason: z.string().trim().min(10).max(500),
+  counts: z.array(z.object({
+    itemId: z.number().int().positive(),
+    counted: closeoutCorrectionQuantity,
+    opening: closeoutCorrectionQuantity.optional(),
+  }).strict()).min(1).max(1000),
+}).strict();
+
+router.post("/shifts/:id/closeout-inventory-correction",
+  requireRole("global_admin", "admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    const shiftId = Number(req.params.id);
+    const tenantId = req.authorizedTenantId;
+    const parsed = closeoutInventoryCorrection.safeParse(req.body);
+    if (!tenantId || !Number.isSafeInteger(shiftId) || shiftId < 1 || !parsed.success) {
+      res.status(400).json({ error: "Enter verified inventory counts and a correction reason." }); return;
+    }
+    const { counts, reason } = parsed.data;
+    if (new Set(counts.map(count => count.itemId)).size !== counts.length) {
+      res.status(400).json({ error: "Enter one correction per inventory row." }); return;
+    }
+    const actor = req.dbUser!;
+    const result = await db.transaction(async tx => {
+      const [shift] = await tx.select().from(labTechShiftsTable)
+        .where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId)))
+        .for("update").limit(1);
+      if (!shift) return 404;
+      if (shift.status !== "supervisor_pending" || !shift.clockedOutAt) return 409;
+      const rows = await tx.select().from(shiftInventoryItemsTable)
+        .where(and(eq(shiftInventoryItemsTable.shiftId, shiftId), eq(shiftInventoryItemsTable.rowType, "item"),
+          inArray(shiftInventoryItemsTable.id, counts.map(count => count.itemId))))
+        .for("update");
+      const byId = new Map(rows.map(row => [row.id, row]));
+      for (const count of counts) {
+        const row = byId.get(count.itemId);
+        if (!row) return 409;
+        // The legacy fallback stored zero minus sales as if it were a count.
+        const legacyEnding = hasLegacyCalculatedEnding(row);
+        if (row.quantityEndActual !== null && !legacyEnding) return 409;
+        if (legacyEnding !== (count.opening !== undefined)) return 409;
+        if (count.opening !== undefined && Number(count.opening) < Number(row.quantitySold)) return 409;
+      }
+      for (const count of counts) {
+        const row = byId.get(count.itemId)!;
+        const expected = sql`(${count.opening ?? row.quantityStart}::numeric - coalesce(${shiftInventoryItemsTable.quantitySold}, 0))`;
+        await tx.update(shiftInventoryItemsTable).set({
+          quantityStart: count.opening ?? row.quantityStart,
+          quantityEndActual: count.counted,
+          quantityEnd: expected,
+          discrepancy: sql`${expected} - ${count.counted}::numeric`,
+          isFlagged: sql`${expected} > ${count.counted}::numeric OR ${expected} < 0`,
+        }).where(and(eq(shiftInventoryItemsTable.id, count.itemId), eq(shiftInventoryItemsTable.shiftId, shiftId)));
+      }
+      await tx.insert(auditLogsTable).values({
+        tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
+        action: "SHIFT_CLOSEOUT_INVENTORY_CORRECTED", resourceType: "lab_tech_shift", resourceId: String(shiftId),
+        metadata: { reason, corrections: counts.map(count => {
+          const row = byId.get(count.itemId)!;
+          return { ...count, previousOpening: row.quantityStart, previousCounted: row.quantityEndActual };
+        }) },
+      });
+      return 200;
+    });
+    if (result !== 200) {
+      res.status(result).json({ error: result === 404 ? "Shift not found" : "The shift or inventory rows no longer qualify for correction. Reload and review the recorded counts." }); return;
+    }
+    res.json({ corrected: counts.length });
+  },
+);
+
 // ─── POST /api/shifts/:id/supervisor-checkout ─────────────────────────────────
 // Supervisor confirms ending inventory and selects the product commission rate.
 router.post(
@@ -2326,13 +2417,18 @@ router.post(
       tipPercent: z.union([z.literal(15), z.literal(16), z.literal(17), z.literal(18)]),
       supervisorReason: z.string().trim().max(500).optional(),
       confirmInventoryAccountability: z.boolean().optional().default(false),
+      unavailableInventory: z.object({
+        itemIds: z.array(z.number().int().positive()).min(1).max(1000)
+          .refine(ids => new Set(ids).size === ids.length),
+        reason: z.string().trim().min(10).max(500),
+      }).strict().optional(),
       remainderPolicy: z.literal(CONTRACTOR_SHORTAGE_REMAINDER_POLICY).optional(),
     }).strict().safeParse(req.body);
     if (!closeoutBody.success) {
       res.status(400).json({ error: "Invalid closeout request", details: closeoutBody.error.issues });
       return;
     }
-    const { tipPercent, supervisorReason, confirmInventoryAccountability, remainderPolicy } = closeoutBody.data;
+    const { tipPercent, supervisorReason, confirmInventoryAccountability, remainderPolicy, unavailableInventory } = closeoutBody.data;
 
     const supervisor = req.dbUser!;
     const idempotencyKey = `shift-closeout:${shift.tenantId}:${shiftId}`;
@@ -2349,9 +2445,14 @@ router.post(
       const [existingPackage] = await tx.select().from(shiftCloseoutPackagesTable)
         .where(and(eq(shiftCloseoutPackagesTable.tenantId, shift.tenantId), eq(shiftCloseoutPackagesTable.shiftId, shiftId))).limit(1);
       if (existingPackage) {
-        const snapshot = existingPackage.snapshotJson as { commissionPercent?: number; tipPercent?: number; supervisorReason?: string | null };
+        const snapshot = existingPackage.snapshotJson as { commissionPercent?: number; tipPercent?: number; supervisorReason?: string | null; inventoryReview?: { reason: string; items: Array<{ shiftInventoryItemId: number }> } | null };
         if ((snapshot.commissionPercent ?? snapshot.tipPercent) !== tipPercent) return { conflict: "SHIFT_CLOSEOUT_COMMISSION_CHANGED" as const };
         if (supervisorReason && snapshot.supervisorReason !== supervisorReason) return { conflict: "SHIFT_CLOSEOUT_REASON_CHANGED" as const };
+        if (unavailableInventory && (
+          snapshot.inventoryReview?.reason !== unavailableInventory.reason ||
+          snapshot.inventoryReview.items.length !== unavailableInventory.itemIds.length ||
+          !snapshot.inventoryReview.items.every(item => unavailableInventory.itemIds.includes(item.shiftInventoryItemId))
+        )) return { conflict: "SHIFT_CLOSEOUT_INVENTORY_REVIEW_CHANGED" as const };
         return { shift: lockedShift, checkout: existingPackage.snapshotJson, replayed: true };
       }
       if (!lockedShift || lockedShift.status !== "supervisor_pending") return { conflict: "SHIFT_CLOSEOUT_STATE_CHANGED" as const };
@@ -2367,15 +2468,23 @@ router.post(
       const stats = await computeShiftStats(shiftId, shift.tenantId, req, tx);
       const snapshotItems = await tx.select().from(shiftInventoryItemsTable)
         .where(eq(shiftInventoryItemsTable.shiftId, shiftId)).orderBy(asc(shiftInventoryItemsTable.displayOrder));
-      const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
       if (!lockedShift.clockedOutAt) return { conflict: "SHIFT_CLOSEOUT_CLOCK_OUT_REQUIRED" as const };
       const inventoryAccountability = await loadShiftInventoryAccountability(tx, shift.tenantId, shiftId, lockedShift.clockedInAt, lockedShift.clockedOutAt);
-      if (inventoryAccountability.blockers.length) return { conflict: "SHIFT_CLOSEOUT_INVENTORY_BLOCKED" as const, details: inventoryAccountability.blockers };
+      const { blockers } = inventoryAccountability;
+      const legacyIds = new Set(snapshotItems.filter(hasLegacyCalculatedEnding).map(item => item.id));
+      const unavailableIds = new Set(unavailableInventory?.itemIds);
+      if (!inventoryExceptionMatches(blockers, unavailableIds, legacyIds)) return { conflict: "SHIFT_CLOSEOUT_INVENTORY_BLOCKED" as const, details: blockers };
+      const inventoryReview = unavailableInventory
+        ? { status: "pending", reason: unavailableInventory.reason, items: blockers }
+        : null;
+      const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem).map(item =>
+        unavailableIds.has(item.id) ? { ...item, quantityEndActual: null, discrepancy: null, isFlagged: true } : item,
+      );
       if (inventoryAccountability.lines.length && (
         !confirmInventoryAccountability || !supervisorReason || supervisorReason.trim().length < 10 || remainderPolicy !== CONTRACTOR_SHORTAGE_REMAINDER_POLICY
       )) return {
         conflict: "SHIFT_CLOSEOUT_INVENTORY_CONFIRMATION_REQUIRED" as const,
-        details: { shortageTotal: inventoryAccountability.total, requiredRemainderPolicy: CONTRACTOR_SHORTAGE_REMAINDER_POLICY },
+        details: { shortageTotal: inventoryAccountability.total, inventoryAccountability, requiredRemainderPolicy: CONTRACTOR_SHORTAGE_REMAINDER_POLICY },
       };
       const differenceAmount = Number(inventoryAccountability.total);
       const earnings = calculateShiftEarnings(await loadShiftEarningOrders(tx, shift.tenantId, shiftId), tipPercent as 15 | 16 | 17 | 18);
@@ -2479,6 +2588,7 @@ router.post(
         csrPayoutBeforeAdjustments: earnings.csrPayout,
         payoutAfterRefundAdjustments: formatMoneyCents(payoutAfterRefundAdjustmentsCents),
         inventoryAccountability: { ...inventoryAccountability, ...offsets },
+        inventoryReview,
         shortageAdjustment: formatMoneyCents(-differenceCents), finalCsrPayout: offsets.netPayout, closeoutLines,
         supervisorReason: inventoryAccountability.lines.length ? supervisorReason!.trim() : null,
         differenceAmount: moneyNumber(differenceCents),
@@ -2491,8 +2601,8 @@ router.post(
         cashBankStart: moneyNumber(openingCashCents), cashBankEndReported: moneyNumber(countedCashCents),
         depositAmount: moneyNumber(depositCents), newCashBalance: moneyNumber(countedCashCents),
         paymentTotals: stats.paymentTotals,
-        commissionRule: { kind: "supervisor_selected_percentage", rate: tipPercent / 100, basis: "discounted_product_sales", exclusions: ["membership", "general_queue", "unclassified", "refunded_amounts"], customerCharge: false },
-        inventory, flaggedItems: inventory.filter(i => i.isFlagged), orderCount: stats.orderCount,
+        commissionRule: { kind: "supervisor_selected_percentage", rate: tipPercent / 100, basis: "net_shift_sales", exclusions: ["employee_sales", "customer_tips", "delivery_fees", "sales_tax", "general_queue", "refunded_amounts", "comp"], customerCharge: false },
+        inventory, flaggedItems: inventory.filter(item => item.isFlagged), orderCount: stats.orderCount,
       };
       const [pkg] = await tx.insert(shiftCloseoutPackagesTable).values({
         tenantId: shift.tenantId, shiftId, locationId: null, supervisorUserId: supervisor.id,
@@ -2568,7 +2678,7 @@ router.post(
         supervisorId: supervisor.id, supervisorConfirmedAt: new Date(), summary: checkout,
       }).where(and(eq(labTechShiftsTable.tenantId, shift.tenantId), eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.status, "supervisor_pending"))).returning();
       if (!finalized) throw new ShiftCloseoutConflictError("SHIFT_CLOSEOUT_STATE_CHANGED");
-      await tx.insert(auditLogsTable).values({ tenantId: shift.tenantId, actorId: supervisor.id, actorEmail: supervisor.email ?? "", actorRole: supervisor.role, action: "SHIFT_CLOSEOUT_PACKAGE_FINALIZED", resourceType: "shift_closeout_package", resourceId: String(pkg.id), metadata: { shiftId, idempotencyKey, commissionSnapshot: true, commissionAmount: earnings.commissionAmount, commissionRefundAdjustment: formatMoneyCents(commissionRefundAdjustmentCents), customerTips: earnings.customerTips, csrDeliveryEarnings: earnings.csrDeliveryEarnings, houseDeliveryShare: earnings.houseDeliveryShare, uberProviderDelivery: earnings.uberProviderDelivery, inventoryShortageAmount: inventoryAccountability.total, inventoryOffsetApplied: formatMoneyCents(requiredNonNegativeMoneyCents(offsets.priorOffsetApplied, "priorOffsetApplied") + requiredNonNegativeMoneyCents(offsets.currentOffsetApplied, "currentOffsetApplied")), inventoryOffsetRemainder: offsets.totalRemainder, inventoryRemainderPolicy: offsets.remainderPolicy, supervisorReason: inventoryAccountability.lines.length ? supervisorReason!.trim() : null, cashDepositExcludesPayoutOffsets: true } });
+      await tx.insert(auditLogsTable).values({ tenantId: shift.tenantId, actorId: supervisor.id, actorEmail: supervisor.email ?? "", actorRole: supervisor.role, action: "SHIFT_CLOSEOUT_PACKAGE_FINALIZED", resourceType: "shift_closeout_package", resourceId: String(pkg.id), metadata: { shiftId, idempotencyKey, commissionSnapshot: true, commissionAmount: earnings.commissionAmount, commissionRefundAdjustment: formatMoneyCents(commissionRefundAdjustmentCents), customerTips: earnings.customerTips, csrDeliveryEarnings: earnings.csrDeliveryEarnings, houseDeliveryShare: earnings.houseDeliveryShare, uberProviderDelivery: earnings.uberProviderDelivery, inventoryShortageAmount: inventoryAccountability.total, inventoryOffsetApplied: formatMoneyCents(requiredNonNegativeMoneyCents(offsets.priorOffsetApplied, "priorOffsetApplied") + requiredNonNegativeMoneyCents(offsets.currentOffsetApplied, "currentOffsetApplied")), inventoryOffsetRemainder: offsets.totalRemainder, inventoryRemainderPolicy: offsets.remainderPolicy, supervisorReason: inventoryAccountability.lines.length ? supervisorReason!.trim() : null, inventoryReview, cashDepositExcludesPayoutOffsets: true } });
       return { shift: finalized, checkout, replayed: false };
       }));
     } catch (error) {
@@ -2583,6 +2693,16 @@ router.post(
       throw error;
     }
     if ("conflict" in outcome) { res.status(409).json({ error: outcome.conflict, details: outcome.details }); return; }
+    if (!outcome.replayed) {
+      const checkout = outcome.checkout as { commissionBasis: string; commissionPercent: number; commissionAmount: string; paymentTotals: Record<string, unknown>; cashReconciliation: { openingBank: string; accountableCash: string; expectedCash: string; countedCash: string; variance: string } };
+      await printShiftDocuments(
+        { tenantId: outcome.shift?.tenantId ?? null, shiftId, operatorUserId: supervisor.id },
+        { kind: "supervisor_checkout", figures: {
+          eligibleSales: checkout.commissionBasis, commissionPercent: checkout.commissionPercent, commissionAmount: checkout.commissionAmount,
+          paymentTotals: checkout.paymentTotals, ...checkout.cashReconciliation,
+        } },
+      );
+    }
     res.json(outcome);
   }
 );
@@ -2649,7 +2769,7 @@ router.get(
         ? parseFloat(String(item.quantityEndActual))
         : null;
 
-      if (actualEnding === null) continue;
+      if (actualEnding === null || !Number.isFinite(actualEnding) || actualEnding < 0) continue;
 
       const restockQty = Math.max(0, parLevel - actualEnding);
       if (restockQty === 0) continue;
@@ -2751,6 +2871,16 @@ router.get(
         const inventoryAccountability = shift.clockedOutAt
           ? await loadShiftInventoryAccountability(db, tenantId, shift.id, shift.clockedInAt, shift.clockedOutAt)
           : { lines: [], blockers: [{ shiftInventoryItemId: 0, itemName: "Shift", code: "SHIFT_CLOSEOUT_CLOCK_OUT_REQUIRED", message: "Clock out before supervisor review." }], total: "0.00" };
+        const commissionBasis = calculateShiftEarnings(await loadShiftEarningOrders(db, tenantId, shift.id), 15).commissionBasis;
+        const negativeEndingIds = inventoryAccountability.blockers
+          .filter(blocker => blocker.code === "INVALID_QUANTITY" && blocker.message.startsWith("countedQuantity "))
+          .map(blocker => blocker.shiftInventoryItemId);
+        const legacyRows = negativeEndingIds.length
+          ? await db.select().from(shiftInventoryItemsTable).where(and(
+              eq(shiftInventoryItemsTable.shiftId, shift.id), inArray(shiftInventoryItemsTable.id, negativeEndingIds),
+            ))
+          : [];
+        const legacyIds = new Set(legacyRows.filter(hasLegacyCalculatedEnding).map(row => row.id));
         return {
           shiftId: shift.id,
           techName: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() : "Unknown",
@@ -2761,7 +2891,12 @@ router.get(
           cashBankEndReported: parseFloat(String(shift.cashBankEndReported ?? 0)),
           paymentTotals: stats.paymentTotals,
           totalRevenue: stats.totalRevenue,
+          commissionBasis,
           inventoryAccountability,
+          inventoryCorrections: inventoryAccountability.blockers.filter(blocker =>
+            isUnavailableCountBlocker(blocker, legacyIds),
+          ).map(blocker => ({ itemId: blocker.shiftInventoryItemId, itemName: blocker.itemName,
+            openingRequired: legacyIds.has(blocker.shiftInventoryItemId) })),
         };
       })
     );

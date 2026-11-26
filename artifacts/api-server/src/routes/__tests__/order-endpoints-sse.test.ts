@@ -14,6 +14,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
 
+const closureState = vi.hoisted(() => ({ windows: [] as Array<{ startsAt: string; endsAt: string; message: string }> }));
+vi.mock("../../lib/storefrontClosures", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../lib/storefrontClosures")>();
+  return { ...actual, loadStorefrontClosures: async () => ({ windows: closureState.windows, version: 0 }) };
+});
+
 const dbState: {
   orders: Array<Record<string, unknown>>;
   users: Array<Record<string, unknown>>;
@@ -26,9 +32,11 @@ const dbState: {
   inventoryBalances: Array<Record<string, unknown>>;
   taxSnapshots: Array<Record<string, unknown>>;
   uberQuotes: Array<Record<string, unknown>>;
+  checkoutQuotes: Array<Record<string, unknown>>;
+  fulfillmentGroups: Array<Record<string, unknown>>;
   disclaimerAcceptances: Array<Record<string, unknown>>;
   auditLogs: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], pickupSchedules: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [], auditLogs: [] };
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], pickupSchedules: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], checkoutQuotes: [], fulfillmentGroups: [], disclaimerAcceptances: [], auditLogs: [] };
 
 let mockActor: Record<string, unknown> = {};
 const reservationMocks = vi.hoisted(() => ({
@@ -205,7 +213,7 @@ vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
   const ordersTable = { __t: "orders", id: "id", tenantId: "tenantId", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", assignedShiftId: "assignedShiftId", routeSource: "routeSource", routedTo: "routedTo", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status", fulfillmentStatus: "fulfillmentStatus" };
   const usersTable = { __t: "users", id: "id", role: "role", firstName: "firstName", lastName: "lastName", email: "email", contactPhone: "contactPhone", notificationPreferences: "notificationPreferences" };
-  const labTechShiftsTable = { __t: "shifts", id: "id", techId: "techId", status: "status", clockedInAt: "clockedInAt" };
+  const labTechShiftsTable = { __t: "shifts", id: "id", tenantId: "tenantId", techId: "techId", status: "status", boxAssignmentId: "boxAssignmentId", clockedInAt: "clockedInAt" };
   const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId", enabledProcessors: "enabledProcessors", cashDiscountEnabled: "cashDiscountEnabled", cashDiscountType: "cashDiscountType", cashDiscountValue: "cashDiscountValue", shiftLocationOptions: "shiftLocationOptions" };
   const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
   const tenantsTable = { __t: "tenants", id: "id", name: "name", settings: "settings" };
@@ -214,9 +222,13 @@ vi.mock("@workspace/db", () => {
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", name: "name", type: "type", isActive: "isActive", csrBoxId: "csrBoxId" };
   const locationPickupSchedulesTable = { __t: "pickup_schedules", tenantId: "tenantId", locationId: "locationId" };
   const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand", inventoryKind: "inventoryKind", isSellable: "isSellable", quarantinedAt: "quarantinedAt", quarantinedByUserId: "quarantinedByUserId", quarantineReason: "quarantineReason" };
-  const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
+  const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug", isActive: "isActive" };
+  const generalQueueCashSessionsTable = { __t: "general_queue_cash_sessions", tenantId: "tenantId", status: "status", openedAt: "openedAt" };
   const orderTaxSnapshotsTable = { __t: "order_tax_snapshots", id: "id", tenantId: "tenantId", orderId: "orderId" };
   const uberDeliveryQuotesTable = { __t: "uber_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
+  const checkoutQuotesTable = { __t: "checkout_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
+  const orderFulfillmentGroupsTable = { __t: "fulfillment_groups", id: "id", tenantId: "tenantId", orderId: "orderId", status: "status" };
+  const carrierQuotesTable = { __t: "carrier_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
   const auditLogsTable = { __t: "audit_logs" };
   const orderItems: Array<Record<string, unknown>> = [];
 
@@ -231,9 +243,13 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "inventory_locations") return dbState.inventoryLocations;
     if (t.__t === "pickup_schedules") return dbState.pickupSchedules;
     if (t.__t === "inventory_balances") return dbState.inventoryBalances;
+    if (t.__t === "csr_boxes") return [{ id: 71, tenantId: 1, slug: "sales-box-1", isActive: true }];
+    if (t.__t === "general_queue_cash_sessions") return [];
     if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
     if (t.__t === "order_tax_snapshots") return dbState.taxSnapshots;
     if (t.__t === "uber_quotes") return dbState.uberQuotes;
+    if (t.__t === "checkout_quotes") return dbState.checkoutQuotes;
+    if (t.__t === "fulfillment_groups") return dbState.fulfillmentGroups;
     if (t.__t === "audit_logs") return dbState.auditLogs;
     return [];
   }
@@ -241,8 +257,9 @@ vi.mock("@workspace/db", () => {
   function matchesPredicate(row: Record<string, unknown>, predicate: unknown): boolean {
     if (!predicate) return true;
     if (Array.isArray(predicate)) return predicate.every((p) => matchesPredicate(row, p));
-    const p = predicate as { col?: string; val?: unknown; vals?: unknown[] };
+    const p = predicate as { col?: string; val?: unknown; vals?: unknown[]; op?: string };
     if (p.vals) return p.vals.includes(row[p.col ?? ""]);
+    if (p.op === "gt" && p.col) return row[p.col] instanceof Date && p.val instanceof Date && row[p.col] > p.val;
     if (p.col) return row[p.col] === p.val;
     return true;
   }
@@ -307,6 +324,10 @@ vi.mock("@workspace/db", () => {
         dbState.auditLogs.push({ id: dbState.auditLogs.length + 1, ...vals });
         return Promise.resolve();
       }
+      if (t.__t === "checkout_quotes") {
+        dbState.checkoutQuotes.push({ createdAt: new Date(), status: "quoted", ...vals });
+        return Promise.resolve();
+      }
       return {
         returning: async () => {
           const now = new Date();
@@ -348,7 +369,7 @@ vi.mock("@workspace/db", () => {
 
   return {
     db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve({ rows: [{ id: "test-event", version: 1 }] })) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, locationPickupSchedulesTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, locationPickupSchedulesTable, inventoryBalancesTable, csrBoxesTable, generalQueueCashSessionsTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, checkoutQuotesTable, orderFulfillmentGroupsTable, carrierQuotesTable, auditLogsTable,
     orderNotesTable: { __t: "order_notes" },
     cashLedgerEntriesTable: { __t: "cash_ledger", tenantId: "tenantId", idempotencyKey: "idempotencyKey" },
   };
@@ -356,6 +377,7 @@ vi.mock("@workspace/db", () => {
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
+  gt: vi.fn((col, val) => ({ col, val, op: "gt" })),
   and: vi.fn((...a) => a),
   isNull: vi.fn((col) => ({ col, val: null })),
   inArray: vi.fn((col, vals) => ({ col, vals })),
@@ -444,6 +466,7 @@ function captureEvents(role: string, userId: number): { received: OrderEvent[]; 
 }
 
 beforeEach(() => {
+  closureState.windows = [];
   dbState.orders = [];
   dbState.auditLogs = [];
   dbState.users = [
@@ -472,6 +495,8 @@ beforeEach(() => {
   }];
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null }];
   dbState.uberQuotes = [];
+  dbState.checkoutQuotes = [];
+  dbState.fulfillmentGroups = [];
   dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
   mockActor = {};
   reservationMocks.reserve.mockClear();
@@ -568,6 +593,18 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
     });
     expect(order.status).toBe(422);
     expect(order.body.error).toMatch(/PayPal checkout is unavailable/);
+    expect(dbState.orders).toHaveLength(0);
+  });
+
+  it("rejects checkout after a supervisor closes the store, even with a previously issued quote", async () => {
+    mockActor = dbState.users[0]!;
+    const app = buildApp();
+    const payload = await convertedCheckoutPayload(app);
+    closureState.windows = [{ startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 60_000).toISOString(), message: "We’re closed for the holidays." }];
+    const result = await supertest(app).post("/api/orders").send(payload);
+    expect(result.status, result.text).toBe(409);
+    expect(result.body).toMatchObject({ code: "STOREFRONT_CLOSED", error: "We’re closed for the holidays." });
     expect(dbState.orders).toHaveLength(0);
   });
 
@@ -924,13 +961,22 @@ describe("cash closeout rechecks current catalog eligibility", () => {
     ["active", {}],
   ])("checks %s products before accepting cash", async (state, patch) => {
     mockActor = dbState.users[2]!;
+    // This actor has an accountable active shift. The eligibility assertions
+    // therefore exercise the post-authorization catalog guard.
+    dbState.shifts = [{ id: 81, tenantId: 1, techId: 9, status: "active", boxAssignmentId: "sales-box-1", clockedInAt: new Date() }];
     const orderId = 9001;
-    dbState.orders = [{ id: orderId, tenantId: 1, customerId: 5, status: "pending", paymentStatus: "unpaid", total: "10.00", remainingTenderAmount: "10.00" }];
+    dbState.orders = [{
+      id: orderId, tenantId: 1, customerId: 5, assignedCsrUserId: 9, assignedShiftId: 81,
+      status: "pending", paymentStatus: "unpaid", selectedPaymentMethod: "cash",
+      total: "10.00", remainingTenderAmount: "10.00",
+    }];
     Object.assign(dbState.catalog[0]!, patch);
     await db.insert(orderItemsTable).values({ orderId, catalogItemId: 1, quantity: 1 } as never).returning();
     vi.mocked(db.update).mockClear();
     const response = await supertest(buildApp()).post(`/api/orders/${orderId}/closeout`)
-      .send({ paymentMethod: "cash", amountTendered: 0, idempotencyKey: "catalog-cash-check" });
+      // Supply the authoritative tender so this reaches the post-authorization
+      // catalog eligibility guard instead of failing on insufficient cash.
+      .send({ paymentMethod: "cash", amountTendered: state === "active" ? 0 : 10, idempotencyKey: "catalog-cash-check" });
     expect(response.status, response.text).toBe(state === "active" ? 422 : 409);
     expect(response.body.error).toBe(state === "active"
       ? "Amount tendered is insufficient"

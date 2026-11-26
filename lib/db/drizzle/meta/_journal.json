@@ -407,6 +407,41 @@
       "when": 1793408400000,
       "tag": "0083_uber_quote_authoritative_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1795413600000,
+      "tag": "0084_durable_checkout_quotes",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1795417200000,
+      "tag": "0085_order_fulfillment_groups",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1795420800000,
+      "tag": "0086_carrier_quotes",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1795424400000,
+      "tag": "0087_cj_fulfillment_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1795680000000,
+      "tag": "0088_storefront_closures",
+      "breakpoints": true
     }
   ]
 }

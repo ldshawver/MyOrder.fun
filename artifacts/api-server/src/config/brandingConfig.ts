@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, tenantsTable, tenantSettingsTable } from "@workspace/db";
-import { PLATFORM_BRAND, resolvePublicBrandingForHost, resolveStagingPublicBrandingAlias, type PublicStorefrontBranding, type TenantBrandingEnvelope } from "./publicStorefrontBranding";
+import { PLATFORM_BRAND, resolvePublicBrandingForHost, resolveStagingPublicBrandingAlias, resolveProductionPublicBrandingAlias, type PublicStorefrontBranding, type TenantBrandingEnvelope } from "./publicStorefrontBranding";
 export { PLATFORM_BRAND } from "./publicStorefrontBranding";
 
 function object(value: unknown): Record<string, unknown> {
@@ -23,6 +23,11 @@ export async function getPublicBrandingForHost(host: string): Promise<PublicStor
       runtimeEnvironment: process.env.NODE_ENV,
       host: process.env.STAGING_PUBLIC_STOREFRONT_HOST,
       tenantId: process.env.STAGING_PUBLIC_TENANT_ID,
+    })
+    ?? resolveProductionPublicBrandingAlias(host, rows, {
+      runtimeEnvironment: process.env.NODE_ENV,
+      host: process.env.PUBLIC_STOREFRONT_HOST,
+      tenantId: process.env.PUBLIC_STOREFRONT_TENANT_ID,
     });
 }
 

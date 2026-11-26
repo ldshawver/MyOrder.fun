@@ -297,12 +297,16 @@ export async function loadSellableProducts(tenantId: number, pricing?: { isCurre
       isSaleFeatured?: boolean | null;
       metadata?: unknown;
     };
-    let retailPrice: string | number = priced.price;
-    try {
-      retailPrice = resolveEffectiveCatalogUnitPrice(priced);
-    } catch {
-      retailPrice = priced.price;
-    }
+    const retailPrice = (() => {
+      try {
+        return resolveEffectiveCatalogUnitPrice(priced);
+      } catch {
+        // The checkout endpoint rejects an invalid active-sale configuration.
+        // Keep the catalogue readable rather than exposing a client-side price
+        // that could be mistaken for an authoritative checkout total.
+        return priced.price;
+      }
+    })();
     const visible = {
       ...priced,
       price: employee ? formatEmployeeUnitPrice(retailPrice, priced.employeePrice, true) : Number(retailPrice).toFixed(2),

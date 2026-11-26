@@ -4,6 +4,7 @@ import { Link, useLocation } from "wouter";
 import { UserProfile } from "@workspace/api-client-react";
 import { useAuth, useClerk } from "@clerk/react";
 import { useBrand } from "@/contexts/BrandContext";
+import { APP_RELEASE_VERSION } from "@/lib/releaseVersion";
 import { 
   FlaskConical, 
   ShoppingCart, 
@@ -38,6 +39,7 @@ import {
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
 import { useListNotifications, getListNotificationsQueryKey } from "@workspace/api-client-react";
+import { shouldShowGeneralQueueBanner } from "@/lib/queueVisibility";
 
 type NavItem = {
   href: string;
@@ -92,7 +94,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = userRole === "user";
   const showOperationalQueueStatus = ["global_admin", "admin", "supervisor"].includes(userRole);
-  const customerStorefront = /^\/(catalog|catalogue|cart|checkout|orders)(\/|$)/.test(location);
   const [queueStatus, setQueueStatus] = useState<{
     activeShift: { clockedInAt: string } | null;
     activeCsr: { firstName?: string | null; lastName?: string | null; email?: string | null } | null;
@@ -121,10 +122,10 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/cart", label: isCustomer ? "My Cart" : "Cart", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         {
           href: "/orders",
-          label: isCustomer ? "Order Status" : "Orders",
-          mobileLabel: isCustomer ? "Order Status" : "Orders",
+          label: "Order",
+          mobileLabel: "Order",
           icon: ListTodo,
-          roles: ALL_ROLES,
+          roles: ["user"],
           mobileShow: true,
         },
         {
@@ -154,6 +155,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       roles: SHIFT_ROLES,
       defaultOpen: true,
       items: [
+        { href: "/staff/speed-order", label: "Speed Order", icon: Zap, roles: SHIFT_ROLES },
+        { href: "/staff/orders", label: "Orders", icon: ListTodo, roles: SHIFT_ROLES },
         { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES },
         {
           href: "/csr-settings",
@@ -176,11 +179,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin", "supervisor"] },
         { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "supervisor"] },
         {
-          href: "/admin/settings",
+          href: userRole === "supervisor" ? "/admin/settings/store-closures" : "/admin/settings",
           label: "Settings",
           icon: Settings,
-          roles: ["global_admin", "admin"],
+          roles: ["global_admin", "admin", "supervisor"],
           children: [
+            { href: "/admin/settings/store-closures", label: "Store Closures", icon: Settings, roles: ["global_admin", "admin", "supervisor"] },
             { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin", "admin"] },
             { href: "/admin/order-notifications", label: "New Order Alerts", icon: Settings, roles: ["global_admin", "admin"] },
           ],
@@ -312,8 +316,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               <div className="font-bold text-sm tracking-wide text-foreground" data-testid="text-sidebar-logo">
                 {activeDisplayName}
               </div>
-              <div className="text-[10px] text-primary/80 font-medium tracking-widest uppercase">
-                {isLC ? "Supplier catalog" : "Powered by MyOrder.fun"}
+              <div className="text-[10px] text-primary/80 font-medium tracking-wide">
+                {isLC ? "Supplier catalog" : "Powered by Lucifer Cruz"}
               </div>
             </div>
           </Link>
@@ -361,6 +365,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               <div className="text-[10px] text-muted-foreground capitalize font-medium" data-testid="text-user-role">
                 {user.role.replace(/_/g, " ")}
               </div>
+              <div className="text-[10px] text-muted-foreground" data-testid="text-app-version">{APP_RELEASE_VERSION}</div>
             </div>
           </Link>
           <button
@@ -387,7 +392,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
                 <img src={activeLogo} alt={activeDisplayName} className="h-9 w-auto max-w-20 object-contain" />
                 <div>
                   <div className="font-bold text-sm tracking-wide">{activeDisplayName}</div>
-                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">{isLC ? "Supplier catalog" : "Powered by MyOrder.fun"}</div>
+                  <div className="text-[10px] text-primary/80 tracking-wide">{isLC ? "Supplier catalog" : "Powered by Lucifer Cruz"}</div>
                 </div>
               </Link>
               <button onClick={() => setMobileMenuOpen(false)} className="text-muted-foreground hover:text-foreground p-1">
@@ -431,6 +436,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
                 <div>
                   <div className="text-sm font-medium">{user.firstName || "User"} {user.lastName}</div>
                   <div className="text-[10px] text-muted-foreground capitalize">{user.role.replace(/_/g, " ")}</div>
+                  <div className="text-[10px] text-muted-foreground" data-testid="text-app-version-mobile">{APP_RELEASE_VERSION}</div>
                 </div>
               </Link>
               <button
@@ -458,7 +464,10 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           </button>
           <Link href="/catalog" className="flex items-center gap-2">
             <img src={activeLogo} alt={activeDisplayName} className="h-8 w-auto max-w-20 object-contain" />
-            <span className="font-bold text-sm tracking-wide truncate max-w-36">{activeDisplayName}</span>
+            <span className="flex min-w-0 flex-col">
+              <span className="font-bold text-sm tracking-wide truncate max-w-36">{activeDisplayName}</span>
+              {!isLC && <span className="text-[10px] text-primary/80">Powered by Lucifer Cruz</span>}
+            </span>
           </Link>
           <Link href="/notifications" className="relative text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-sidebar-accent/60 transition-colors">
             <Bell size={20} />
@@ -492,20 +501,23 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               exit={{ opacity: 0, y: -10, scale: 1.01 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
             >
-              {showOperationalQueueStatus && !customerStorefront && queueStatus && (
-                <div className={`mb-5 rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${queueStatus.activeShift ? "border-emerald-500/40 bg-emerald-500/10" : "border-amber-500/40 bg-amber-500/10"}`} data-testid="queue-status-banner">
+              {shouldShowGeneralQueueBanner({
+                canManageQueue: showOperationalQueueStatus,
+                isCustomer,
+                hasQueueStatus: Boolean(queueStatus),
+                hasActiveShift: Boolean(queueStatus?.activeShift),
+              }) && queueStatus && (
+                <div className="mb-5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3" data-testid="queue-status-banner">
                   <div>
                     <div className="font-semibold" data-testid="queue-status-title">
-                      {queueStatus.activeShift ? "Active CSR" : "General Queue Active"}
+                      General Queue Active
                     </div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      {queueStatus.activeShift
-                        ? `${`${queueStatus.activeCsr?.firstName ?? ""} ${queueStatus.activeCsr?.lastName ?? ""}`.trim() || queueStatus.activeCsr?.email || "Assigned CSR"} · active since ${new Date(queueStatus.activeShift.clockedInAt).toLocaleString()}`
-                        : `${queueStatus.queueCounts.defaultQueue} open/unassigned order${queueStatus.queueCounts.defaultQueue === 1 ? "" : "s"}`}
+                      {queueStatus.queueCounts.defaultQueue} open/unassigned order{queueStatus.queueCounts.defaultQueue === 1 ? "" : "s"}
                     </div>
                   </div>
-                  <Link href={queueStatus.activeShift ? "/staff" : "/staff?view=general"} className="inline-flex items-center justify-center rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground" data-testid="button-view-operational-queue">
-                    {queueStatus.activeShift ? "View Shift/Queue" : "View General Queue"}
+                  <Link href="/staff?view=general" className="inline-flex items-center justify-center rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground" data-testid="button-view-operational-queue">
+                    View General Queue
                   </Link>
                 </div>
               )}

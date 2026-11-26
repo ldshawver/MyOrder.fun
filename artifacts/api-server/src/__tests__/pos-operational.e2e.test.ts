@@ -1,5 +1,5 @@
 import type { Server } from "node:http";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import supertest from "supertest";
 import { sql } from "drizzle-orm";
 
@@ -13,7 +13,6 @@ const identities = vi.hoisted(() => ({
 }));
 
 process.env.MYORDER_OWNER_CLERK_ID = identities.admin.clerkId;
-process.env.MYORDER_SIGNUP_TENANT_SLUG = "pos-e2e-house";
 
 vi.mock("@clerk/express", () => ({
   clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -58,6 +57,7 @@ import {
   db,
   inventoryBalancesTable,
   inventoryLocationsTable,
+  locationPickupSchedulesTable,
   inventoryTemplatesTable,
   labTechShiftsTable,
   generalQueueCashSessionsTable,
@@ -72,8 +72,10 @@ import {
   printRoutesTable,
   tenantPrintControlsTable,
   tenantsTable,
+  taxConfigurationsTable,
   usersTable,
 } from "@workspace/db";
+import { ensureInventoryReservationsTable } from "../lib/inventoryReservations";
 
 const operationalDescribe = process.env.RUN_POS_E2E === "1" ? describe : describe.skip;
 
@@ -81,6 +83,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
   let server: Server | undefined;
   let request: ReturnType<typeof supertest>;
   let catalogItemId: number;
+  let pickupLocationId: number;
 
   const as = (identity: keyof typeof identities) => ({
     get: (path: string) => request.get(path).set("x-pos-e2e-user", identity),
@@ -88,6 +91,9 @@ operationalDescribe("POS opening-manager operational flow", () => {
   });
 
   beforeAll(async () => {
+    // Use the application's idempotent reservation-schema bootstrap for the
+    // disposable database. This is not a manual ledger edit or migration.
+    await ensureInventoryReservationsTable();
     await db.execute(sql`TRUNCATE TABLE ${tenantsTable} RESTART IDENTITY CASCADE`);
 
     const [tenant] = await db.insert(tenantsTable).values({
@@ -95,6 +101,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
       slug: "pos-e2e-house",
       status: "active",
     }).returning();
+    process.env.MYORDER_SIGNUP_TENANT_ID = String(tenant.id);
 
     await db.insert(adminSettingsTable).values({
       tenantId: tenant.id,
@@ -184,6 +191,19 @@ operationalDescribe("POS opening-manager operational flow", () => {
         provisioningStatus: "active",
       },
     ]);
+    const [csrApprover] = await db.select().from(usersTable)
+      .where(sql`${usersTable.clerkId} = ${identities.csr.clerkId}`).limit(1);
+    await db.insert(taxConfigurationsTable).values({
+      tenantId: tenant.id,
+      jurisdiction: "POS E2E",
+      rate: "0.08000000",
+      sourcingRule: "tenant",
+      effectiveFrom: "2020-01-01",
+      sourceName: "Synthetic POS fixture",
+      sourceUrl: "https://example.test/pos-e2e-tax",
+      verifiedAt: new Date(),
+      verifiedByUserId: csrApprover.id,
+    });
     const [otherTenant] = await db.insert(tenantsTable).values({ name: "Other E2E Tenant", slug: "other-e2e-tenant", status: "active" }).returning();
     await db.insert(usersTable).values({
       clerkId: identities.outsider.clerkId,
@@ -252,6 +272,23 @@ operationalDescribe("POS opening-manager operational flow", () => {
       name: "CSR Sales Box 1",
       displayOrder: 1,
     }).returning();
+    const [pickupLocation] = await db.insert(inventoryLocationsTable).values({
+      tenantId: tenant.id,
+      type: "storefront",
+      name: "POS E2E Pickup Counter",
+      isActive: true,
+    }).returning();
+    pickupLocationId = pickupLocation.id;
+    await db.insert(locationPickupSchedulesTable).values({
+      tenantId: tenant.id,
+      locationId: pickupLocation.id,
+      timeZone: "UTC",
+      weeklyHours: [0, 1, 2, 3, 4, 5, 6].map(dayOfWeek => ({ dayOfWeek, intervals: [{ open: "00:00", close: "23:59" }] })),
+      exceptions: [],
+      slotMinutes: 30,
+      maxAdvanceDays: 14,
+      version: 1,
+    });
     await db.insert(inventoryBalancesTable).values({
       tenantId: tenant.id,
       productId: item.id,
@@ -284,6 +321,12 @@ operationalDescribe("POS opening-manager operational flow", () => {
     await pool.end();
   });
 
+  // A failed assertion must not leave a live CSR shift that changes a later
+  // queue test's tenant-wide routing state.
+  afterEach(async () => {
+    await db.execute(sql`UPDATE ${labTechShiftsTable} SET status = 'clocked_out', clocked_out_at = now() WHERE status = 'active'`);
+  });
+
   it("keeps stale legacy queue rows consistent with authorized detail while preserving tenant isolation", async () => {
     const [tenant] = await db.select().from(tenantsTable).where(sql`${tenantsTable.slug} = 'pos-e2e-house'`).limit(1);
     const [customer] = await db.select().from(usersTable).where(sql`${usersTable.clerkId} = ${identities.csr.clerkId}`).limit(1);
@@ -312,6 +355,10 @@ operationalDescribe("POS opening-manager operational flow", () => {
       unitPrice: "10.00",
       totalPrice: "20.00",
     });
+    const [unpaidDigital] = await db.insert(ordersTable).values({
+      tenantId: tenant.id, customerId: customer.id, status: "ready", fulfillmentStatus: "ready",
+      paymentStatus: "unpaid", paymentMethod: "paypal", subtotal: "1.00", tax: "0.08", total: "1.08",
+    }).returning();
 
     const list = await as("admin").get("/api/shift-queue/orders");
     expect(list.status, list.text).toBe(200);
@@ -325,6 +372,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
       items: [expect.objectContaining({ catalogItemId, quantity: 2 })],
     });
     expect(new Date(listed.estimatedReadyAt).getTime()).toBe(staleEta.getTime());
+    expect(list.body.orders).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: unpaidDigital.id })]));
 
     const detail = await as("admin").get(`/api/orders/${order.id}`);
     expect(detail.status, detail.text).toBe(200);
@@ -379,7 +427,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
 
     const login = await as("customer").get("/api/users/me");
     expect(login.status, login.text).toBe(200);
-    expect(login.body).toMatchObject({ email: identities.customer.email, role: "user", status: "approved" });
+    expect(login.body).toMatchObject({ email: identities.customer.email, role: "user", status: "pending" });
 
     const template = await as("csr").get("/api/shifts/inventory-template");
     expect(template.status, template.text).toBe(200);
@@ -425,8 +473,18 @@ operationalDescribe("POS opening-manager operational flow", () => {
     expect(outsiderCsrOptions.body.csrs).toEqual([]);
 
     const disclaimer = await as("customer").get("/api/customer/disclaimer");
-    expect(disclaimer.status, disclaimer.text).toBe(200);
-    expect(disclaimer.body).toMatchObject({ version: 1, accepted: false, required: true });
+    expect(disclaimer.status, disclaimer.text).toBe(403);
+    const [pendingCustomer] = await db.select().from(usersTable).where(sql`${usersTable.clerkId} = ${identities.customer.clerkId}`).limit(1);
+    // Approval is not just a display-state flip: the synthetic customer must
+    // carry the same approval provenance required in production.
+    await db.update(usersTable).set({
+      status: "approved",
+      approvedByClerkId: identities.admin.clerkId,
+      approvedAt: new Date(),
+    }).where(sql`${usersTable.id} = ${pendingCustomer.id}`);
+    const approvedDisclaimer = await as("customer").get("/api/customer/disclaimer");
+    expect(approvedDisclaimer.status, approvedDisclaimer.text).toBe(200);
+    expect(approvedDisclaimer.body).toMatchObject({ version: 1, accepted: false, required: true });
     const accepted = await as("customer").post("/api/customer/disclaimer/accept").send({ version: 1 });
     expect(accepted.status, accepted.text).toBe(201);
 
@@ -454,7 +512,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const confirmation = {
       acceptedAllSalesFinal: true,
       confirmedAt: new Date().toISOString(),
-      legalDisclaimerText: disclaimer.body.text,
+      legalDisclaimerText: approvedDisclaimer.body.text,
     };
     const converted = await as("customer").post("/api/cart/convert").send({
       items: [{ catalogItemId, quantity: 1 }],
@@ -462,14 +520,22 @@ operationalDescribe("POS opening-manager operational flow", () => {
     });
     expect(converted.status, converted.text).toBe(200);
     expect(converted.body.converted.items[0].customerSafeName).toBe("Merchant E2E Item");
+    const checkoutQuote = await as("customer").post("/api/checkout/quote").send({
+      items: [{ catalogItemId, quantity: 1 }],
+      paymentMethod: "cash",
+      deliveryMethod: "pickup",
+      pickupLocationId,
+    });
+    expect(checkoutQuote.status, checkoutQuote.text).toBe(200);
 
     const orderCreated = await as("customer").post("/api/orders").send({
       orderType: "WALK_IN",
       items: [{ catalogItemId, quantity: 1 }],
       checkoutConversionToken: converted.body.checkoutConversionToken,
       checkoutConversionSnapshot: converted.body,
-      checkoutConfirmation: { ...confirmation, paymentMethod: "cash" },
+      checkoutConfirmation: { ...confirmation, paymentMethod: "cash", checkoutTaxQuoteToken: checkoutQuote.body.checkoutTaxQuoteToken },
       deliveryMethod: "pickup",
+      pickupLocationId,
       notes: "Opening-manager E2E order",
     });
     expect(orderCreated.status, orderCreated.text).toBe(201);
@@ -598,7 +664,15 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const finalized = await as("admin").post(`/api/shifts/${shiftId}/supervisor-checkout`).send({ tipPercent: 15 });
     expect(finalized.status, finalized.text).toBe(200);
     expect(finalized.body.shift.status).toBe("finalized");
-    expect(finalized.body.checkout).toMatchObject({ eligibleSalesBase: 20, tipPercent: 15 });
+    // This order was intentionally routed through the general queue, which is
+    // excluded from CSR product commission. The closeout must retain the
+    // selected rate without inventing an eligible-sales basis.
+    expect(finalized.body.checkout).toMatchObject({
+      commissionBasis: "0.00",
+      commissionPercent: 15,
+      commissionAmount: "0.00",
+      commissionRule: expect.objectContaining({ basis: "net_shift_sales" }),
+    });
 
     const persisted = await db.execute(sql`
       SELECT o.status, o.payment_status, s.status AS shift_status,
@@ -649,23 +723,28 @@ operationalDescribe("POS opening-manager operational flow", () => {
     expect(claimed.status, claimed.text).toBe(200);
     expect(claimed.body).toMatchObject({
       id: order.id,
-      assignedCsrUserId: admin.id,
+      assignedCsrUserId: null,
       status: "in_progress",
       fulfillmentStatus: "in_progress",
-      routeSource: "active_csr",
+      routeSource: "supervisor_override",
     });
     const [persistedClaim] = await db.select().from(ordersTable).where(sql`${ordersTable.id} = ${order.id}`).limit(1);
-    expect(persistedClaim).toMatchObject({ assignedCsrUserId: admin.id, assignedShiftId: adminShift.id });
-    expect((await as("admin").post(`/api/orders/${order.id}/claim`).send({})).status).toBe(200);
+    expect(persistedClaim).toMatchObject({ assignedCsrUserId: null, assignedShiftId: null });
+    const auditBeforeDuplicate = await db.select().from(auditLogsTable).where(sql`${auditLogsTable.tenantId} = ${tenant.id} AND ${auditLogsTable.resourceId} = ${String(order.id)}`);
+    expect((await as("admin").post(`/api/orders/${order.id}/claim`).send({})).status).toBe(409);
+    const [afterDuplicateClaim] = await db.select().from(ordersTable).where(sql`${ordersTable.id} = ${order.id}`).limit(1);
+    const auditAfterDuplicate = await db.select().from(auditLogsTable).where(sql`${auditLogsTable.tenantId} = ${tenant.id} AND ${auditLogsTable.resourceId} = ${String(order.id)}`);
+    expect(afterDuplicateClaim).toMatchObject({ assignedCsrUserId: null, assignedShiftId: null, routeSource: "supervisor_override" });
+    expect(auditAfterDuplicate).toHaveLength(auditBeforeDuplicate.length);
     expect((await as("csr2").post(`/api/orders/${order.id}/claim`).send({})).status).toBe(409);
     expect((await as("csr2").post(`/api/orders/${order.id}/reassign`).send({ assignedCsrUserId: csr2.id })).status).toBe(403);
 
     const general = await as("admin").get("/api/shift-queue/general");
-    expect(general.body.orders).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: order.id })]));
+    // Cash orders remain eligible for staff fulfillment until an authorized
+    // closeout settles them; only unverified digital orders are held back.
+    expect(general.body.orders).toEqual(expect.arrayContaining([expect.objectContaining({ id: order.id })]));
     const assigned = await as("admin").get("/api/shift-queue/orders");
-    expect(assigned.body.orders).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: order.id, assignedCsrUserId: admin.id, assignedShiftId: adminShift.id }),
-    ]));
+    expect(assigned.body.orders).toEqual(expect.arrayContaining([expect.objectContaining({ id: order.id })]));
 
     const [terminal] = await db.insert(ordersTable).values({
       tenantId: tenant.id, customerId: customer.id, status: "completed", fulfillmentStatus: "completed",
@@ -702,6 +781,14 @@ operationalDescribe("POS opening-manager operational flow", () => {
       paymentStatus: "unpaid", subtotal: "20.00", tax: "1.60", total: "21.60",
       routeSource: "general_account", routedTo: "default_queue", routingStatus: "queued",
     }).returning();
+    await db.insert(orderItemsTable).values({
+      orderId: order.id,
+      catalogItemId,
+      catalogItemName: "E2E Customer Item",
+      quantity: 2,
+      unitPrice: "10.00",
+      totalPrice: "20.00",
+    });
 
     const status = await as("admin").get("/api/shift-queue/status");
     expect(status.status, status.text).toBe(200);
@@ -823,7 +910,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
       as(winner).post(`/api/orders/${order.id}/closeout`).send({ paymentMethod: "cash", amountTendered: "25.00", internalNote: "E2E cash", idempotencyKey: key }),
       as(winner).post(`/api/orders/${order.id}/closeout`).send({ paymentMethod: "cash", amountTendered: "25.00", internalNote: "E2E cash", idempotencyKey: key }),
     ]);
-    expect([closed.status, concurrent.status]).toEqual([200, 200]);
+    expect([closed.status, concurrent.status], `${closed.text}\n${concurrent.text}`).toEqual([200, 200]);
     expect(closed.body.cash ?? concurrent.body.cash).toMatchObject({ amountDue: "21.60", amountTendered: "25.00", changeGiven: "3.40" });
     const unrelatedReplay = await as(loser).post(`/api/orders/${order.id}/closeout`).send({
       paymentMethod: "cash", amountTendered: "25.00", idempotencyKey: key,
@@ -867,6 +954,14 @@ operationalDescribe("POS opening-manager operational flow", () => {
       paymentStatus: "unpaid", subtotal: "10.00", tax: "0.80", total: "10.80",
       routeSource: "general_account", routedTo: "default_queue", assignedCsrUserId: csr.id, acceptedAt: new Date(),
     }).returning();
+    await db.insert(orderItemsTable).values({
+      orderId: nextOrder.id,
+      catalogItemId,
+      catalogItemName: "E2E Customer Item",
+      quantity: 1,
+      unitPrice: "10.00",
+      totalPrice: "10.00",
+    });
     const blockedAfterClose = await as("csr").post(`/api/orders/${nextOrder.id}/closeout`).send({ paymentMethod: "cash", amountTendered: "11.00", idempotencyKey: `closed-session-${nextOrder.id}` });
     expect(blockedAfterClose.status, blockedAfterClose.text).toBe(200);
     const [postSessionLedger] = await db.select().from(cashLedgerEntriesTable).where(sql`${cashLedgerEntriesTable.orderId} = ${nextOrder.id}`);

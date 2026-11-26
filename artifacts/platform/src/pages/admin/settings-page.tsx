@@ -647,6 +647,7 @@ export default function AdminSettingsPage() {
         <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-sm">{error}</div>
       )}
 
+      <a href="/admin/settings/store-closures" className="text-sm font-semibold text-primary underline">Store Closures</a>
       <Tabs defaultValue="business">
         <TabsList className="rounded-xl bg-muted/30 border border-border/40 mb-2 flex flex-wrap h-auto justify-start">
           <TabsTrigger value="business" className="rounded-lg text-xs">Business</TabsTrigger>

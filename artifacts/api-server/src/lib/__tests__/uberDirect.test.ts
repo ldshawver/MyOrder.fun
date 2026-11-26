@@ -1,10 +1,17 @@
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { buildUberQuotePayload, cancelUberDelivery, createUberDelivery, createUberDeliveryQuote, getUberDelivery, listUberDeliveries, UberDirectApiError, UberDirectConfigError, normalizeUberAddress, verifyUberWebhookSignature, verifyUberWebhookSignatureForSecret } from "../uberDirect";
 import { validateUberQuoteSettings } from "../uberDirectConfig";
 import { logger } from "../logger";
 
 describe("Uber Direct security boundaries", () => {
+  it("binds dispatch contact lookup to both the order tenant and customer", () => {
+    const source = readFileSync(new URL("../uberFulfillment.ts", import.meta.url), "utf8");
+    expect(source).toContain("and(eq(usersTable.tenantId, tenantId), eq(usersTable.id, order.customerId))");
+    expect(source).not.toContain("from(usersTable).where(eq(usersTable.id, order.customerId))");
+  });
+
   it("builds the reviewed quote shape with synthetic server-owned values and exact provider types", () => {
     const payload = buildUberQuotePayload({
       pickupAddress: "100 Synthetic Pickup Way, Fixture City, CA 90001",
@@ -76,7 +83,7 @@ describe("Uber Direct security boundaries", () => {
   });
 
   it("uses the Direct external_id contract and supports bounded lookup and cancellation", async () => {
-    const config = { tenantId: 917, environment: "sandbox" as const, customerId: "synthetic-customer", clientId: "synthetic-uber-client-917", clientSecret: "synthetic-uber-secret" };
+    const config = { tenantId: 917, environment: "sandbox" as const, customerId: "synthetic/customer", clientId: "synthetic-uber-client-917", clientSecret: "synthetic-uber-secret" };
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       calls.push({ url: String(input), init: init ?? {} });
@@ -90,6 +97,7 @@ describe("Uber Direct security boundaries", () => {
       const address = normalizeUberAddress("500 Test Street, Testville, CA 94105");
       await createUberDelivery({ quoteId: "dqt_synthetic", externalOrderReference: "myorder-917-42", pickupAddress: address, pickupName: "Test Shop", pickupPhoneNumber: "+15555550111", dropoffAddress: address, dropoffName: "Test Customer", dropoffPhoneNumber: "+15555550222", manifestItems: [{ name: "Test Item", quantity: 1 }] }, config);
       const createCall = calls.find(call => call.init.method === "POST" && !call.url.includes("/cancel") && !call.url.includes("/oauth/"));
+      expect(createCall?.url).toContain("/customers/synthetic%2Fcustomer/deliveries");
       expect(JSON.parse(String(createCall?.init.body))).toMatchObject({ external_id: "myorder-917-42", quote_id: "dqt_synthetic" });
       expect(JSON.parse(String(createCall?.init.body))).not.toHaveProperty("external_order_id");
       expect((await listUberDeliveries(config)).deliveries).toHaveLength(1);
@@ -133,4 +141,13 @@ describe("Uber Direct security boundaries", () => {
         .rejects.toMatchObject({ code: "delivery_identity_mismatch" });
     } finally { fetchSpy.mockRestore(); }
   });
+});
+
+it("projects only customer-facing courier fields and verified Uber tracking origins", async () => {
+  const { projectUberCourierDetails } = await import("../uberDirect");
+  const courier = { name: "Taylor J.", vehicle_type: "car", phone_number: "+15550000000" };
+  expect(projectUberCourierDetails({ id: "delivery", courier, tracking_url: "https://www.ubereats.com/orders/abc" }))
+    .toEqual({ name: "Taylor J.", vehicle: "car", trackingUrl: "https://www.ubereats.com/orders/abc" });
+  expect(projectUberCourierDetails({ id: "delivery", tracking_url: "https://uber.com.example.com/orders/abc" }).trackingUrl).toBeNull();
+  expect(projectUberCourierDetails({ id: "delivery", tracking_url: "http://uber.com/orders/abc" }).trackingUrl).toBeNull();
 });

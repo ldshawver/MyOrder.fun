@@ -48,6 +48,7 @@ export interface ReceiptTemplateRecord {
 
 export interface RenderedReceipt {
   readonly text: string;
+  readonly plainText?: string;
   readonly source: "template" | "fallback";
   readonly templateId: number | null;
   readonly templateVersion: number | null;
@@ -247,7 +248,8 @@ export function renderReceipt(
     try {
       const lines = renderReceiptFromTemplate(template.layout, data, columns ?? charWidth(template.paperWidth));
       return {
-        text: output === "escpos" ? encodeStoredReceiptText(encodeReceiptEscPos(lines)) : encodeReceiptPlain(lines),
+        text: output === "escpos" ? encodeStoredReceiptText(encodeReceiptEscPos(lines, true)) : encodeReceiptPlain(lines),
+        plainText: encodeReceiptPlain(lines),
         source: "template",
         templateId: template.id,
         templateVersion: template.version,
@@ -272,7 +274,7 @@ function renderFallback(
 ): RenderedReceipt {
   const order = legacyReceiptOrder(data, presentation);
   const text = output === "escpos" ? renderCustomerReceipt(order) : renderCustomerReceiptBody(order);
-  return { text, source: "fallback", templateId: template?.id ?? null, templateVersion: template?.version ?? null, fallbackReason: reason, skipped: [] };
+  return { text, plainText: renderCustomerReceiptBody(order), source: "fallback", templateId: template?.id ?? null, templateVersion: template?.version ?? null, fallbackReason: reason, skipped: [] };
 }
 
 /** Receipt text for a stored print job of one of the tenant's orders. */

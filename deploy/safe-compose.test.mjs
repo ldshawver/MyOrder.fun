@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { pinnedRunArgs, pinnedUpArgs, validateActionServices, validateBuildPolicy, validateCandidateIdentity, validateContainer, validatePinnedComposeImages, validatePinnedImageMetadata, validatePlan, validateStagingDatabasePreflight, validateStagingWooOrigin } from "./safe-compose.mjs";
+import { pinnedRunArgs, pinnedUpArgs, validateActionServices, validateBuildPolicy, validateCandidateIdentity, validateContainer, validatePinnedComposeImages, validatePinnedImageMetadata, validatePlan, validateStagingDatabasePreflight, validateStagingWooOrigin, validateSyntheticBootstrapState } from "./safe-compose.mjs";
 
 const root = "/home/serveradmin/worktrees/myorder-release-convergence-20261016";
 function config(environment, database) {
@@ -141,6 +141,19 @@ test("staging configuration and database readiness fail before mutations", () =>
   assert.throws(() => validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: true, wooExternalEnabled: true, wooSafeTenantCount: 0 }), /WooCommerce/);
   assert.equal(validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: true, wooExternalEnabled: true, wooSafeTenantCount: 1 }), true);
 });
+test("synthetic bootstrap is staging-only and refuses any existing or unknown state", () => {
+  assert.equal(validateActionServices("bootstrap-synthetic", []), true);
+  assert.equal(validateSyntheticBootstrapState({ serviceContainerIds: [], projectContainerIds: [], databaseVolumeInspectStatus: 1 }), true);
+  assert.throws(() => validateSyntheticBootstrapState({ serviceContainerIds: ["db"], projectContainerIds: [], databaseVolumeInspectStatus: 1 }), /empty staging project/);
+  assert.throws(() => validateSyntheticBootstrapState({ serviceContainerIds: [], projectContainerIds: ["orphan"], databaseVolumeInspectStatus: 1 }), /empty staging project/);
+  assert.throws(() => validateSyntheticBootstrapState({ serviceContainerIds: [], projectContainerIds: [], databaseVolumeInspectStatus: 0 }), /database volume already exists/);
+  assert.throws(() => validateSyntheticBootstrapState({ serviceContainerIds: [], projectContainerIds: [], databaseVolumeInspectStatus: null }), /safely determine/);
+  const source = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
+  assert.match(source, /if \(action === "bootstrap-synthetic"\) \{/);
+  assert.match(source, /run\("docker", \[\.\.\.prefix, "run", "--rm", "migrate"\]\)/);
+  assert.match(source, /applyStagingP0Patch\(prefix, dbUser\)/);
+  assert.match(source, /run\("docker", \[\.\.\.prefix, "up", "-d", "api", "platform", "nginx"\]\)/);
+});
 test("staging production-only mode is explicit and does not require a Woo store or tenant", () => {
   assert.equal(validatePlan({ environment: "staging", root, project: "myorder-staging", config: config("staging", "myorder_staging") }), true);
   const unset = config("staging", "myorder_staging");
@@ -188,13 +201,14 @@ test("P0 compatibility patch has a staging-only guarded action tied to verified 
   const backupProof = guardedPatch.indexOf("validateStagingBackupEvidence(process.env.MYORDER_STAGING_BACKUP_DIR");
   const lineageProof = guardedPatch.indexOf("if (!recognizedStagingLineage(prefix))");
   const absenceProof = guardedPatch.indexOf("Staging P0 objects are not wholly absent");
-  const checksumProof = guardedPatch.indexOf("P0_PATCH_SHA256");
-  const patchExecution = guardedPatch.indexOf('"exec", "-i", "db", "psql"');
+  const patchHelper = source.indexOf("function applyStagingP0Patch");
+  const checksumProof = source.indexOf("P0_PATCH_SHA256", patchHelper);
+  const patchExecution = source.indexOf('"exec", "-i", "db", "psql"', patchHelper);
   const postPatchProof = guardedPatch.indexOf("Staging P0 marker/provenance verification failed after patch");
   const unchangedLedgerProof = guardedPatch.indexOf("Staging Drizzle migration ledger changed during P0 compatibility patch");
   assert.ok(actionGuard > 0 && p0Function > 0 && backupProof >= 0 && lineageProof > backupProof);
-  assert.ok(absenceProof > lineageProof && checksumProof > absenceProof && patchExecution > checksumProof);
-  assert.ok(postPatchProof > patchExecution && unchangedLedgerProof > postPatchProof);
+  assert.ok(absenceProof > lineageProof && patchHelper > absenceProof && checksumProof > patchHelper && patchExecution > checksumProof);
+  assert.ok(postPatchProof > 0 && unchangedLedgerProof > postPatchProof);
   assert.match(source, /const STAGING_BACKUP_ROOT = "\/home\/serveradmin\/release-backups"/);
   assert.match(source, /if \(environment === "staging" && action === "p0"\) \{\s*verifyStagingP0Patch\(prefix, resolved\)/);
   assert.match(source, /external WooCommerce explicitly disabled/);

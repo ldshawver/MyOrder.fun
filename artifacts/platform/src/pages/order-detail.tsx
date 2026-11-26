@@ -14,6 +14,7 @@ import {
 } from "@workspace/api-client-react";
 
 import { useQueryClient } from "@tanstack/react-query";
+import { OrderCourier } from "@/components/OrderCourier";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote, RotateCcw } from "lucide-react";
@@ -341,11 +342,17 @@ export default function OrderDetail() {
     { query: { enabled: !!id, queryKey: getGetOrderQueryKey(id) } }
   );
 
+  const recordedTender = order?.paymentStatus === OrderPaymentStatus.paid
+    ? order.paymentMethod ?? order.selectedPaymentMethod
+    : order?.selectedPaymentMethod ?? order?.paymentMethod;
+  const isStaffCloseout = ["csr", "supervisor", "admin", "global_admin"].includes(userRole);
+  const canSettleCash = isStaffCloseout && recordedTender === "cash" && order?.paymentStatus === OrderPaymentStatus.unpaid;
+
   useEffect(() => {
-    if (!order || new URLSearchParams(window.location.search).get("cashCloseout") !== "1") return;
+    if (!order || !canSettleCash || new URLSearchParams(window.location.search).get("cashCloseout") !== "1") return;
     setAmountTendered(Number(order.total).toFixed(2));
     setShowCashCloseout(true);
-  }, [order]);
+  }, [order, canSettleCash]);
 
   const { data: notesRes, isLoading: isNotesLoading } = useGetOrderNotes(
     id,
@@ -418,7 +425,7 @@ export default function OrderDetail() {
 
 
   async function closeOutCash() {
-    if (!order) return;
+    if (!order || !canSettleCash) return;
     setCloseoutBusy("cash");
     setCloseoutMessage(null);
     try {
@@ -829,6 +836,8 @@ export default function OrderDetail() {
                 </div>
               )}
 
+              {order.deliveryMethod === "uber_direct" && <OrderCourier orderId={order.id} />}
+
               {/* Customer: Track My Delivery / submit tracking link */}
               {isCustomer && (order as OrderWithTracking).trackingUrl ? (
                 <a
@@ -924,9 +933,20 @@ export default function OrderDetail() {
                 </div>
               )}
 
+              {isStaffCloseout && (
+                <p className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm font-semibold" data-testid="recorded-payment-method">
+                  Payment method: {({
+                    cash: "Cash",
+                    paypal: "PayPal",
+                    paypal_card: "Card",
+                    customer_credit: "Customer credit",
+                    "customer_credit+cash": "Customer credit + cash",
+                  } as Record<string, string>)[recordedTender ?? ""] ?? recordedTender ?? "Unconfirmed"}
+                </p>
+              )}
               {order.paymentStatus === OrderPaymentStatus.unpaid && (
                 <div className="space-y-3">
-                  {(creditBalance ?? 0) > 0 && (
+                  {(!isStaffCloseout || recordedTender === "customer_credit") && (creditBalance ?? 0) > 0 && (
                     <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-xs font-semibold">
@@ -970,10 +990,10 @@ export default function OrderDetail() {
                     </div>
                   )}
 
-                  <Button className="w-full rounded-xl font-semibold text-xs h-10" onClick={() => { setAmountTendered(Number(unpaidBalance).toFixed(2)); setShowCashCloseout(true); }} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
+                  {canSettleCash && <Button className="w-full rounded-xl font-semibold text-xs h-10" onClick={() => { setAmountTendered(Number(unpaidBalance).toFixed(2)); setShowCashCloseout(true); }} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
                     <Banknote size={14} className="mr-2" /> Close as Cash Paid
-                  </Button>
-                  {showCashCloseout && (
+                  </Button>}
+                  {canSettleCash && showCashCloseout && (
                     <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3" data-testid="cash-closeout-dialog">
                       <div className="font-semibold text-sm">Confirm cash payment for order #{order.id}</div>
                       <div className="grid grid-cols-2 gap-3 text-xs">
@@ -999,7 +1019,7 @@ export default function OrderDetail() {
                   {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
 
                   {/* Provider-verified PayPal checkout */}
-                  <PayPalCheckoutButton orderId={order.id} eligibilityAmount={Number(order.remainingTenderAmount ?? order.total)} getToken={getToken} onCaptured={() => { setCaptureConfirmed(true); void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
+                  {!isStaffCloseout && <PayPalCheckoutButton orderId={order.id} eligibilityAmount={Number(order.remainingTenderAmount ?? order.total)} getToken={getToken} onCaptured={() => { setCaptureConfirmed(true); void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />}
 
                 </div>
               )}

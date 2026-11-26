@@ -28,6 +28,7 @@ describe("profile image storage", () => {
   it.each([
     ["png", "image/png"],
     ["jpeg", "image/jpeg"],
+    ["jpeg", "image/jpg"],
     ["webp", "image/webp"],
   ] as const)("accepts and safely re-encodes %s", async (format, mime) => {
     const id = await store.storeTemporaryProfileImage(await raster(format), mime, "member@example.com");
@@ -40,10 +41,10 @@ describe("profile image storage", () => {
 
   it("rejects missing, malformed, oversized, mismatched, and animated image content", async () => {
     await expect(store.sanitizeProfileImage(Buffer.from("not an image"), "image/png")).rejects.toThrow(/valid image/i);
-    await expect(store.sanitizeProfileImage(await raster("png"), "image/jpeg")).rejects.toThrow(/PNG, JPEG, or WebP/i);
+    await expect(store.sanitizeProfileImage(await raster("png"), "image/jpeg")).rejects.toThrow(/PNG, JPEG, WebP, HEIC, or HEIF/i);
     await expect(store.sanitizeProfileImage(Buffer.alloc(3 * 1024 * 1024 + 1), "image/png")).rejects.toThrow(/3 MB/i);
     const gif = Buffer.from("R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=", "base64");
-    await expect(store.sanitizeProfileImage(gif, "image/gif")).rejects.toThrow(/PNG, JPEG, or WebP/i);
+    await expect(store.sanitizeProfileImage(gif, "image/gif")).rejects.toThrow(/PNG, JPEG, WebP, HEIC, or HEIF/i);
   });
 
   it("binds temporary uploads to the verified email and makes finalization retry-safe", async () => {

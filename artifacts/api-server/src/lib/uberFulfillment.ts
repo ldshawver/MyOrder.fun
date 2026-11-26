@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { db, ordersTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, usersTable } from "@workspace/db";
-import { cancelUberDelivery, createUberDelivery, createUberDeliveryQuote, getUberDelivery, getUberPickupAction, listUberDeliveries, type UberAddress, type UberManifestItem } from "./uberDirect";
+import { db, orderFulfillmentGroupsTable, ordersTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, usersTable } from "@workspace/db";
+import { cancelUberDelivery, createUberDelivery, createUberDeliveryQuote, getUberDelivery, getUberPickupAction, listUberDeliveries, projectUberCourierDetails, type UberCourierDetails, type UberAddress, type UberManifestItem } from "./uberDirect";
 import { nextUberDeliveryStatus } from "./uberDeliveryState";
 import { getUberDirectPickupContact, getUberDirectQuoteSettings, getUberDirectRuntimeConfig, isUberDirectDispatchEnabledForTenant } from "./uberDirectConfig";
 import { loadPickupSchedule, pickupOperatingWindow, validatePickupSelection } from "./pickupScheduling";
@@ -45,10 +45,47 @@ export async function queueUberDeliveryForPaidOrder(tenantId: number, orderId: n
   });
 }
 
+const courierDetailsCache = new Map<string, { expiresAt: number; result: Promise<UberCourierDetails | null> }>();
+
+export function courierDetailsForDelivery(tenantId: number, providerDeliveryId: string, orderId: number) {
+  const key = `${tenantId}:${orderId}:${providerDeliveryId}`;
+  const cached = courierDetailsCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+  const result = (async () => {
+    try {
+      const config = await getUberDirectRuntimeConfig(tenantId);
+      if (!config) return null;
+      const delivery = await getUberDelivery(providerDeliveryId, config);
+      if (delivery.id !== providerDeliveryId ||
+          (delivery.external_id && delivery.external_id !== `myorder-${tenantId}-${orderId}`)) return null;
+      return projectUberCourierDetails(delivery);
+    } catch {
+      return null;
+    }
+  })();
+  if (courierDetailsCache.size >= 256) {
+    const oldest = courierDetailsCache.keys().next().value;
+    if (oldest) courierDetailsCache.delete(oldest);
+  }
+  courierDetailsCache.set(key, { expiresAt: Date.now() + 20_000, result });
+  return result;
+}
+
+export async function isUberOrderReadyForDispatch(order: typeof ordersTable.$inferSelect): Promise<boolean> {
+  if (!order.tenantId || order.deliveryMethod !== "uber_direct" || !order.readyAt ||
+    !["ready", "preparing"].includes(order.fulfillmentStatus ?? "")) return false;
+  const groups = await db.select({ method: orderFulfillmentGroupsTable.method, status: orderFulfillmentGroupsTable.status })
+    .from(orderFulfillmentGroupsTable).where(and(
+      eq(orderFulfillmentGroupsTable.orderId, order.id), eq(orderFulfillmentGroupsTable.tenantId, order.tenantId),
+    ));
+  if (groups.length === 0) return order.fulfillmentStatus === "ready";
+  return groups.some(group => group.method === "uber_direct" && group.status === "ready");
+}
+
 /** The only normal entry to provider creation. A state claim serializes retries. */
 export async function requestUberDelivery(tenantId: number, orderId: number): Promise<string> {
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
-  if (!order || order.deliveryMethod !== "uber_direct" || order.fulfillmentStatus !== "ready" || !order.readyAt) return "not_ready";
+  if (!order || !await isUberOrderReadyForDispatch(order)) return "not_ready";
   if (!await isUberDeliveryFullySettled(order)) return "payment_required";
   if (!await isUberDirectDispatchEnabledForTenant(tenantId) || !await getUberDirectRuntimeConfig(tenantId) || !await getUberDirectPickupContact(tenantId)) return "configuration_required";
   const [fulfillment] = await db.select().from(uberDeliveryFulfillmentsTable).where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId))).limit(1);
@@ -108,12 +145,12 @@ export async function dispatchPendingUberDelivery(tenantId: number, orderId: num
   const [fulfillment] = await db.select().from(uberDeliveryFulfillmentsTable)
     .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId))).limit(1);
   if (!fulfillment || fulfillment.providerDeliveryId || !RETRYABLE.has(fulfillment.requestState)) return;
-  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.fulfillmentStatus, "ready"))).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
   const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(eq(uberDeliveryQuotesTable.id, fulfillment.quoteId), eq(uberDeliveryQuotesTable.tenantId, tenantId))).limit(1);
-  const [customer] = order ? await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, phone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1) : [];
+  const [customer] = order ? await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, phone: usersTable.contactPhone }).from(usersTable).where(and(eq(usersTable.tenantId, tenantId), eq(usersTable.id, order.customerId))).limit(1) : [];
   const [pickup, config] = await Promise.all([getUberDirectPickupContact(tenantId), getUberDirectRuntimeConfig(tenantId)]);
   const customerName = `${customer?.firstName ?? ""} ${customer?.lastName ?? ""}`.trim();
-  if (!order || !order.readyAt || !await isUberDeliveryFullySettled(order) || !quote || !pickup || !config || !customerName || !customer?.phone) {
+  if (!order || !await isUberOrderReadyForDispatch(order) || !await isUberDeliveryFullySettled(order) || !quote || !pickup || !config || !customerName || !customer?.phone) {
     await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "configuration_required", lastSanitizedError: "delivery_contact_configuration_required", updatedAt: new Date() })
       .where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.requestState, fulfillment.requestState)));
     return;

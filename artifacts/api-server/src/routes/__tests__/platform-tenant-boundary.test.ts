@@ -11,6 +11,7 @@ const fixture = vi.hoisted(() => ({
   users: [] as Array<Record<string, any>>,
   orders: [] as Array<Record<string, any>>,
   items: [] as Array<Record<string, any>>,
+  paymentAttempts: [] as Array<Record<string, any>>,
   shifts: [] as Array<Record<string, any>>,
   onboarding: [] as Array<Record<string, any>>,
   audits: [] as Array<Record<string, any>>,
@@ -51,11 +52,12 @@ vi.mock("@workspace/db", () => {
   const usersTable = { id: col("users", "id"), clerkId: col("users", "clerkId"), tenantId: col("users", "tenantId"), status: col("users", "status"), role: col("users", "role"), email: col("users", "email") };
   const ordersTable = { id: col("orders", "id"), tenantId: col("orders", "tenantId"), createdAt: col("orders", "createdAt"), total: col("orders", "total"), paymentStatus: col("orders", "paymentStatus"), paymentMethod: col("orders", "paymentMethod"), assignedCsrUserId: col("orders", "assignedCsrUserId") };
   const orderItemsTable = { orderId: col("items", "orderId"), createdAt: col("items", "createdAt"), catalogItemName: col("items", "catalogItemName"), quantity: col("items", "quantity"), totalPrice: col("items", "totalPrice") };
+  const paymentAttemptsTable = { tenantId: col("payment_attempts", "tenantId"), orderId: col("payment_attempts", "orderId"), fundingSource: col("payment_attempts", "fundingSource"), createdAt: col("payment_attempts", "createdAt"), state: col("payment_attempts", "state") };
   const labTechShiftsTable = { id: col("shifts", "id"), tenantId: col("shifts", "tenantId"), techId: col("shifts", "techId"), createdAt: col("shifts", "createdAt"), status: col("shifts", "status"), summary: col("shifts", "summary"), differenceAmount: col("shifts", "differenceAmount"), depositAmount: col("shifts", "depositAmount"), clockedInAt: col("shifts", "clockedInAt"), clockedOutAt: col("shifts", "clockedOutAt") };
   const onboardingRequestsTable = { id: col("onboarding", "id"), createdAt: col("onboarding", "createdAt"), status: col("onboarding", "status"), companyName: col("onboarding", "companyName"), contactEmail: col("onboarding", "contactEmail"), tenantId: col("onboarding", "tenantId") };
   const auditLogsTable = { id: col("audits", "id"), createdAt: col("audits", "createdAt") };
-  const dataFor = (table: any) => table === tenantsTable ? fixture.tenants : table === usersTable ? fixture.users : table === ordersTable ? fixture.orders : table === orderItemsTable ? fixture.items : table === labTechShiftsTable ? fixture.shifts : table === onboardingRequestsTable ? fixture.onboarding : table === auditLogsTable ? fixture.audits : [];
-  const nameFor = (table: any) => table === tenantsTable ? "tenants" : table === usersTable ? "users" : table === ordersTable ? "orders" : table === orderItemsTable ? "items" : table === labTechShiftsTable ? "shifts" : table === onboardingRequestsTable ? "onboarding" : table === auditLogsTable ? "audits" : "unknown";
+  const dataFor = (table: any) => table === tenantsTable ? fixture.tenants : table === usersTable ? fixture.users : table === ordersTable ? fixture.orders : table === orderItemsTable ? fixture.items : table === paymentAttemptsTable ? fixture.paymentAttempts : table === labTechShiftsTable ? fixture.shifts : table === onboardingRequestsTable ? fixture.onboarding : table === auditLogsTable ? fixture.audits : [];
+  const nameFor = (table: any) => table === tenantsTable ? "tenants" : table === usersTable ? "users" : table === ordersTable ? "orders" : table === orderItemsTable ? "items" : table === paymentAttemptsTable ? "payment_attempts" : table === labTechShiftsTable ? "shifts" : table === onboardingRequestsTable ? "onboarding" : table === auditLogsTable ? "audits" : "unknown";
   const match = (row: Record<string, any>, condition: any) => {
     if (!condition) return true;
     if (Array.isArray(condition)) return condition.every((item) => match(row, item));
@@ -109,7 +111,7 @@ vi.mock("@workspace/db", () => {
       }
     },
   };
-  return { db, tenantsTable, usersTable, ordersTable, orderItemsTable, labTechShiftsTable, onboardingRequestsTable, auditLogsTable };
+  return { db, tenantsTable, usersTable, ordersTable, orderItemsTable, paymentAttemptsTable, labTechShiftsTable, onboardingRequestsTable, auditLogsTable };
 });
 
 vi.mock("drizzle-orm", () => ({
@@ -126,7 +128,7 @@ vi.mock("drizzle-orm", () => ({
 import adminRouter from "../admin";
 import auditRouter from "../audit";
 import onboardingRouter from "../onboarding";
-import reportsRouter from "../reports";
+import reportsRouter, { csvEscape } from "../reports";
 
 const platformCases = [
   { name: "stats", method: "get", path: "/api/admin/stats" },
@@ -167,6 +169,10 @@ beforeEach(() => {
   fixture.items = [
     { orderId: 101, createdAt: new Date(), catalogItemName: "A item", quantity: 1, totalPrice: "15.00" },
     { orderId: 201, createdAt: new Date(), catalogItemName: "B confidential item", quantity: 1, totalPrice: "900.00" },
+  ];
+  fixture.paymentAttempts = [
+    { tenantId: 1, orderId: 101, fundingSource: "cash", state: "captured", createdAt: new Date("2026-03-01T00:00:00Z") },
+    { tenantId: 2, orderId: 201, fundingSource: "paypal", state: "captured", createdAt: new Date("2026-03-01T00:00:00Z") },
   ];
   fixture.shifts = [
     { id: 11, tenantId: 1, techId: 1, createdAt: new Date(), status: "active", summary: { totalRevenue: 15, orderCount: 1 }, differenceAmount: "0", depositAmount: "0" },
@@ -210,12 +216,18 @@ describe("platform-only authorization boundary", () => {
 });
 
 describe("tenant report isolation", () => {
+  it("renders formula-shaped CSV values as literal text", () => {
+    expect(csvEscape("=SUM(A1:A2)")).toBe("'=SUM(A1:A2)");
+    expect(csvEscape("+1")).toBe("'+1");
+    expect(csvEscape("ordinary text")).toBe("ordinary text");
+  });
+
   it("returns only tenant A financial, item, shift, and user-derived report data", async () => {
     const response = await supertest(app(reportsRouter)).get("/api/admin/reports/summary");
     expect(response.status).toBe(200);
     expect(response.body.totals).toMatchObject({ orderCount: 1, paidOrderCount: 1, revenue: 15, activeShiftCount: 1, discrepancyTotal: 0 });
     expect(JSON.stringify(response.body)).not.toMatch(/B confidential|900|contact-b@|TENANT_B_SECRET/);
-    expect(fixture.selectCalls.filter((table) => ["orders", "items", "shifts", "users"].includes(table))).toEqual(expect.arrayContaining(["orders", "items", "shifts", "users"]));
+    expect(fixture.selectCalls.filter((table) => ["orders", "items", "payment_attempts", "shifts", "users"].includes(table))).toEqual(expect.arrayContaining(["orders", "items", "payment_attempts", "shifts", "users"]));
 
     const csv = await supertest(app(reportsRouter)).get("/api/admin/reports/export.csv");
     expect(csv.status).toBe(200);
@@ -229,12 +241,15 @@ describe("tenant report isolation", () => {
     expect(response.text).not.toContain("900.00");
   });
 
-  it("keeps platform-wide reporting available to global_admin", async () => {
+  it("requires an explicit tenant scope for global_admin reports", async () => {
     fixture.actor = { id: 99, clerkId: "platform-admin", email: "platform@test.invalid", role: "global_admin", tenantId: null, status: "approved" };
-    const response = await supertest(app(reportsRouter)).get("/api/admin/reports/summary");
+    const unscoped = await supertest(app(reportsRouter)).get("/api/admin/reports/summary");
+    expect(unscoped.status).toBe(403);
+
+    const response = await supertest(app(reportsRouter)).get("/api/admin/reports/summary?tenantId=1");
     expect(response.status).toBe(200);
-    expect(response.body.totals).toMatchObject({ orderCount: 2, revenue: 915, activeShiftCount: 2, discrepancyTotal: 90 });
-    expect(JSON.stringify(response.body)).toContain("B confidential item");
+    expect(response.body.totals).toMatchObject({ orderCount: 1, revenue: 15, activeShiftCount: 1, discrepancyTotal: 0 });
+    expect(JSON.stringify(response.body)).not.toContain("B confidential item");
   });
 });
 

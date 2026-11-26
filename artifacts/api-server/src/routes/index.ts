@@ -7,6 +7,7 @@ import catalogRouter from "./catalog";
 import catalogueProductsRouter from "./catalogue-products";
 import catalogueInventoryReconciliationRouter from "./catalogue-inventory-reconciliation";
 import ordersRouter from "./orders";
+import speedOrderRouter from "./speed-order";
 import auditRouter from "./audit";
 import notificationsRouter from "./notifications";
 import adminRouter from "./admin";
@@ -64,6 +65,7 @@ router.use(tenantsRouter);
 router.use(catalogRouter);
 router.use(catalogueProductsRouter);
 router.use(catalogueInventoryReconciliationRouter);
+router.use(speedOrderRouter);
 router.use(ordersRouter);
 // Customer credit payment is part of checkout. Its guard is scoped to
 // /payments, so mount it before routers that install path-less approval

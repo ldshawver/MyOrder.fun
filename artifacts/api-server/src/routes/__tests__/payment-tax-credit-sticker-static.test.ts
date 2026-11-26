@@ -10,7 +10,7 @@ describe("payment and sticker release invariants", () => {
     const methods = read("artifacts/api-server/src/payments/checkoutMethods.ts");
     for (const tender of ['id: "cash"', 'id: "paypal"', 'id: "customer_credit"']) expect(methods).toContain(tender);
     expect(methods).not.toContain('id: "paypal_card"');
-    expect(read("artifacts/api-server/src/payments/service.ts")).toContain('capture.fundingSource === "card" ? "paypal_card" : "paypal"');
+    expect(read("artifacts/api-server/src/payments/service.ts")).toContain('capture.fundingSource === "credit" || capture.fundingSource === "debit" ? "paypal_card" : "paypal"');
     for (const retired of ['id: "stripe"', 'id: "gift_card"', 'id: "manual"', 'id: "cash_app"']) expect(methods).not.toContain(retired);
   });
 

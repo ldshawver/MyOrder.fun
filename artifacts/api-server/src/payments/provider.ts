@@ -2,7 +2,9 @@ import type { PaymentConfig } from "./config";
 
 export type Money = { value: string; currency: string };
 export type ProviderOrder = { id: string; status: string; amount: Money; approvalUrl?: string; capture?: ProviderCapture };
-export type ProviderCapture = { orderId: string; captureId: string; status: string; amount: Money; fundingSource?: "paypal" | "card" };
+/** Provider-reported funding source. These values are evidence, never browser claims. */
+export type ProviderFundingSource = "paypal" | "venmo" | "apple_pay" | "google_pay" | "credit" | "debit";
+export type ProviderCapture = { orderId: string; captureId: string; status: string; amount: Money; fundingSource?: ProviderFundingSource };
 // `amount` is optional because PayPal's minimal response is still a successful
 // provider outcome.  The provider identity/status must be committed before any
 // optional representation fields are inspected.
@@ -10,7 +12,7 @@ export type ProviderRefund = { refundId: string; status: string; amount?: Money 
 export type PayPalTransmissionHeaders = { transmissionId: string; transmissionTime: string; transmissionSignature: string; certificateUrl: string; authAlgorithm: string };
 
 export interface PaymentProvider {
-  createOrder(input: { amount: Money; requestId: string; internalOrderId: number }): Promise<ProviderOrder>;
+  createOrder(input: { amount: Money; requestId: string; internalOrderId: number; fundingSource?: "google_pay" }): Promise<ProviderOrder>;
   getOrder(providerOrderId: string): Promise<ProviderOrder>;
   captureOrder(providerOrderId: string, requestId: string): Promise<ProviderCapture>;
   getCapture(providerCaptureId: string): Promise<ProviderCapture>;

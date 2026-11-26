@@ -321,7 +321,26 @@ export async function createUberDeliveryQuote(input: {
   return data as UberDeliveryQuote;
 }
 
-export type UberDelivery = { id: string; status?: string; external_id?: string; quote_id?: string };
+export type UberDelivery = {
+  id: string; status?: string; external_id?: string; quote_id?: string;
+  tracking_url?: unknown;
+  courier?: { name?: unknown; vehicle_type?: unknown } | null;
+};
+
+export type UberCourierDetails = { name: string | null; vehicle: string | null; trackingUrl: string | null };
+
+export function projectUberCourierDetails(delivery: UberDelivery): UberCourierDetails {
+  const toLabel = (value: unknown) => typeof value === "string" ? value.trim().slice(0, 100) || null : null;
+  let trackingUrl: string | null = null;
+  if (typeof delivery.tracking_url === "string") {
+    try {
+      const url = new URL(delivery.tracking_url);
+      if (url.protocol === "https:" && !url.username && !url.password && !url.port &&
+        /(^|\.)(uber|ubereats)\.com$/i.test(url.hostname)) trackingUrl = url.href;
+    } catch { /* Ignore an invalid provider link. */ }
+  }
+  return { name: toLabel(delivery.courier?.name), vehicle: toLabel(delivery.courier?.vehicle_type), trackingUrl };
+}
 
 export async function listUberDeliveries(config: UberDirectRuntimeConfig, limit = 100, offset = 0): Promise<{ deliveries: Array<UberDelivery & { external_id?: string; quote_id?: string }>; hasMore: boolean }> {
   const token = await getUberAccessToken(config);
@@ -383,7 +402,7 @@ export async function createUberDelivery(input: {
     pickup_action: input.pickupAction ?? getUberPickupAction(),
   };
   let res: Response;
-  try { res = await fetch(`${UBER_API_BASE_URL}/v1/customers/${config.customerId}/deliveries`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "Idempotency-Key": input.externalOrderReference }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20_000) }); }
+  try { res = await fetch(`${UBER_API_BASE_URL}/v1/customers/${encodeURIComponent(config.customerId)}/deliveries`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "Idempotency-Key": input.externalOrderReference }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20_000) }); }
   catch { throw new UberDirectApiError(502, "Uber Direct delivery service is unavailable.", "delivery_unavailable"); }
   const data = await parseUberResponse(res);
   if (!res.ok || !data || typeof data !== "object" || typeof (data as { id?: unknown }).id !== "string" || !(data as { id: string }).id.trim()) {

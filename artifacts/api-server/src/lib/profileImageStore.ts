@@ -22,9 +22,18 @@ export async function sanitizeProfileImage(buffer: Buffer, declaredMime: string)
   let image: sharp.Metadata;
   try { image = await sharp(buffer, { failOn: "error", limitInputPixels: 16_777_216 }).metadata(); }
   catch { throw new Error("The uploaded file is not a valid image."); }
-  const detected: Record<string, string> = { jpeg: "image/jpeg", png: "image/png", webp: "image/webp" };
-  if (!image.format || !detected[image.format] || detected[image.format] !== declaredMime || !image.width || !image.height || image.width > 4096 || image.height > 4096 || (image.pages ?? 1) > 1) {
-    throw new Error("Use a non-animated PNG, JPEG, or WebP image no larger than 4096×4096 pixels.");
+  const acceptedMimeByFormat: Record<string, readonly string[]> = {
+    jpeg: ["image/jpeg", "image/jpg"],
+    png: ["image/png"],
+    webp: ["image/webp"],
+    // HEIC/HEIF is accepted only when Sharp can decode it. The decoded image is
+    // still re-encoded below, so neither its metadata nor its supplied MIME is
+    // ever trusted as stored content.
+    heif: ["image/heic", "image/heif"],
+  };
+  const mime = declaredMime.trim().toLowerCase();
+  if (!image.format || !acceptedMimeByFormat[image.format]?.includes(mime) || !image.width || !image.height || image.width > 4096 || image.height > 4096 || (image.pages ?? 1) > 1) {
+    throw new Error("Use a non-animated PNG, JPEG, WebP, HEIC, or HEIF image no larger than 4096×4096 pixels.");
   }
   // Re-encoding removes metadata and any appended/polyglot payload. Only the
   // generated WebP output is stored or served, with a fixed image content type.

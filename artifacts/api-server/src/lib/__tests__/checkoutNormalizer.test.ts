@@ -145,55 +145,40 @@ describe("checkoutNormalizer", () => {
       expect(retail[0].unit_price).toBe(25);
     });
 
-    it("charges the sale price when the sale option is on and a sale price is present", async () => {
-      makeDbMock(makeSampleLocalMappedItem({
-        price: "25.00",
-        regularPrice: "25.00",
-        compareAtPrice: "19.99",
-        isSaleFeatured: true,
-      }));
-
-      const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 2 }]);
-      expect(result[0]).toMatchObject({ unit_price: 19.99, line_subtotal: 39.98 });
-    });
-
-    it("keeps the regular price when the sale option is on without a sale price", async () => {
-      makeDbMock(makeSampleLocalMappedItem({
-        price: "25.00",
-        regularPrice: "25.00",
-        compareAtPrice: null,
-        isSaleFeatured: true,
-      }));
-
-      const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
-      expect(result[0].unit_price).toBe(25);
-    });
-
-    it("calculates an active sale price on the server", async () => {
+    it("charges the configured sale price when activeSale is enabled", async () => {
       makeDbMock(makeSampleLocalMappedItem({
         price: "25.00",
         regularPrice: "25.00",
         compareAtPrice: "19.99",
         metadata: { activeSale: true },
+        isSaleFeatured: false,
       }));
-
-      const result = await normalizeCheckoutCartWithContext(
-        [{ catalogItemId: 1, quantity: 2 }], undefined, true, 1, false, { isCurrentEmployee: false },
-      );
-
-      expect(result[0]).toMatchObject({ unit_price: 19.99, line_subtotal: 39.98 });
+      const [line] = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 2 }]);
+      expect(line).toMatchObject({ unit_price: 19.99, line_subtotal: 39.98 });
     });
 
-    it("charges regular price when a configured sale is inactive", async () => {
+    it("charges a configured sale price for a legacy Sale flag", async () => {
       makeDbMock(makeSampleLocalMappedItem({
-        price: "19.99",
+        price: "25.00",
+        regularPrice: "25.00",
+        compareAtPrice: "19.99",
+        metadata: {},
+        isSaleFeatured: true,
+      }));
+      const [line] = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 2 }]);
+      expect(line).toMatchObject({ unit_price: 19.99, line_subtotal: 39.98 });
+    });
+
+    it("keeps a display-only sale badge from changing the authoritative price when activeSale is off", async () => {
+      makeDbMock(makeSampleLocalMappedItem({
+        price: "25.00",
         regularPrice: "25.00",
         compareAtPrice: "19.99",
         metadata: { activeSale: false },
+        isSaleFeatured: true,
       }));
-
-      const result = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
-      expect(result[0].unit_price).toBe(25);
+      const [line] = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
+      expect(line.unit_price).toBe(25);
     });
 
     it.each([
@@ -206,7 +191,6 @@ describe("checkoutNormalizer", () => {
         compareAtPrice,
         metadata: { activeSale: true },
       }));
-
       await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }])).rejects.toMatchObject({
         name: "CheckoutMappingError",
         reason: "invalid_sale_price_configuration",
@@ -280,6 +264,15 @@ describe("checkoutNormalizer", () => {
       expect(line.customer_safe_description).toBe("Safe customer description");
       expect(line.customer_safe_category).toBe("Safe customer category");
       expect(line.customer_safe_image).toBe("https://safe.example/product.jpg");
+    });
+
+    it("keeps merchantCategory ahead of the mapped Lucifer Cruz fallback", async () => {
+      makeDbMock(makeSampleLocalMappedItem({
+        merchantCategory: "Safe customer category",
+        luciferCruzCategory: "Adult",
+      }));
+      const [line] = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }], undefined, true, 1, true);
+      expect(line.customer_safe_category).toBe("Safe customer category");
     });
 
     it("throws when all branded checkout name fallbacks are empty", async () => {

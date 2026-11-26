@@ -216,6 +216,7 @@ export interface CatalogItem {
   metadata?: CatalogItemMetadata;
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  activeSale?: boolean;
   alavontName?: string | null;
   alavontDescription?: string | null;
   alavontCategory?: string | null;
@@ -281,6 +282,7 @@ export interface CreateCatalogItemBody {
   mediaGallery?: CreateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  activeSale?: boolean;
   tags?: string[];
   internalName?: string | null;
   internalDescription?: string | null;
@@ -353,6 +355,7 @@ export interface UpdateCatalogItemBody {
   mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  activeSale?: boolean;
   tags?: string[];
   internalName?: string | null;
   internalDescription?: string | null;
@@ -683,6 +686,7 @@ export const CreateOrderBodyDeliveryMethod = {
   uber_direct: 'uber_direct',
   uber_courier: 'uber_courier',
   csr_delivery: 'csr_delivery',
+  carrier: 'carrier',
 } as const;
 
 export type CreateOrderBodyOrderType = typeof CreateOrderBodyOrderType[keyof typeof CreateOrderBodyOrderType] | null;
@@ -706,6 +710,8 @@ export interface CreateOrderBody {
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
+  /** @minLength 1 */
+  carrierQuoteId?: string;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
   /** @minimum 1 */
   pickupLocationId?: number;

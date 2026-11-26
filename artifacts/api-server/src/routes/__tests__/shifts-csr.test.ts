@@ -28,6 +28,7 @@ const auditLogInsertSpy = vi.fn();
 const thenableChain = (resolved: unknown[]): Record<string, unknown> => {
   const promise = Promise.resolve(resolved);
   const obj = promise as unknown as Record<string, unknown>;
+  obj.for = () => thenableChain(resolved);
   obj.limit = () => Promise.resolve(resolved);
   obj.orderBy = () => Promise.resolve(resolved);
   obj.where = vi.fn(() => thenableChain(resolved));
@@ -116,12 +117,13 @@ function makeUser(role: string, status: string = "pending", isActive = true, ten
  *   call 2 = active-shift lookup (clock-in / clock-out)
  *   call 3+ = empty (orders / inventory snapshot lookups)
  */
-function configureDb(opts: { user: ReturnType<typeof makeUser> | null; activeShift?: unknown; emptyThirdSelect?: boolean }) {
+function configureDb(opts: { user: ReturnType<typeof makeUser> | null; activeShift?: unknown; emptyThirdSelect?: boolean; correctionRows?: unknown[] }) {
   let n = 0;
   (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
     n++;
     if (n === 1) return makeChain(opts.user ? [opts.user] : []);
     if (n === 2 && opts.activeShift) return makeChain([opts.activeShift]);
+    if (n === 3 && opts.correctionRows) return makeChain(opts.correctionRows);
     if (n === 3 && opts.emptyThirdSelect) return makeChain([]);
     if (n === 4 && opts.emptyThirdSelect) return makeChain([{ id: 1, tenantId: 1, slug: "sales-box-1", label: "Sales Box 1", isActive: true }]);
     if (n === 3 && !opts.activeShift && !opts.emptyThirdSelect) return makeChain([{ id: 1, tenantId: 1, slug: "sales-box-1", label: "Sales Box 1", isActive: true }]);
@@ -173,10 +175,66 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     expect(res.body.shift.id).toBe(777);
   });
 
+  it("lets a supervisor record a missing count with an audit trail", async () => {
+    configureDb({
+      user: makeUser("supervisor", "approved"),
+      activeShift: { id: 888, tenantId: 1, status: "supervisor_pending", clockedOutAt: new Date() },
+      correctionRows: [{ id: 12, quantityStart: "3.000", quantitySold: "1.000", quantityEndActual: null }],
+    });
+    const result = await supertest(buildApp()).post("/api/shifts/888/closeout-inventory-correction")
+      .send({ reason: "Verified original worksheet", counts: [{ itemId: 12, counted: "2" }] });
+    expect(result.status, result.text).toBe(200);
+    expect(auditLogInsertSpy).toHaveBeenCalledWith(expect.objectContaining({
+      action: "SHIFT_CLOSEOUT_INVENTORY_CORRECTED",
+      metadata: { reason: "Verified original worksheet", corrections: [
+        { itemId: 12, counted: "2", previousOpening: "3.000", previousCounted: null },
+      ] },
+    }));
+  });
+
+  it("preserves an already recorded physical count", async () => {
+    configureDb({
+      user: makeUser("supervisor", "approved"),
+      activeShift: { id: 888, tenantId: 1, status: "supervisor_pending", clockedOutAt: new Date() },
+      correctionRows: [{ id: 12, quantityStart: "3.000", quantitySold: "1.000", quantityEndActual: "2.000" }],
+    });
+    const result = await supertest(buildApp()).post("/api/shifts/888/closeout-inventory-correction")
+      .send({ reason: "Verified original worksheet", counts: [{ itemId: 12, counted: "1" }] });
+    expect(result.status, result.text).toBe(409);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(auditLogInsertSpy).not.toHaveBeenCalled();
+  });
+
+  it("requires a verified opening quantity when correcting a legacy calculated ending", async () => {
+    const setup = () => configureDb({
+      user: makeUser("supervisor", "approved"),
+      activeShift: { id: 888, tenantId: 1, status: "supervisor_pending", clockedOutAt: new Date() },
+      correctionRows: [{ id: 12, quantityStart: "0.000", quantitySold: "3.000", quantityEndActual: "-3.000" }],
+    });
+    const body = { reason: "Verified original worksheet", counts: [{ itemId: 12, counted: "1" }] };
+    setup();
+    const refused = await supertest(buildApp()).post("/api/shifts/888/closeout-inventory-correction").send(body);
+    expect(refused.status).toBe(409);
+    expect(db.update).not.toHaveBeenCalled();
+    setup();
+    const accepted = await supertest(buildApp()).post("/api/shifts/888/closeout-inventory-correction")
+      .send({ ...body, counts: [{ ...body.counts[0], opening: "4" }] });
+    expect(accepted.status, accepted.text).toBe(200);
+    expect(auditLogInsertSpy).toHaveBeenCalledOnce();
+  });
+
+  it("denies a CSR permission to correct closeout counts", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+    const result = await supertest(buildApp()).post("/api/shifts/888/closeout-inventory-correction")
+      .send({ reason: "Verified original worksheet", counts: [{ itemId: 12, counted: "1" }] });
+    expect(result.status).toBe(403);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it("clock-out writes an audit_logs row with action=shift.clock_out", async () => {
     const activeShift = { id: 888, techId: 50, status: "active", tenantId: 1, clockedInAt: new Date(), cashBankStart: "0" };
     configureDb({ user: makeUser("customer_service_rep", "approved"), activeShift });
-    const res = await supertest(buildApp()).post("/api/shifts/clock-out").send({ cashBankEnd: 100 });
+    const res = await supertest(buildApp()).post("/api/shifts/clock-out").send({ cashBankEnd: 100, endingInventory: [] });
     expect(res.status).toBe(200);
     expect(auditLogInsertSpy).toHaveBeenCalledTimes(1);
     const row = auditLogInsertSpy.mock.calls[0][0] as Record<string, unknown>;
