@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, asc, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, ilike, inArray, or, sql } from "drizzle-orm";
 import { catalogItemsTable, db, tenantsTable, usersTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
 import { publicCatalogEligibility } from "../lib/catalogEligibility";
@@ -53,6 +53,53 @@ router.get("/speed-order/top-nine", requirePermission("speed_order.use"), async 
     const catalog = await loadSellable(tenantId, [...new Set([...pins.map(pin => pin.catalogItemId), ...ranked.map(row => row.catalogItemId)])]);
     res.json({ windowDays: SPEED_ORDER_RANK_WINDOW_DAYS, canPin: await hasPermission(req.dbUser!, "speed_order.pin", tenantId), slots: selectHybridTopNine({ ranked, pins, catalog }) });
   } catch (error) { logger.error({ error, tenantId }, "Speed Order top nine failed"); res.status(500).json({ error: "Could not load Speed Order" }); }
+});
+
+const browseEligible = (tenantId: number) => and(
+  eq(catalogItemsTable.tenantId, tenantId),
+  eq(catalogItemsTable.isAvailable, true),
+  publicCatalogEligibility(),
+);
+const browseCategory = sql<string>`btrim(${catalogItemsTable.category})`;
+const BROWSE_PAGE_SIZE = 40;
+
+router.get("/speed-order/categories", requirePermission("speed_order.use"), async (req, res): Promise<void> => {
+  const tenantId = req.authorizedTenantId!;
+  res.set("Cache-Control", "no-store");
+  try {
+    const categories = await db.selectDistinct({ name: browseCategory }).from(catalogItemsTable)
+      .where(browseEligible(tenantId)).orderBy(browseCategory);
+    res.json({ categories: categories.map(category => category.name) });
+  } catch (error) {
+    logger.error({ error, tenantId }, "Speed Order categories failed");
+    res.status(500).json({ error: "Could not load categories" });
+  }
+});
+
+router.get("/speed-order/category-items", requirePermission("speed_order.use"), async (req, res): Promise<void> => {
+  const tenantId = req.authorizedTenantId!;
+  res.set("Cache-Control", "no-store");
+  const { category, after = "0" } = req.query;
+  if (Object.keys(req.query).some(key => key !== "category" && key !== "after")
+    || typeof category !== "string" || category.length > 512
+    || typeof after !== "string" || !/^\d{1,10}$/.test(after) || Number(after) > 2147483647) {
+    res.status(400).json({ error: "Invalid category or page cursor" });
+    return;
+  }
+  try {
+    const found = await db.select(catalogColumns).from(catalogItemsTable).where(and(
+      browseEligible(tenantId), eq(browseCategory, category), gt(catalogItemsTable.id, Number(after)),
+    )).orderBy(asc(catalogItemsTable.id)).limit(BROWSE_PAGE_SIZE + 1);
+    const page = found.slice(0, BROWSE_PAGE_SIZE);
+    const items = page.flatMap(row => {
+      const item = speedOrderSellableItem(row);
+      return item ? [item] : [];
+    });
+    res.json({ items, nextCursor: found.length > BROWSE_PAGE_SIZE ? page.at(-1)?.id ?? null : null });
+  } catch (error) {
+    logger.error({ error, tenantId }, "Speed Order category items failed");
+    res.status(500).json({ error: "Could not load category items" });
+  }
 });
 
 router.get("/speed-order/catalog", requirePermission("speed_order.pin"), async (req, res): Promise<void> => {
