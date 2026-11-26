@@ -12,7 +12,7 @@ export type ProviderRefund = { refundId: string; status: string; amount?: Money 
 export type PayPalTransmissionHeaders = { transmissionId: string; transmissionTime: string; transmissionSignature: string; certificateUrl: string; authAlgorithm: string };
 
 export interface PaymentProvider {
-  createOrder(input: { amount: Money; requestId: string; internalOrderId: number }): Promise<ProviderOrder>;
+  createOrder(input: { amount: Money; requestId: string; internalOrderId: number; fundingSource?: "google_pay" }): Promise<ProviderOrder>;
   getOrder(providerOrderId: string): Promise<ProviderOrder>;
   captureOrder(providerOrderId: string, requestId: string): Promise<ProviderCapture>;
   getCapture(providerCaptureId: string): Promise<ProviderCapture>;

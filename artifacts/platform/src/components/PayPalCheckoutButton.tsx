@@ -87,7 +87,7 @@ const pendingKey = "myorder-paypal-v6-pending";
 export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, getToken, onCaptured, onAbandoned, disabled = false }: Props) {
   const walletContainer = useRef<HTMLDivElement>(null);
   const internalOrderId = useRef<number | undefined>(orderId);
-  const sessions = useRef<Partial<Record<Method, WalletSession>>>({}); const attempt = useRef<{ id: number; providerOrderId: string } | undefined>(undefined);
+  const sessions = useRef<Partial<Record<Method, WalletSession>>>({}); const attempt = useRef<{ id: number; providerOrderId: string; fundingSource?: "google_pay" } | undefined>(undefined);
   const busyRef = useRef(false);
   const applePay = useRef<ApplePaySetup | null>(null);
   const googlePay = useRef<{ session: GooglePaySessionApi; client: GooglePaymentsClient; config: ReturnType<GooglePaySessionApi["formatConfigForPaymentRequest"]> } | null>(null);
@@ -100,13 +100,16 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
     if (!createOrder) throw new Error("Checkout order is not ready");
     const created = await createOrder(); internalOrderId.current = created; return created;
   }, [createOrder]);
-  const createProviderOrder = useCallback(async () => {
-    if (attempt.current) return attempt.current;
+  const createProviderOrder = useCallback(async (fundingSource?: "google_pay") => {
+    if (attempt.current) {
+      if (attempt.current.fundingSource !== fundingSource) throw new Error("Resolve the current payment attempt before changing payment methods");
+      return attempt.current;
+    }
     const checkoutOrderId = await resolveInternalOrder();
-    const response = await fetch(`/api/payments/paypal/orders/${checkoutOrderId}`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey(`paypal-create-${checkoutOrderId}`), ...await authHeaders() }, body: "{}" });
+    const response = await fetch(`/api/payments/paypal/orders/${checkoutOrderId}`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey(`paypal-create-${checkoutOrderId}${fundingSource ? "-google-pay" : ""}`), ...await authHeaders() }, body: JSON.stringify(fundingSource ? { fundingSource } : {}) });
     const body = await response.json() as { attemptId?: number; providerOrderId?: string; error?: string };
     if (!response.ok || !body.attemptId || !body.providerOrderId) throw new Error(body.error ?? "Could not create PayPal order");
-    attempt.current = { id: body.attemptId, providerOrderId: body.providerOrderId };
+    attempt.current = { id: body.attemptId, providerOrderId: body.providerOrderId, fundingSource };
     sessionStorage.setItem(pendingKey, JSON.stringify({ orderId: checkoutOrderId, ...attempt.current }));
     return attempt.current;
   }, [authHeaders, resolveInternalOrder]);
@@ -380,7 +383,7 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
               paymentDataCallbacks: {
                 onPaymentAuthorized: async paymentData => {
                   try {
-                    const attempt = await createProviderOrder();
+                    const attempt = await createProviderOrder("google_pay");
                     const confirmed = await session.confirmOrder({ orderId: attempt.providerOrderId, paymentMethodData: paymentData.paymentMethodData });
                     if (confirmed.status !== "APPROVED") throw new Error("Google Pay requires additional provider action");
                     await capture(attempt.providerOrderId);

@@ -22,7 +22,7 @@ const limiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, le
 const customerAuth = [limiter, requireAuth, loadDbUser, requireDbUser, requireCustomerCheckoutAccess, requireTenantContext] as const;
 const adminAuth = [limiter, requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext] as const;
 const Id = z.coerce.number().int().positive();
-const Empty = z.object({}).strict();
+const Create = z.object({ fundingSource: z.literal("google_pay").optional() }).strict();
 const Capture = z.object({ attemptId: z.number().int().positive() }).strict();
 const Cancel = z.object({ attemptId: z.number().int().positive() }).strict();
 const Refund = z.object({ amount: z.string().regex(/^\d+\.\d{2}$/).optional(), reason: z.string().trim().min(3).max(500) }).strict();
@@ -65,7 +65,20 @@ router.get("/payments/config", ...customerAuth, async (req, res) => {
 });
 
 router.post("/payments/paypal/orders/:orderId", ...customerAuth, async (req, res) => {
-  try { Empty.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).create({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, idempotencyKey: key(req.get("Idempotency-Key")) }); res.status(result.replayed ? 200 : 201).json(result); }
+  try {
+    const { fundingSource } = Create.parse(req.body);
+    const orderId = Id.parse(req.params.orderId);
+    const actor = req.dbUser!;
+    const requestKey = key(req.get("Idempotency-Key"));
+    const result = await (await service(req.authorizedTenantId!)).create({
+      tenantId: req.authorizedTenantId!,
+      customerId: actor.id,
+      orderId,
+      idempotencyKey: fundingSource ? `google_pay/${requestKey}` : requestKey,
+      ...(fundingSource ? { fundingSource } : {}),
+    });
+    res.status(result.replayed ? 200 : 201).json(result);
+  }
   catch (error) { fail(res, error); }
 });
 

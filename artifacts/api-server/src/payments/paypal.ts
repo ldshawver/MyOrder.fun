@@ -140,8 +140,14 @@ export class PayPalProvider implements PaymentProvider {
     return body;
   }
 
-  async createOrder(input: { amount: Money; requestId: string; internalOrderId: number }): Promise<ProviderOrder> {
-    const body = await this.request("/v2/checkout/orders", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ intent: "CAPTURE", purchase_units: [{ reference_id: String(input.internalOrderId), amount: { currency_code: input.amount.currency, value: input.amount.value } }] }) }, input.requestId);
+  async createOrder(input: { amount: Money; requestId: string; internalOrderId: number; fundingSource?: "google_pay" }): Promise<ProviderOrder> {
+    const body = await this.request("/v2/checkout/orders", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({
+      intent: "CAPTURE",
+      purchase_units: [{ reference_id: String(input.internalOrderId), amount: { currency_code: input.amount.currency, value: input.amount.value } }],
+      ...(input.fundingSource === "google_pay" ? {
+        payment_source: { google_pay: { attributes: { verification: { method: "SCA_WHEN_REQUIRED" } } } },
+      } : {}),
+    }) }, input.requestId);
     const unit = onlyObject(body.purchase_units); const amount = unit?.amount as Json | undefined;
     if (!nonEmptyString(body.id) || typeof body.status !== "string" || !ORDER_STATUSES.has(body.status) || unit?.reference_id !== String(input.internalOrderId) || amount?.value !== input.amount.value || amount.currency_code !== input.amount.currency) throw new PayPalProviderError("invalid_response", "PayPal order response invalid");
     const rawApprovalUrl = (body.links as Array<Json> | undefined)?.find(link => link.rel === "payer-action" || link.rel === "approve")?.href;
