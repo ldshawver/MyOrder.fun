@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyAccountabilityOffsets, calculateShiftInventoryAccountability } from "../shiftInventoryAccountability";
+import { applyAccountabilityOffsets, calculateShiftInventoryAccountability, inventoryExceptionMatches } from "../shiftInventoryAccountability";
 
 const row = (overrides: Record<string, unknown> = {}) => ({
   shiftInventoryItemId: 7, catalogItemId: 41, locationId: 3, itemName: "Exact variant", unitOfMeasure: "each",
@@ -27,6 +27,27 @@ describe("shift inventory accountability", () => {
     expect(result.blockers.map(item => item.code)).toEqual([
       "PHYSICAL_COUNT_REQUIRED", "CATALOG_ITEM_REQUIRED", "LOCATION_REQUIRED", "RETAIL_PRICE_REQUIRED",
     ]);
+  });
+
+  it("defers only the selected missing and recognized legacy counts while retaining verified shortages", () => {
+    const result = calculateShiftInventoryAccountability([
+      row(),
+      row({ shiftInventoryItemId: 8, countedQuantity: null }),
+      row({ shiftInventoryItemId: 9, openingQuantity: "0", countedQuantity: "-2" }),
+    ]);
+    expect(inventoryExceptionMatches(result.blockers, new Set([8, 9]), new Set([9]))).toBe(true);
+    expect(inventoryExceptionMatches(result.blockers, new Set([8]), new Set([9]))).toBe(false);
+    expect(inventoryExceptionMatches(result.blockers, new Set([7, 9]), new Set([9]))).toBe(false);
+    expect(inventoryExceptionMatches(result.blockers, new Set([8, 9]), new Set())).toBe(false);
+    expect(result.lines.map(line => line.shiftInventoryItemId)).toEqual([7]);
+    expect(result.total).toBe("30.00");
+  });
+
+  it("keeps catalogue and ledger discrepancies blocked during count deferral", () => {
+    for (const overrides of [{ catalogItemId: null }, { openingQuantity: "0" }, { retailPrice: "0" }]) {
+      const result = calculateShiftInventoryAccountability([row(overrides)]);
+      expect(inventoryExceptionMatches(result.blockers, new Set([7]), new Set([7]))).toBe(false);
+    }
   });
 
   it("rounds fractional shortages deterministically and snapshots money", () => {

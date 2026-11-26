@@ -193,7 +193,7 @@ export interface ShiftInventoryRow {
 export type ShiftInventoryKind = "beginning" | "ending" | "restock";
 
 export function restockQuantity(row: ShiftInventoryRow): number {
-  if (!row.par || row.par <= 0 || row.counted === null) return 0;
+  if (!row.par || row.par <= 0 || row.counted === null || !Number.isFinite(row.counted) || row.counted < 0) return 0;
   return Math.max(0, row.par - row.counted);
 }
 
