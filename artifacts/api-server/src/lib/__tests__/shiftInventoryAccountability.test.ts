@@ -50,6 +50,16 @@ describe("shift inventory accountability", () => {
     }
   });
 
+  it("accepts exact signed movement quantities at the PostgreSQL ledger scale", () => {
+    const result = calculateShiftInventoryAccountability([
+      row({ nonSaleMovementDelta: "1.000000000000" }),
+      row({ shiftInventoryItemId: 8, nonSaleMovementDelta: "-1.125000000000" }),
+      row({ shiftInventoryItemId: 9, nonSaleMovementDelta: "0.000100000000" }),
+    ]);
+    expect(result.lines.map(line => line.expectedQuantity)).toEqual(["9", "6.875"]);
+    expect(result.blockers.map(blocker => blocker.shiftInventoryItemId)).toEqual([9]);
+  });
+
   it("rounds fractional shortages deterministically and snapshots money", () => {
     const result = calculateShiftInventoryAccountability([row({ openingQuantity: "1.125", recordedSalesQuantity: "0", nonSaleMovementDelta: "0", countedQuantity: "0.625", retailPrice: "9.99" })]);
     expect(result.lines[0]).toMatchObject({ missingQuantity: "0.5", unitReplacementValue: "7.99", lineTotal: "4.00" });
