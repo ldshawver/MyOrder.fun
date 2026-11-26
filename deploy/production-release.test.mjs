@@ -745,6 +745,10 @@ test("isolated restore accepts each exact 0077-0081 predecessor, including produ
     "0081_csr_inventory_accountability",
     "0082_location_pickup_scheduling",
     "0083_uber_quote_authoritative_settings",
+    "0084_durable_checkout_quotes",
+    "0085_order_fulfillment_groups",
+    "0086_carrier_quotes",
+    "0087_cj_fulfillment_events",
   ]);
   assert.deepEqual(migrationsForRestoredLedger(52).map(([migration]) => migration.tag), [
     "0078_inventory_history_baseline_repair",
@@ -753,6 +757,10 @@ test("isolated restore accepts each exact 0077-0081 predecessor, including produ
     "0081_csr_inventory_accountability",
     "0082_location_pickup_scheduling",
     "0083_uber_quote_authoritative_settings",
+    "0084_durable_checkout_quotes",
+    "0085_order_fulfillment_groups",
+    "0086_carrier_quotes",
+    "0087_cj_fulfillment_events",
   ]);
   assert.deepEqual(migrationsForRestoredLedger(53).map(([migration]) => migration.tag), [
     "0079_verified_zero_opening_counts",
@@ -760,21 +768,43 @@ test("isolated restore accepts each exact 0077-0081 predecessor, including produ
     "0081_csr_inventory_accountability",
     "0082_location_pickup_scheduling",
     "0083_uber_quote_authoritative_settings",
+    "0084_durable_checkout_quotes",
+    "0085_order_fulfillment_groups",
+    "0086_carrier_quotes",
+    "0087_cj_fulfillment_events",
   ]);
   assert.deepEqual(migrationsForRestoredLedger(54).map(([migration]) => migration.tag), [
     "0080_csr_delivery_closeout_accounting",
     "0081_csr_inventory_accountability",
     "0082_location_pickup_scheduling",
     "0083_uber_quote_authoritative_settings",
+    "0084_durable_checkout_quotes",
+    "0085_order_fulfillment_groups",
+    "0086_carrier_quotes",
+    "0087_cj_fulfillment_events",
   ]);
   assert.deepEqual(migrationsForRestoredLedger(55).map(([migration]) => migration.tag), [
     "0081_csr_inventory_accountability",
     "0082_location_pickup_scheduling",
     "0083_uber_quote_authoritative_settings",
+    "0084_durable_checkout_quotes",
+    "0085_order_fulfillment_groups",
+    "0086_carrier_quotes",
+    "0087_cj_fulfillment_events",
   ]);
   assert.deepEqual(migrationsForRestoredLedger(56).map(([migration]) => migration.tag), [
     "0082_location_pickup_scheduling",
     "0083_uber_quote_authoritative_settings",
+    "0084_durable_checkout_quotes",
+    "0085_order_fulfillment_groups",
+    "0086_carrier_quotes",
+    "0087_cj_fulfillment_events",
+  ]);
+  assert.deepEqual(migrationsForRestoredLedger(58).map(([migration]) => migration.tag), [
+    "0084_durable_checkout_quotes",
+    "0085_order_fulfillment_groups",
+    "0086_carrier_quotes",
+    "0087_cj_fulfillment_events",
   ]);
   for (const unsupported of [50, 57]) {
     assert.throws(() => migrationsForRestoredLedger(unsupported), /not a recognized release predecessor/);
@@ -1169,14 +1199,14 @@ test("missing production authorization is rejected by the executable entrypoint"
 });
 
 test("production rollback baseline matches the verified current production images", () => {
-  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:9a514e57e6b5fda4ac01b6e16646faa74a00c9b8278106c88de7cce4cdca0c2a");
-  assert.equal(PRODUCTION_BASELINE.apiRevision, "076d4d70161b0a3261518e90eb67a182a78cd3dd");
-  assert.equal(PRODUCTION_BASELINE.apiReference, "ghcr.io/ldshawver/myorder-api@sha256:9a514e57e6b5fda4ac01b6e16646faa74a00c9b8278106c88de7cce4cdca0c2a");
-  assert.equal(PRODUCTION_BASELINE.apiProvenance, "runtime-identity-verified; diagnostic-run=44890381114");
-  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:525ff7db45b52a26f49b8cc26b3100975405f9ac6175ca262c8a7a2ba9e9ca1f");
-  assert.equal(PRODUCTION_BASELINE.platformRevision, "076d4d70161b0a3261518e90eb67a182a78cd3dd");
-  assert.equal(PRODUCTION_BASELINE.platformReference, "ghcr.io/ldshawver/myorder-platform@sha256:525ff7db45b52a26f49b8cc26b3100975405f9ac6175ca262c8a7a2ba9e9ca1f");
-  assert.equal(PRODUCTION_BASELINE.platformProvenance, "runtime-identity-verified; diagnostic-run=44890381114");
+  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:708032edc5893d3e670eefc63d38b70dcf5f9e446dd35a3308ca49f96bea9b11");
+  assert.equal(PRODUCTION_BASELINE.apiRevision, "360f6747d7b319516bbf60d0ebfb0078c7b4183f");
+  assert.equal(PRODUCTION_BASELINE.apiReference, `ghcr.io/ldshawver/myorder-api@${PRODUCTION_BASELINE.apiImage}`);
+  assert.equal(PRODUCTION_BASELINE.apiProvenance, "runtime-identity-verified");
+  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:05d39464f8aa004e07e47b10824485d93e0e73d4b1a9024d4962f2cd8f394061");
+  assert.equal(PRODUCTION_BASELINE.platformRevision, PRODUCTION_BASELINE.apiRevision);
+  assert.equal(PRODUCTION_BASELINE.platformReference, `ghcr.io/ldshawver/myorder-platform@${PRODUCTION_BASELINE.platformImage}`);
+  assert.equal(PRODUCTION_BASELINE.platformProvenance, "runtime-identity-verified");
   assert.notEqual(PRODUCTION_BASELINE.apiImage, APPROVED_RELEASE.manifests.api);
   assert.notEqual(PRODUCTION_BASELINE.apiRevision, APPROVED_RELEASE.revisions.api);
   assert.notEqual(PRODUCTION_BASELINE.platformImage, APPROVED_RELEASE.manifests.platform);
@@ -1193,21 +1223,23 @@ test("production rollback baseline matches the verified current production image
   assert.equal(PRESERVED_SNAPSHOT.rehearsalWorkflowRun, "39771000177");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.manifests).sort(), ["api", "migrate", "platform"]);
   assert.deepEqual(Object.keys(APPROVED_RELEASE.configs).sort(), ["api", "migrate", "platform"]);
-  assert.equal(APPROVED_RELEASE.manifests.api, "sha256:708032edc5893d3e670eefc63d38b70dcf5f9e446dd35a3308ca49f96bea9b11");
-  assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:64f6c7dbfe05e7a873b5b3b606d0b34604f6af60dee7a6ce84a1a12d8dd136bc");
-  assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:05d39464f8aa004e07e47b10824485d93e0e73d4b1a9024d4962f2cd8f394061");
-  assert.equal(APPROVED_RELEASE.configs.api, "sha256:1be5cc26291d049d38a22999cb90797f9c0f39113a096db5ec4f45dc3962f6dc");
-  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:4e96df3cc750547876bfe86582d04e64db4ca42429fc3d91589fdbe48d85ef32");
-  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:87ad1a789a08c31e9c41c7dcc14b21aa839551706fbb7e0a19b5a2d07a99b185");
+  assert.equal(APPROVED_RELEASE.manifests.api, "sha256:b2866d18de726b6814409c1d278a65b0b89895535ee880948e1f3d107a2d6d7c");
+  assert.equal(APPROVED_RELEASE.manifests.migrate, "sha256:45e403dbbc625d103d88921368d534d897c676c3f83382cf1ddeb2b178cb76c1");
+  assert.equal(APPROVED_RELEASE.manifests.platform, "sha256:33e15071172c695a92832dfbb36e2df2395e8cd2bd74a88f9c29e7a829056edf");
+  assert.equal(APPROVED_RELEASE.configs.api, "sha256:87cefba8f742fe092070cf7e9fa632a7a3d52ce04e1d689a9e735c815e2bd50b");
+  assert.equal(APPROVED_RELEASE.configs.migrate, "sha256:b05064372257eca79cdddfa9522e8073b8607b70cf79efb9d266246f452825f9");
+  assert.equal(APPROVED_RELEASE.configs.platform, "sha256:2d168214fef4a12e269f82123cd21a88e95e4dccf3eeb11e4c19527d49cbf0ce");
   assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.platform, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.migrate, APPROVED_RELEASE.sha);
-  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:708032edc5893d3e670eefc63d38b70dcf5f9e446dd35a3308ca49f96bea9b11");
-  assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:64f6c7dbfe05e7a873b5b3b606d0b34604f6af60dee7a6ce84a1a12d8dd136bc");
-  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:05d39464f8aa004e07e47b10824485d93e0e73d4b1a9024d4962f2cd8f394061");
+  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:b2866d18de726b6814409c1d278a65b0b89895535ee880948e1f3d107a2d6d7c");
+  assert.equal(APPROVED_RELEASE.references.migrate, "ghcr.io/ldshawver/myorder-migrate@sha256:45e403dbbc625d103d88921368d534d897c676c3f83382cf1ddeb2b178cb76c1");
+  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:33e15071172c695a92832dfbb36e2df2395e8cd2bd74a88f9c29e7a829056edf");
   assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, [
-    "0082_location_pickup_scheduling",
-    "0083_uber_quote_authoritative_settings",
+    "0084_durable_checkout_quotes",
+    "0085_order_fulfillment_groups",
+    "0086_carrier_quotes",
+    "0087_cj_fulfillment_events",
   ]);
   assert.equal(MIGRATION_0077.timestamp, "1792440000000");
   assert.equal(MIGRATION_0077.sha256, "29b98289bd97b1c4781495a93d3d034f03a0daa503a96adfda035d2a3aeecd6b");
@@ -1243,8 +1275,8 @@ test("candidate builder is frozen to the exact source selected for immutable ima
     "utf8",
   );
   const candidate = {
-    sha: "360f6747d7b319516bbf60d0ebfb0078c7b4183f",
-    tree: "32d26c8ad96d53263681bbd464c0e77266f3d11f",
+    sha: "281f3b782fed069588681068d95b35ee91edd928",
+    tree: "ac2cba0f46cef31cfed4a991067d16af19afea62",
   };
   assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
   assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));
@@ -1258,29 +1290,17 @@ test("candidate builder is frozen to the exact source selected for immutable ima
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 });
 
-test("migration lineage classifier accepts only the ordered 0082/0083 continuation after applied 0081", () => {
-  assert.equal(
-    classifyMigrationLineage(
-      "[migration-ledger] APPLIED 0081_csr_inventory_accountability hash\n[migration-ledger] APPLIED 0082_location_pickup_scheduling hash\n[migration-ledger] APPLIED 0083_uber_quote_authoritative_settings hash\n[migration-ledger] recognized lineage preserved: 58/58\n",
-    ),
-    "applied",
-  );
-  assert.equal(
-    classifyMigrationLineage(
-      "[migration-ledger] APPLIED 0081_csr_inventory_accountability hash\n[migration-ledger] PENDING 0082_location_pickup_scheduling hash\n[migration-ledger] PENDING 0083_uber_quote_authoritative_settings hash\n[migration-ledger] recognized lineage preserved: 56/58\n",
-    ),
-    "pending",
-  );
-  assert.throws(
-    () => classifyMigrationLineage("[migration-ledger] recognized lineage preserved: 56/58\n"),
-    /neither the exact 56-row pre-0082\/0083 path nor the verified 58-row applied lineage/,
-  );
-  assert.throws(
-    () => classifyMigrationLineage(
-      "[migration-ledger] APPLIED 0081_csr_inventory_accountability hash\n[migration-ledger] PENDING 0083_uber_quote_authoritative_settings hash\n[migration-ledger] PENDING 0082_location_pickup_scheduling hash\n[migration-ledger] recognized lineage preserved: 56/58\n",
-    ),
-    /neither the exact 56-row pre-0082\/0083 path nor the verified 58-row applied lineage/,
-  );
+test("migration lineage accepts only the exact ordered 0084–0087 continuation", () => {
+  const ledger = (verb, tags, counts) => [
+    ...tags.map(tag => `[migration-ledger] ${verb} ${tag} hash`),
+    `[migration-ledger] recognized lineage preserved: ${counts}`,
+  ].join("\n") + "\n";
+  const tags = EXPECTED_PRODUCTION_MIGRATIONS;
+  assert.equal(classifyMigrationLineage(ledger("APPLIED", tags, "62/62")), "applied");
+  assert.equal(classifyMigrationLineage(ledger("PENDING", tags, "58/62")), "pending");
+  assert.throws(() => classifyMigrationLineage(ledger("PENDING", [], "58/62")), /exact 58-row/);
+  assert.throws(() => classifyMigrationLineage(ledger("PENDING", tags.toReversed(), "58/62")), /exact 58-row/);
+  assert.throws(() => classifyMigrationLineage(ledger("PENDING", tags.slice(1), "59/62")), /exact 58-row/);
 });
 
 test("approved image gate keeps manifest, repository, config and metadata identities separate", () => {
@@ -1366,7 +1386,7 @@ test("approved P0 patch identity and rerun semantics are verified without changi
   assert.doesNotMatch(sql, /drizzle\.__drizzle_migrations/);
 });
 
-test("migration verifier checks physical 0077-through-0083 effects and release gates bind the exact lineage", () => {
+test("migration verifier checks physical 0077-through-0087 effects and release gates bind the exact lineage", () => {
   const validator = readFileSync(new URL("../lib/db/scripts/validate-migration-ledger.ts", import.meta.url), "utf8");
   const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
   const guard = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
@@ -1377,8 +1397,8 @@ test("migration verifier checks physical 0077-through-0083 effects and release g
   assert.match(validator, /0076 WooCommerce webhook physical effects/);
   assert.match(validator, /woocommerce_webhook_events_pkey/);
   assert.match(controller, /verifyP0Schema\(compose\)/);
-  assert.match(controller, /recognized lineage preserved: 56\/58/);
-  assert.match(controller, /recognized lineage preserved: 58\/58/);
+  assert.match(controller, /recognized lineage preserved: 58\/62/);
+  assert.match(controller, /recognized lineage preserved: 62\/62/);
   assert.match(controller, /Migration 0077 reconciliation schema/);
   assert.match(controller, /Migration 0078 repair evidence schema/);
   assert.match(controller, /Migration 0079 verified zero opening-count constraint/);
@@ -1390,7 +1410,7 @@ test("migration verifier checks physical 0077-through-0083 effects and release g
   assert.match(controller, /FOREIGN KEY \(actor_user_id\) REFERENCES users\(id\)/);
   assert.match(controller, /Isolated migration \$\{migration\.tag\.slice\(0, 4\)\} rehearsal failed/);
   assert.match(controller, /--single-transaction/);
-  assert.match(controller, /Migration 0077-through-0083 rehearsal changed representative production data counts/);
+  assert.match(controller, /Migration 0077-through-0087 rehearsal changed representative production data counts/);
   assert.match(guard, /recognized lineage preserved: 49\/51/);
   assert.match(guard, /appliedMigrations\.length === 51/);
   assert.match(guard, /hasPendingMigrations/);
@@ -1518,8 +1538,8 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
   const globalEnv = workflow.match(/^env:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
-  assert.equal(APPROVED_RELEASE.sha, "360f6747d7b319516bbf60d0ebfb0078c7b4183f");
-  assert.equal(APPROVED_RELEASE.tree, "32d26c8ad96d53263681bbd464c0e77266f3d11f");
+  assert.equal(APPROVED_RELEASE.sha, "281f3b782fed069588681068d95b35ee91edd928");
+  assert.equal(APPROVED_RELEASE.tree, "ac2cba0f46cef31cfed4a991067d16af19afea62");
   for (const [key, value] of [["SHA", APPROVED_RELEASE.sha], ["TREE", APPROVED_RELEASE.tree]]) {
     const pin = `PINNED_RELEASE_${key}`;
     assert.deepEqual(globalEnv.match(new RegExp(`^  ${pin}: ([a-f0-9]{40})$`, "gm")), [`  ${pin}: ${value}`]);
@@ -1683,5 +1703,5 @@ test("post-migration resume accepts only exact approved runtime identities", () 
     controller,
     /runtimeAlreadyAdvanced && migrationState !== "applied"/,
   );
-  assert.match(controller, /exact 58-row migration lineage is applied/);
+  assert.match(controller, /exact 62-row migration lineage is applied/);
 });
