@@ -3,7 +3,7 @@ import { useAuth } from "@clerk/react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Edit2, Trash2, Search, RefreshCw, Loader2, FlaskConical, Link2,
-  Globe, Tag, Image, CheckCircle, XCircle, Package, X, Save,
+  Globe, Tag, Image, CheckCircle, XCircle, Package, X, Save, ArchiveRestore,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -405,6 +405,9 @@ export default function AdminEditCatalog() {
   const [complianceReason, setComplianceReason] = useState("");
   const [complianceError, setComplianceError] = useState<string | null>(null);
 
+  const [restoreItem, setRestoreItem] = useState<CatalogProduct | null>(null);
+  const [restoreReason, setRestoreReason] = useState("");
+
   const fetchCatalog = useCallback(async (): Promise<CatalogProduct[]> => {
     const token = await getToken();
     // Admin mode returns all non-WooManaged products (plus WooManaged when showWoo toggled)
@@ -468,6 +471,23 @@ export default function AdminEditCatalog() {
     },
     onSuccess: async () => { setComplianceItem(null); setComplianceReason(""); setComplianceError(null); await qc.invalidateQueries({ queryKey: ["edit-catalog"] }); await refetch(); },
     onError: error => setComplianceError(error instanceof Error ? error.message : "Compliance action failed"),
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: async ({ id, reason }: { id: number; reason: string }) => {
+      const token = await getToken();
+      const response = await fetch(`/api/admin/product-master/${id}/lifecycle`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: false, reason }),
+      });
+      if (!response.ok) throw new Error(`Unarchive failed (HTTP ${response.status}).`);
+    },
+    onSuccess: async (_data, { id }) => {
+      setRestoreItem(null);
+      setSaveConfirmation(`Product ${id} unarchived.`);
+      await qc.invalidateQueries({ queryKey: ["edit-catalog"] });
+    },
   });
 
   const filtered = items.filter(item => {
@@ -663,6 +683,13 @@ export default function AdminEditCatalog() {
                         >
                           <Edit2 size={13} />
                         </button>
+                        {isGlobalAdmin && !item.isWooManaged && item.lifecycleStatus === "archived" && (
+                          <button type="button" title="Unarchive" aria-label={`Unarchive ${item.name}`}
+                            className="rounded-lg p-1.5 text-primary hover:bg-primary/10"
+                            onClick={() => { restoreMutation.reset(); setRestoreReason(""); setRestoreItem(item); }}>
+                            <ArchiveRestore size={13} />
+                          </button>
+                        )}
                         {isGlobalAdmin && <button onClick={() => { setComplianceItem(item); setComplianceReason(""); setComplianceError(null); }} className="p-1.5 rounded-lg hover:bg-orange-500/10 text-orange-300" title={item.lifecycleStatus === "compliance_hold" ? "Review compliance hold" : "Place compliance hold"} aria-label={`${item.lifecycleStatus === "compliance_hold" ? "Review" : "Place"} compliance hold for ${item.name}`}><XCircle size={13} /></button>}
                         {!item.isWooManaged && (
                           <button
@@ -696,6 +723,25 @@ export default function AdminEditCatalog() {
       )}
 
       {complianceItem && <Dialog open onOpenChange={() => setComplianceItem(null)}><DialogContent className="max-w-md"><DialogHeader><DialogTitle>{complianceItem.lifecycleStatus === "compliance_hold" ? "Review compliance hold" : "Place compliance hold"}</DialogTitle></DialogHeader><p className="text-sm">{complianceItem.name}</p><p className="text-xs text-muted-foreground">Current hold: {complianceItem.lifecycleStatus === "compliance_hold" ? "Active" : "None"}. Reason: {complianceItem.metadata?.complianceReason || "—"}</p><label className="text-xs">Audit reason<Input value={complianceReason} onChange={event => setComplianceReason(event.target.value)} maxLength={500} aria-label="Compliance action reason" /></label>{complianceError && <p role="alert" className="text-xs text-red-400">{complianceError}</p>}<Button disabled={!complianceReason.trim() || complianceMutation.isPending} onClick={() => complianceMutation.mutate({ item: complianceItem, reason: complianceReason.trim() })}>{complianceItem.lifecycleStatus === "compliance_hold" ? "Remove hold as Global Admin" : "Place hold"}</Button></DialogContent></Dialog>}
+
+      {restoreItem && (
+        <Dialog open onOpenChange={open => { if (!open && !restoreMutation.isPending) setRestoreItem(null); }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader><DialogTitle>Unarchive product</DialogTitle></DialogHeader>
+            <p className="text-sm">{restoreItem.name}</p>
+            <p className="text-sm text-muted-foreground">An available product can reappear in the customer catalog after it is unarchived.</p>
+            <label className="text-sm">
+              Audit reason
+              <Input value={restoreReason} onChange={event => setRestoreReason(event.target.value)} maxLength={500} />
+            </label>
+            {restoreMutation.error && <p role="alert" className="text-sm text-destructive">{restoreMutation.error.message}</p>}
+            <Button disabled={!restoreReason.trim() || restoreMutation.isPending}
+              onClick={() => restoreMutation.mutate({ id: restoreItem.id, reason: restoreReason.trim() })}>
+              {restoreMutation.isPending ? "Unarchiving…" : "Unarchive product"}
+            </Button>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* Delete confirm dialog */}
       {deleteId !== null && (
