@@ -37,9 +37,14 @@ describe("half-width Lucifer Cruz receipt logo", () => {
     const positions = [...operators.matchAll(/1 0 0 1 ([\d.]+) [\d.]+ Tm/g)].map(match => Number(match[1]));
     const fontSize = Number(operators.match(/\/\S+ ([\d.]+) Tf/)?.[1]);
     expect(positions).toHaveLength(2);
-    expect(fontSize).toBeGreaterThan(0);
-    expect(positions[0]).toBeCloseTo((receiptPageWidthPt("80mm") - 20 * fontSize * 0.6) / 2);
-    expect(positions[1]).toBeCloseTo(positions[0]);
+    const textTransform = [...operators.matchAll(/^([\d.]+) 0 0 1 ([\d.]+) 0 cm$/gm)].at(-1);
+    const scale = Number(textTransform?.[1]);
+    const left = Number(textTransform?.[2]);
+    expect(fontSize).toBe(10);
+    expect(scale).toBeGreaterThan(0);
+    expect(scale).toBeLessThan(1);
+    expect(left).toBeCloseTo((receiptPageWidthPt("80mm") - 20 * fontSize * 0.6 * scale) / 2);
+    expect(positions).toEqual([0, 0]);
   });
 
   it("respects tenant identity, disabled logos and compact receipts", () => {

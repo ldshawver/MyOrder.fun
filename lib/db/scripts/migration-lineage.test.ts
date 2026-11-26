@@ -64,7 +64,7 @@ test("unknown, missing, reordered and fabricated historical rows fail", () => {
   assert.throws(() => validateAppliedLineage(local, fabricatedId));
 });
 
-test("49-row staging permits only the ordered 0077 through 0087 continuation", () => {
+test("49-row staging permits only the ordered 0077 through 0088 continuation", () => {
   const before = [...staging];
   for (const index of [39, 40, 41, 42, 46, 47, 48, 49, 50]) {
     before.push({ id: before.length + 1, hash: local[index].hash, created_at: String(local[index].when) });
@@ -73,7 +73,7 @@ test("49-row staging permits only the ordered 0077 through 0087 continuation", (
   const verified = validateAppliedLineage(local, before);
   const pending = local.map((_: unknown, index: number) => index)
     .filter((index: number) => !verified.appliedJournalIndices.has(index));
-  assert.deepEqual(pending, [51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]);
+  assert.deepEqual(pending, [51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62]);
   assert.equal(local[51].tag, "0077_catalogue_inventory_reconciliation");
   assert.equal(local[52].tag, "0078_inventory_history_baseline_repair");
   assert.equal(local[53].tag, "0079_verified_zero_opening_counts");
@@ -94,9 +94,9 @@ test("49-row staging permits only the ordered 0077 through 0087 continuation", (
   assert.deepEqual(
     local.map((_: unknown, index: number) => index)
       .filter((index: number) => !reconciliationVerified.appliedJournalIndices.has(index)),
-    [52, 53, 54, 55, 56, 57, 58, 59, 60, 61],
+    [52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62],
   );
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterReconciliation.length - 40), [52, 53, 54, 55, 56, 57, 58, 59, 60, 61]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterReconciliation.length - 40), [52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62]);
 
   const repair = { id: 51, hash: local[52].hash, created_at: String(local[52].when) };
   const afterRepair = [...afterReconciliation, repair];
@@ -104,40 +104,41 @@ test("49-row staging permits only the ordered 0077 through 0087 continuation", (
   assert.deepEqual(
     local.map((_: unknown, index: number) => index)
       .filter((index: number) => !validateAppliedLineage(local, afterRepair).appliedJournalIndices.has(index)),
-    [53, 54, 55, 56, 57, 58, 59, 60, 61],
+    [53, 54, 55, 56, 57, 58, 59, 60, 61, 62],
   );
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterRepair.length - 40), [53, 54, 55, 56, 57, 58, 59, 60, 61]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterRepair.length - 40), [53, 54, 55, 56, 57, 58, 59, 60, 61, 62]);
 
   const zeroOpening = { id: 52, hash: local[53].hash, created_at: String(local[53].when) };
   const afterZeroOpening = [...afterRepair, zeroOpening];
-  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterZeroOpening).appliedJournalIndices.has(index)), [54, 55, 56, 57, 58, 59, 60, 61]);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterZeroOpening.length - 40), [54, 55, 56, 57, 58, 59, 60, 61]);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterZeroOpening).appliedJournalIndices.has(index)), [54, 55, 56, 57, 58, 59, 60, 61, 62]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterZeroOpening.length - 40), [54, 55, 56, 57, 58, 59, 60, 61, 62]);
 
   const accounting = { id: 53, hash: local[54].hash, created_at: String(local[54].when) };
   const afterAccounting = [...afterZeroOpening, accounting];
-  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterAccounting).appliedJournalIndices.has(index)), [55, 56, 57, 58, 59, 60, 61]);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterAccounting.length - 40), [55, 56, 57, 58, 59, 60, 61]);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterAccounting).appliedJournalIndices.has(index)), [55, 56, 57, 58, 59, 60, 61, 62]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterAccounting.length - 40), [55, 56, 57, 58, 59, 60, 61, 62]);
 
   const accountability = { id: 54, hash: local[55].hash, created_at: String(local[55].when) };
   const afterAccountability = [...afterAccounting, accountability];
-  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterAccountability).appliedJournalIndices.has(index)), [56, 57, 58, 59, 60, 61]);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterAccountability.length - 40), [56, 57, 58, 59, 60, 61]);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterAccountability).appliedJournalIndices.has(index)), [56, 57, 58, 59, 60, 61, 62]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterAccountability.length - 40), [56, 57, 58, 59, 60, 61, 62]);
 
   const pickupScheduling = { id: 55, hash: local[56].hash, created_at: String(local[56].when) };
   const afterPickupScheduling = [...afterAccountability, pickupScheduling];
-  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterPickupScheduling).appliedJournalIndices.has(index)), [57, 58, 59, 60, 61]);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterPickupScheduling.length - 40), [57, 58, 59, 60, 61]);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterPickupScheduling).appliedJournalIndices.has(index)), [57, 58, 59, 60, 61, 62]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterPickupScheduling.length - 40), [57, 58, 59, 60, 61, 62]);
 
   const uberQuoteSettings = { id: 56, hash: local[57].hash, created_at: String(local[57].when) };
   const afterUberQuoteSettings = [...afterPickupScheduling, uberQuoteSettings];
-  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterUberQuoteSettings).appliedJournalIndices.has(index)), [58, 59, 60, 61]);
-  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterUberQuoteSettings.length - 40), [58, 59, 60, 61]);
+  assert.deepEqual(local.map((_: unknown, index: number) => index).filter((index: number) => !validateAppliedLineage(local, afterUberQuoteSettings).appliedJournalIndices.has(index)), [58, 59, 60, 61, 62]);
+  assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterUberQuoteSettings.length - 40), [58, 59, 60, 61, 62]);
 
   const durableQuotes = { id: 57, hash: local[58].hash, created_at: String(local[58].when) };
   const fulfillmentGroups = { id: 58, hash: local[59].hash, created_at: String(local[59].when) };
   const carrierQuotes = { id: 59, hash: local[60].hash, created_at: String(local[60].when) };
   const cjEvents = { id: 60, hash: local[61].hash, created_at: String(local[61].when) };
-  const afterCurrent = [...afterUberQuoteSettings, durableQuotes, fulfillmentGroups, carrierQuotes, cjEvents];
+  const closures = { id: 61, hash: local[62].hash, created_at: String(local[62].when) };
+  const afterCurrent = [...afterUberQuoteSettings, durableQuotes, fulfillmentGroups, carrierQuotes, cjEvents, closures];
   assert.equal(validateAppliedLineage(local, afterCurrent).appliedJournalIndices.size, local.length);
   assert.deepEqual(historicalStagingInventory.forwardIndices.slice(afterCurrent.length - 40), []);
 

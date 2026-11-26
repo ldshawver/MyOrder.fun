@@ -12,6 +12,7 @@ type PendingShift = {
   cashBankStart: number;
   cashBankEndReported: number;
   totalRevenue: number;
+  commissionBasis?: string;
   inventoryCorrections?: Array<{ itemId: number; itemName: string; openingRequired: boolean }>;
   inventoryAccountability: {
     total: string;
@@ -195,7 +196,7 @@ export default function AdminCloseouts() {
         <div>
           <h1 className="text-xl font-bold">Shift Closeouts</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Shifts waiting on supervisor checkout. Pick a tip percent and approve to finalize.
+            Shifts waiting on supervisor checkout. Select a commission percentage and approve to finalize.
           </p>
         </div>
         <Button onClick={load} variant="outline" size="sm" className="gap-1.5 rounded-xl" data-testid="button-closeouts-reload">
@@ -239,6 +240,9 @@ export default function AdminCloseouts() {
       ) : (
         <div className="space-y-3">
           {shifts.map(s => {
+            const commissionPercent = tipById[s.shiftId] ?? 17;
+            const salesCents = Math.round(Number(s.commissionBasis) * 100);
+            const commission = Math.round(salesCents * commissionPercent / 100) / 100;
             const cashDelta = s.cashBankEndReported - s.cashBankStart;
             const hasShortage = s.inventoryAccountability.lines.length > 0;
             const hasBlockers = s.inventoryAccountability.blockers.length > 0;
@@ -324,20 +328,28 @@ export default function AdminCloseouts() {
                 </div>
 
                 <div className="mt-4 flex items-center justify-between flex-wrap gap-3">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-muted-foreground mr-1">Tip %:</span>
-                    {TIP_OPTIONS.map(opt => (
-                      <button
-                        key={opt}
-                        onClick={() => setTipById(prev => ({ ...prev, [s.shiftId]: opt }))}
-                        data-testid={`button-tip-${s.shiftId}-${opt}`}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all ${
-                          tipById[s.shiftId] === opt
-                            ? "border-primary/50 bg-primary/15 text-primary"
-                            : "border-border/40 bg-background/60 text-muted-foreground hover:text-foreground"
-                        }`}
-                      >{opt}%</button>
-                    ))}
+                  <div className="space-y-2">
+                    {s.commissionBasis !== undefined && (
+                      <div className="flex gap-4 text-xs">
+                        <Stat label="Commissionable sales" value={`$${s.commissionBasis}`} />
+                        <Stat label="Commission" value={`$${commission.toFixed(2)}`} />
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-muted-foreground mr-1">Commission %:</span>
+                      {TIP_OPTIONS.map(opt => (
+                        <button
+                          key={opt}
+                          onClick={() => setTipById(prev => ({ ...prev, [s.shiftId]: opt }))}
+                          data-testid={`button-tip-${s.shiftId}-${opt}`}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all ${
+                            tipById[s.shiftId] === opt
+                              ? "border-primary/50 bg-primary/15 text-primary"
+                              : "border-border/40 bg-background/60 text-muted-foreground hover:text-foreground"
+                          }`}
+                        >{opt}%</button>
+                      ))}
+                    </div>
                   </div>
                   <Button
                     onClick={() => approve(s)}

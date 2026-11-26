@@ -179,11 +179,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin", "supervisor"] },
         { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "supervisor"] },
         {
-          href: "/admin/settings",
+          href: userRole === "supervisor" ? "/admin/settings/store-closures" : "/admin/settings",
           label: "Settings",
           icon: Settings,
-          roles: ["global_admin", "admin"],
+          roles: ["global_admin", "admin", "supervisor"],
           children: [
+            { href: "/admin/settings/store-closures", label: "Store Closures", icon: Settings, roles: ["global_admin", "admin", "supervisor"] },
             { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin", "admin"] },
             { href: "/admin/order-notifications", label: "New Order Alerts", icon: Settings, roles: ["global_admin", "admin"] },
           ],

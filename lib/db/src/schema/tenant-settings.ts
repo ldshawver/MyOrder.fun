@@ -38,3 +38,13 @@ export const tenantSettingsTable = pgTable("tenant_settings", {
 
 export type TenantSettings = typeof tenantSettingsTable.$inferSelect;
 export type InsertTenantSettings = typeof tenantSettingsTable.$inferInsert;
+
+export const storefrontClosuresTable = pgTable("storefront_closures", {
+  tenantId: integer("tenant_id").primaryKey().references(() => tenantsTable.id, { onDelete: "cascade" }),
+  windows: jsonb("windows").$type<Array<{ startsAt: string; endsAt: string; message: string }>>().notNull().default([]),
+  version: integer("version").notNull().default(1),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({
+  windowsArray: check("storefront_closures_windows_array", sql`jsonb_typeof(${table.windows}) = 'array'`),
+  versionPositive: check("storefront_closures_version_positive", sql`${table.version} > 0`),
+}));

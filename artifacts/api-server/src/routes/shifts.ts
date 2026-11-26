@@ -36,7 +36,7 @@ import { requirePermission } from "../lib/roles";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
 import { quantityUnits } from "../lib/exactQuantity";
 import { formatMoneyCents, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents, ShiftCloseoutConflictError, ShiftCloseoutSerializationError, withSerializableRetry } from "../lib/shiftCloseoutFinancials";
-import { calculateShiftEarnings, type ShiftEarningOrder } from "../lib/shiftEarnings";
+import { calculateShiftEarnings, shiftSaleGrossAmount, type ShiftEarningOrder } from "../lib/shiftEarnings";
 import { applyAccountabilityOffsets, calculateShiftInventoryAccountability, inventoryExceptionMatches, isUnavailableCountBlocker, CONTRACTOR_SHORTAGE_REMAINDER_POLICY, type ShiftInventoryAccountabilityInput } from "../lib/shiftInventoryAccountability";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
 import { locallyManagedSellableCatalogWhere } from "../lib/localInventoryEligibility";
@@ -917,17 +917,20 @@ async function loadShiftEarningOrders(executor: Pick<typeof db, "execute">, tena
   const result = await executor.execute(sql`
     SELECT o.id AS "orderId",o.route_source AS "routeSource",o.payment_status AS "paymentStatus",o.fulfillment_status AS "fulfillmentStatus",
       o.delivery_method AS "deliveryMethod",coalesce(o.delivery_fee,0)::text AS "deliveryFee",
+      o.payment_method AS "paymentMethod",
+      coalesce((o.tax_snapshot #> '{commission,employeeSale}') = 'true'::jsonb, buyer.is_current_employee, false) AS "employeeSale",
       udf.request_state AS "uberRequestState",udf.provider_delivery_id AS "uberProviderDeliveryId",udf.provider_status AS "uberProviderStatus",
       coalesce(o.checkout_conversion_snapshot#>>'{tip,amount}','0') AS "tipAmount",
       oi.id AS "orderItemId",oi.commission_eligibility_snapshot AS "eligibility",
-      oi.commission_gross_amount::text AS "grossAmount",oi.commission_discount_amount::text AS "discountAmount",
+      (${shiftSaleGrossAmount})::text AS "grossAmount",oi.commission_discount_amount::text AS "discountAmount",
       coalesce(sum(CASE WHEN rt.status='completed' THEN rl.unit_value ELSE 0 END),0)::text AS "refundedAmount"
     FROM orders o JOIN order_items oi ON oi.order_id=o.id
+    LEFT JOIN users buyer ON buyer.id=o.customer_id AND (buyer.tenant_id=o.tenant_id OR buyer.tenant_id IS NULL)
     LEFT JOIN uber_delivery_fulfillments udf ON udf.tenant_id=o.tenant_id AND udf.order_id=o.id
     LEFT JOIN return_transactions rt ON rt.tenant_id=o.tenant_id AND rt.order_id=o.id
     LEFT JOIN return_lines rl ON rl.return_transaction_id=rt.id AND rl.order_item_id=oi.id
     WHERE o.tenant_id=${tenantId} AND o.assigned_shift_id=${shiftId}
-    GROUP BY o.id,oi.id,udf.request_state,udf.provider_delivery_id,udf.provider_status
+    GROUP BY o.id,oi.id,buyer.is_current_employee,udf.request_state,udf.provider_delivery_id,udf.provider_status
     ORDER BY o.id,oi.id
   `);
   const rows = Array.isArray(result) ? result as Array<Record<string, unknown>> : ((result as { rows?: Array<Record<string, unknown>> }).rows ?? []);
@@ -936,7 +939,7 @@ async function loadShiftEarningOrders(executor: Pick<typeof db, "execute">, tena
     const orderId = Number(row.orderId);
     let order = byOrder.get(orderId);
     if (!order) {
-      order = { orderId, routeSource: row.routeSource == null ? null : String(row.routeSource), paymentStatus: String(row.paymentStatus), deliveryMethod: row.deliveryMethod == null ? null : String(row.deliveryMethod), fulfillmentStatus: row.fulfillmentStatus == null ? null : String(row.fulfillmentStatus), uberRequestState: row.uberRequestState == null ? null : String(row.uberRequestState), uberProviderDeliveryId: row.uberProviderDeliveryId == null ? null : String(row.uberProviderDeliveryId), uberProviderStatus: row.uberProviderStatus == null ? null : String(row.uberProviderStatus), deliveryFee: row.deliveryFee, tipAmount: row.tipAmount, lines: [] };
+      order = { orderId, routeSource: row.routeSource == null ? null : String(row.routeSource), paymentStatus: String(row.paymentStatus), employeeSale: row.employeeSale === true, paymentMethod: row.paymentMethod == null ? null : String(row.paymentMethod), deliveryMethod: row.deliveryMethod == null ? null : String(row.deliveryMethod), fulfillmentStatus: row.fulfillmentStatus == null ? null : String(row.fulfillmentStatus), uberRequestState: row.uberRequestState == null ? null : String(row.uberRequestState), uberProviderDeliveryId: row.uberProviderDeliveryId == null ? null : String(row.uberProviderDeliveryId), uberProviderStatus: row.uberProviderStatus == null ? null : String(row.uberProviderStatus), deliveryFee: row.deliveryFee, tipAmount: row.tipAmount, lines: [] };
       byOrder.set(orderId, order);
     }
     order.lines.push({ orderItemId: Number(row.orderItemId), eligibility: String(row.eligibility) as ShiftEarningOrder["lines"][number]["eligibility"], grossAmount: row.grossAmount, discountAmount: row.discountAmount, refundedAmount: row.refundedAmount });
@@ -2598,7 +2601,7 @@ router.post(
         cashBankStart: moneyNumber(openingCashCents), cashBankEndReported: moneyNumber(countedCashCents),
         depositAmount: moneyNumber(depositCents), newCashBalance: moneyNumber(countedCashCents),
         paymentTotals: stats.paymentTotals,
-        commissionRule: { kind: "supervisor_selected_percentage", rate: tipPercent / 100, basis: "discounted_product_sales", exclusions: ["membership", "general_queue", "unclassified", "refunded_amounts"], customerCharge: false },
+        commissionRule: { kind: "supervisor_selected_percentage", rate: tipPercent / 100, basis: "net_shift_sales", exclusions: ["employee_sales", "customer_tips", "delivery_fees", "sales_tax", "general_queue", "refunded_amounts", "comp"], customerCharge: false },
         inventory, flaggedItems: inventory.filter(item => item.isFlagged), orderCount: stats.orderCount,
       };
       const [pkg] = await tx.insert(shiftCloseoutPackagesTable).values({
@@ -2868,6 +2871,7 @@ router.get(
         const inventoryAccountability = shift.clockedOutAt
           ? await loadShiftInventoryAccountability(db, tenantId, shift.id, shift.clockedInAt, shift.clockedOutAt)
           : { lines: [], blockers: [{ shiftInventoryItemId: 0, itemName: "Shift", code: "SHIFT_CLOSEOUT_CLOCK_OUT_REQUIRED", message: "Clock out before supervisor review." }], total: "0.00" };
+        const commissionBasis = calculateShiftEarnings(await loadShiftEarningOrders(db, tenantId, shift.id), 15).commissionBasis;
         const negativeEndingIds = inventoryAccountability.blockers
           .filter(blocker => blocker.code === "INVALID_QUANTITY" && blocker.message.startsWith("countedQuantity "))
           .map(blocker => blocker.shiftInventoryItemId);
@@ -2887,6 +2891,7 @@ router.get(
           cashBankEndReported: parseFloat(String(shift.cashBankEndReported ?? 0)),
           paymentTotals: stats.paymentTotals,
           totalRevenue: stats.totalRevenue,
+          commissionBasis,
           inventoryAccountability,
           inventoryCorrections: inventoryAccountability.blockers.filter(blocker =>
             isUnavailableCountBlocker(blocker, legacyIds),

@@ -1,3 +1,4 @@
+import { useStorefrontClosure } from "@/components/StorefrontClosureNotice";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
@@ -165,6 +166,7 @@ export default function NewOrder() {
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
   const [orderSubmitError, setOrderSubmitError] = useState<string | null>(null);
+  const { data: activeClosure } = useStorefrontClosure();
   const [pickupLocations, setPickupLocations] = useState<PickupLocationAvailability[]>([]);
   const [pickupLocationId, setPickupLocationId] = useState<number | null>(null);
   const [pickupChoice, setPickupChoice] = useState("");
@@ -228,7 +230,7 @@ export default function NewOrder() {
   }, [getToken]);
 
   useEffect(() => {
-    getToken().then(token => fetch("/api/orders/pickup-availability", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
+    getToken().then(token => fetch("/api/orders/pickup-availability", { headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: "no-store" }))
       .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data?.error ?? "Pickup availability is unavailable."); return data as { locations: PickupLocationAvailability[] }; })
       .then(data => {
         const locations = Array.isArray(data.locations) ? data.locations : [];
@@ -508,7 +510,7 @@ export default function NewOrder() {
     || (deliveryMethod === "uber_direct" && !!deliveryQuote && shippingAddress.trim().length > 0 && (!pickupWaitingForBusinessHours || scheduledPickupSelected))
   );
   const paymentBusy = createOrderMutation.isPending;
-  const canSubmit = cart.length > 0 && acceptedFinalSale && !!conversionPreview && !!checkoutQuote && !checkoutQuoteError && !isQuotingCheckout && deliveryReady && !paymentBusy;
+  const canSubmit = !activeClosure && cart.length > 0 && acceptedFinalSale && !!conversionPreview && !!checkoutQuote && !checkoutQuoteError && !isQuotingCheckout && deliveryReady && !paymentBusy;
   const selectedMethodAvailable = conversionPreview?.converted.paymentMethods.some(method => method.id === selectedPaymentMethod && method.available !== false) ?? false;
   const canCurateSuggestions = ["csr", "supervisor", "admin", "global_admin"].includes(normalizeNotificationRole(user?.role));
 
@@ -716,6 +718,7 @@ export default function NewOrder() {
                   {(deliveryMethod === "pickup" || deliveryMethod === "uber_direct" || deliveryMethod === "csr_delivery") && (
                     <div className="rounded-sm border border-border/50 bg-muted/10 p-3 space-y-3" data-testid="pickup-scheduling">
                       <div className="font-semibold text-sm">{deliveryMethod === "pickup" ? "Pickup time" : "Handoff time"}</div>
+                      {activeClosure && <p className="text-xs text-destructive" role="status">{activeClosure.message}</p>}
                       {pickupAvailabilityError && <p className="text-xs text-destructive">{pickupAvailabilityError}</p>}
                       {pickupLocations.length > 1 && (
                         <label className="block text-xs space-y-1">

@@ -435,6 +435,13 @@
       "when": 1795424400000,
       "tag": "0087_cj_fulfillment_events",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1795680000000,
+      "tag": "0088_storefront_closures",
+      "breakpoints": true
     }
   ]
 }

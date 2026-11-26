@@ -372,7 +372,9 @@ describe("pipeline: fallback, preview and engine parity", () => {
     const result = renderReceipt(data, { id: 4, version: 7, paperWidth: "80mm", layout: FULL_TEMPLATE }, PRESENTATION, "escpos");
     expect(result).toMatchObject({ source: "template", templateId: 4, templateVersion: 7, fallbackReason: null });
     expect(result.text).not.toContain("\x00");
-    expect(decodeStoredReceiptText(result.text).endsWith("\x1bd\x03\x1dVA\x00")).toBe(true);
+    const printed = decodeStoredReceiptText(result.text);
+    expect(printed).toContain("\x1d!\x01");
+    expect(printed.endsWith("\x1bd\x03\x1dVA\x00")).toBe(true);
   });
 
   it("previews only synthetic data, clearly marked", () => {

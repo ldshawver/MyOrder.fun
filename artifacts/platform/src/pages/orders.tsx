@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { getGetOrderQueryKey, useGetOrder, useListOrders, useGetCurrentUser, type Order } from "@workspace/api-client-react";
 import { Link } from "wouter";
@@ -8,7 +9,13 @@ import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { CustomerOrderStage } from "@/components/CustomerOrderStage";
 import { SupervisorDelayedOrders } from "@/components/SupervisorDelayedOrders";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
+import { OrderCourier } from "@/components/OrderCourier";
 import { staffFulfillmentAction, staffVisibleFulfillmentState } from "@/lib/staffFulfillmentAction";
+
+type StaffGroup = { id: number; provider: string; method: string; status: string };
+type StaffOrder = Order & { fulfillmentStatus?: string | null; fulfillmentGroups?: StaffGroup[]; acceptedAt?: string | null };
+const canPrepare = (order: StaffOrder) => order.paymentStatus === "paid" ||
+  (order.paymentStatus === "unpaid" && (order.selectedPaymentMethod ?? order.paymentMethod) === "cash");
 
 const CLOSED_ORDER_STATES = new Set(["completed", "cancelled", "canceled", "refunded", "voided", "archived", "delivered"]);
 
@@ -36,6 +43,7 @@ function PaymentBadge({ status }: { status: string }) {
 
 export default function Orders() {
   const { getToken } = useAuth();
+  const queryClient = useQueryClient();
   const { data, isLoading } = useListOrders(
     { limit: 50 },
     { query: { queryKey: ["listOrders"] } }
@@ -44,7 +52,7 @@ export default function Orders() {
   const userRole = normalizeNotificationRole(user?.role);
   const isCustomer = userRole === "user";
   const isSupervisor = userRole === "global_admin" || userRole === "admin";
-  const [staffOrders, setStaffOrders] = useState<Array<Order & { fulfillmentStatus?: string | null }>>([]);
+  const [staffOrders, setStaffOrders] = useState<StaffOrder[]>([]);
   const [staffLoading, setStaffLoading] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
   const [actioningOrderId, setActioningOrderId] = useState<number | null>(null);
@@ -56,7 +64,7 @@ export default function Orders() {
       const token = await getToken();
       const response = await fetch("/api/shift-queue/orders", { headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: "no-store" });
       if (!response.ok) throw new Error(response.status === 403 ? "You are not authorized to view operational orders." : "Could not load operational orders.");
-      const payload = await response.json() as { orders?: Array<Order & { fulfillmentStatus?: string | null }> };
+      const payload = await response.json() as { orders?: StaffOrder[] };
       setStaffOrders(Array.isArray(payload.orders) ? payload.orders : []);
       setStaffError(null);
     } catch (error) {
@@ -83,27 +91,49 @@ export default function Orders() {
     o.status === "pending" || o.status === "processing"
   );
 
-  const advanceOrder = useCallback(async (order: Order & { fulfillmentStatus?: string | null }) => {
-    if (order.paymentStatus !== "paid" || actioningOrderId !== null) return;
-    const state = staffVisibleFulfillmentState(order.fulfillmentStatus ?? order.status);
-    const next = state === "ready" ? "completed" : state === "in_progress" || state === "preparing" || state === "processing" ? "ready" : "in_progress";
+  const advanceOrder = useCallback(async (order: StaffOrder, group?: StaffGroup, completeDelivery = false) => {
+    if (!canPrepare(order) || actioningOrderId !== null) return;
+    const state = staffVisibleFulfillmentState(group?.status ?? order.fulfillmentStatus ?? order.status);
+    const next = state === "ready" ? "completed" : state === "in_progress" || state === "processing" ? "ready" : "in_progress";
+    const uber = (group?.method ?? order.deliveryMethod) === "uber_direct";
     setActioningOrderId(order.id);
+    setStaffError(null);
     try {
       const token = await getToken();
-      const action = staffFulfillmentAction(order.id, next, isSupervisor);
-      const response = await fetch(action.endpoint, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, ...(action.body ? { "Content-Type": "application/json" } : {}) },
-        ...(action.body ? { body: JSON.stringify(action.body) } : {}),
-      });
-      if (!response.ok) throw new Error((await response.json().catch(() => null) as { error?: string } | null)?.error ?? "Order action was not accepted.");
-      await refreshStaffOrders();
+      const send = async (endpoint: string, body?: Record<string, string>, method = "POST") => {
+        const response = await fetch(endpoint, {
+          method,
+          headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+        if (!response.ok) {
+          const result = await response.json().catch(() => null) as { error?: string; state?: string } | null;
+          throw new Error(result?.error ?? result?.state?.replaceAll("_", " ") ?? "Order action was not accepted.");
+        }
+      };
+      if (group && (completeDelivery || !uber || state !== "ready")) {
+        if (next === "in_progress" && !order.acceptedAt) await send(`/api/orders/${order.id}/claim`, {});
+        await send(`/api/orders/${order.id}/fulfillment-groups/${group.id}/status`, { status: next }, "PATCH");
+      } else if (!group && (completeDelivery || !uber || state !== "ready")) {
+        const action = next === "in_progress"
+          ? { endpoint: `/api/orders/${order.id}/claim`, body: {} }
+          : staffFulfillmentAction(order.id, next, isSupervisor);
+        await send(action.endpoint, action.body);
+      }
+      if (!completeDelivery && uber && (next === "ready" || state === "ready") && order.paymentStatus === "paid") {
+        await send(`/api/orders/${order.id}/courier/request`, {});
+      }
     } catch (error) {
-      setStaffError(error instanceof Error ? error.message : "Order action was not accepted.");
+      const message = error instanceof Error ? error.message : "Order action was not accepted.";
+      await refreshStaffOrders();
+      setStaffError(message);
+      return;
     } finally {
+      void queryClient.invalidateQueries({ queryKey: ["order-courier", order.id] });
       setActioningOrderId(null);
     }
-  }, [actioningOrderId, getToken, isSupervisor, refreshStaffOrders]);
+    await refreshStaffOrders();
+  }, [actioningOrderId, getToken, isSupervisor, queryClient, refreshStaffOrders]);
 
   if (isCustomer) {
     return (
@@ -219,7 +249,15 @@ export default function Orders() {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3" data-testid="orders-card-grid">
             {visibleOrders.map(order => {
               const lifecycle = staffVisibleFulfillmentState((order as Order & { fulfillmentStatus?: string | null }).fulfillmentStatus ?? order.status);
-              const actionLabel = lifecycle === "ready" ? "Complete" : lifecycle === "in_progress" || lifecycle === "preparing" || lifecycle === "processing" ? "Mark ready" : "Claim";
+              const uber = order.deliveryMethod === "uber_direct";
+              const preparing = lifecycle === "in_progress" || lifecycle === "processing";
+              const groups = (order as StaffOrder).fulfillmentGroups ?? [];
+              const uberGroup = groups.find(group => group.method === "uber_direct");
+              const cashDue = order.paymentStatus === "unpaid" && (order.selectedPaymentMethod ?? order.paymentMethod) === "cash";
+              const actionLabel = lifecycle === "ready" ? "Complete" : preparing
+                ? uber ? (cashDue ? "Mark ready for delivery" : "Ready & request Uber")
+                  : order.deliveryMethod === "csr_delivery" ? "Ready for delivery" : "Ready for pickup"
+                : "Claim & start";
               return (
               <div
                 key={order.id}
@@ -244,13 +282,32 @@ export default function Orders() {
                   </div>
                 </div>
                 </Link>
-                {order.paymentStatus === "paid" ? (
+                {uber && order.deliveryFee != null && <p className="mt-2 text-xs text-muted-foreground">Uber fee in order total: ${order.deliveryFee.toFixed(2)}</p>}
+                {uber && <OrderCourier orderId={order.id} busy={actioningOrderId !== null} request={
+                  (uberGroup?.status ?? lifecycle) === "ready" && order.paymentStatus === "paid"
+                    ? () => void advanceOrder(order, uberGroup) : undefined
+                } complete={(uberGroup?.status ?? lifecycle) === "ready" && order.paymentStatus === "paid"
+                  ? () => void advanceOrder(order, uberGroup, true) : undefined} />}
+                {cashDue && (
+                  <Link className="mt-3 block text-xs font-semibold text-primary underline" href={`/orders/${order.id}?cashCloseout=1`}>Close out cash</Link>
+                )}
+                {groups.length > 0 && canPrepare(order) && groups.filter(group => group.provider !== "cj").map(group => {
+                  const stage = staffVisibleFulfillmentState(group.status);
+                  if (!["submitted", "in_progress", "ready"].includes(stage ?? "") ||
+                      (stage === "ready" && (cashDue || group.method === "uber_direct"))) return null;
+                  const label = stage === "submitted" ? "Claim & start" : stage === "ready" ? "Complete"
+                    : group.method === "pickup" ? "Ready for pickup"
+                    : group.method === "uber_direct" && !cashDue ? "Ready & request Uber" : "Ready for delivery";
+                  return <button key={group.id} type="button" className="mt-3 w-full rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-60"
+                    disabled={actioningOrderId !== null} onClick={() => void advanceOrder(order, group)}>{label}{groups.length > 1 ? ` · ${group.provider}` : ""}</button>;
+                })}
+                {groups.length === 0 && canPrepare(order) && (lifecycle !== "ready" || (!uber && !cashDue)) ? (
                   <button type="button" className="mt-3 w-full rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-60" disabled={actioningOrderId !== null} onClick={() => void advanceOrder(order as Order & { fulfillmentStatus?: string | null })} data-testid={`button-order-action-${order.id}`}>
                     {actioningOrderId === order.id ? "Updating…" : actionLabel}
                   </button>
-                ) : (
+                ) : !canPrepare(order) ? (
                   <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200" data-testid={`payment-pending-${order.id}`}>Awaiting verified payment — not available for fulfillment.</p>
-                )}
+                ) : null}
               </div>
             )})}
           </div>
