@@ -295,6 +295,18 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
         container.appendChild(button);
         eligibleCount++;
       }
+      const returned = Object.values(sessions.current).find(session => session?.hasReturned?.());
+      if (returned?.resume) {
+        container?.replaceChildren();
+        setWalletEligible(true);
+        try {
+          const pending = JSON.parse(sessionStorage.getItem(pendingKey) ?? "null") as { orderId?: number; id?: number; providerOrderId?: string } | null;
+          if (!pending || !Number.isSafeInteger(pending.orderId) || !Number.isSafeInteger(pending.id) || !/^[A-Za-z0-9_-]{1,150}$/.test(pending.providerOrderId ?? "")) throw new Error("Missing checkout identity");
+          internalOrderId.current = pending.orderId; attempt.current = { id: pending.id!, providerOrderId: pending.providerOrderId! };
+          await returned.resume();
+        } catch { setMessage("PayPal return needs order recovery. Do not start another payment until the order is checked."); }
+        return;
+      }
       const cardSession = methods.isEligible("advanced_cards") ? sdk.createCardFieldsOneTimePaymentSession?.() : undefined;
       if (cardSession && container) {
         const cardForm = document.createElement("section");
@@ -388,15 +400,6 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
       } else unavailable("digital-option-google-pay", "Google Pay", "not available for this browser or PayPal account");
       unavailable("digital-option-cash-app", "Cash App", "not available through this PayPal account");
       setWalletEligible(eligibleCount > 0);
-      const returned = Object.values(sessions.current).find(session => session?.hasReturned?.());
-      if (returned?.resume) {
-        try {
-          const pending = JSON.parse(sessionStorage.getItem(pendingKey) ?? "null") as { orderId?: number; id?: number; providerOrderId?: string } | null;
-          if (!pending || !Number.isSafeInteger(pending.orderId) || !Number.isSafeInteger(pending.id) || !/^[A-Za-z0-9_-]{1,150}$/.test(pending.providerOrderId ?? "")) throw new Error("Missing checkout identity");
-          internalOrderId.current = pending.orderId; attempt.current = { id: pending.id!, providerOrderId: pending.providerOrderId! };
-          await returned.resume();
-        } catch { setMessage("PayPal return needs order recovery. Do not start another payment until the order is checked."); }
-      }
     }
     start().catch(() => { if (!disposed) { setWalletEligible(false); setMessage("Online PayPal checkout is unavailable."); } });
     return () => { disposed = true; };
