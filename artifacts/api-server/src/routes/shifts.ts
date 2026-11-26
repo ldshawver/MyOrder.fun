@@ -2311,6 +2311,83 @@ router.get("/shifts/:id/print-assignment", requireRole("global_admin", "admin", 
   res.json({ assignment });
 });
 
+function hasLegacyCalculatedEnding(row: Pick<typeof shiftInventoryItemsTable.$inferSelect, "quantityStart" | "quantitySold" | "quantityEndActual">): boolean {
+  return Number(row.quantityStart) === 0 && row.quantityEndActual !== null &&
+    Number(row.quantitySold) > 0 && Number(row.quantityEndActual) === -Number(row.quantitySold);
+}
+
+const closeoutCorrectionQuantity = z.string().regex(/^\d{1,7}(\.\d{1,3})?$/);
+const closeoutInventoryCorrection = z.object({
+  reason: z.string().trim().min(10).max(500),
+  counts: z.array(z.object({
+    itemId: z.number().int().positive(),
+    counted: closeoutCorrectionQuantity,
+    opening: closeoutCorrectionQuantity.optional(),
+  }).strict()).min(1).max(1000),
+}).strict();
+
+router.post("/shifts/:id/closeout-inventory-correction",
+  requireRole("global_admin", "admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    const shiftId = Number(req.params.id);
+    const tenantId = req.authorizedTenantId;
+    const parsed = closeoutInventoryCorrection.safeParse(req.body);
+    if (!tenantId || !Number.isSafeInteger(shiftId) || shiftId < 1 || !parsed.success) {
+      res.status(400).json({ error: "Enter verified inventory counts and a correction reason." }); return;
+    }
+    const { counts, reason } = parsed.data;
+    if (new Set(counts.map(count => count.itemId)).size !== counts.length) {
+      res.status(400).json({ error: "Enter one correction per inventory row." }); return;
+    }
+    const actor = req.dbUser!;
+    const result = await db.transaction(async tx => {
+      const [shift] = await tx.select().from(labTechShiftsTable)
+        .where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId)))
+        .for("update").limit(1);
+      if (!shift) return 404;
+      if (shift.status !== "supervisor_pending" || !shift.clockedOutAt) return 409;
+      const rows = await tx.select().from(shiftInventoryItemsTable)
+        .where(and(eq(shiftInventoryItemsTable.shiftId, shiftId), eq(shiftInventoryItemsTable.rowType, "item"),
+          inArray(shiftInventoryItemsTable.id, counts.map(count => count.itemId))))
+        .for("update");
+      const byId = new Map(rows.map(row => [row.id, row]));
+      for (const count of counts) {
+        const row = byId.get(count.itemId);
+        if (!row) return 409;
+        // The legacy fallback stored zero minus sales as if it were a count.
+        const legacyEnding = hasLegacyCalculatedEnding(row);
+        if (row.quantityEndActual !== null && !legacyEnding) return 409;
+        if (legacyEnding !== (count.opening !== undefined)) return 409;
+        if (count.opening !== undefined && Number(count.opening) < Number(row.quantitySold)) return 409;
+      }
+      for (const count of counts) {
+        const row = byId.get(count.itemId)!;
+        const expected = sql`(${count.opening ?? row.quantityStart}::numeric - coalesce(${shiftInventoryItemsTable.quantitySold}, 0))`;
+        await tx.update(shiftInventoryItemsTable).set({
+          quantityStart: count.opening ?? row.quantityStart,
+          quantityEndActual: count.counted,
+          quantityEnd: expected,
+          discrepancy: sql`${expected} - ${count.counted}::numeric`,
+          isFlagged: sql`${expected} > ${count.counted}::numeric OR ${expected} < 0`,
+        }).where(and(eq(shiftInventoryItemsTable.id, count.itemId), eq(shiftInventoryItemsTable.shiftId, shiftId)));
+      }
+      await tx.insert(auditLogsTable).values({
+        tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
+        action: "SHIFT_CLOSEOUT_INVENTORY_CORRECTED", resourceType: "lab_tech_shift", resourceId: String(shiftId),
+        metadata: { reason, corrections: counts.map(count => {
+          const row = byId.get(count.itemId)!;
+          return { ...count, previousOpening: row.quantityStart, previousCounted: row.quantityEndActual };
+        }) },
+      });
+      return 200;
+    });
+    if (result !== 200) {
+      res.status(result).json({ error: result === 404 ? "Shift not found" : "The shift or inventory rows no longer qualify for correction. Reload and review the recorded counts." }); return;
+    }
+    res.json({ corrected: counts.length });
+  },
+);
+
 // ─── POST /api/shifts/:id/supervisor-checkout ─────────────────────────────────
 // Supervisor confirms ending inventory and selects the product commission rate.
 router.post(
@@ -2772,6 +2849,15 @@ router.get(
         const inventoryAccountability = shift.clockedOutAt
           ? await loadShiftInventoryAccountability(db, tenantId, shift.id, shift.clockedInAt, shift.clockedOutAt)
           : { lines: [], blockers: [{ shiftInventoryItemId: 0, itemName: "Shift", code: "SHIFT_CLOSEOUT_CLOCK_OUT_REQUIRED", message: "Clock out before supervisor review." }], total: "0.00" };
+        const negativeEndingIds = inventoryAccountability.blockers
+          .filter(blocker => blocker.code === "INVALID_QUANTITY" && blocker.message.includes("countedQuantity"))
+          .map(blocker => blocker.shiftInventoryItemId);
+        const legacyRows = negativeEndingIds.length
+          ? await db.select().from(shiftInventoryItemsTable).where(and(
+              eq(shiftInventoryItemsTable.shiftId, shift.id), inArray(shiftInventoryItemsTable.id, negativeEndingIds),
+            ))
+          : [];
+        const legacyIds = new Set(legacyRows.filter(hasLegacyCalculatedEnding).map(row => row.id));
         return {
           shiftId: shift.id,
           techName: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() : "Unknown",
@@ -2783,6 +2869,11 @@ router.get(
           paymentTotals: stats.paymentTotals,
           totalRevenue: stats.totalRevenue,
           inventoryAccountability,
+          inventoryCorrections: inventoryAccountability.blockers.filter(blocker =>
+            blocker.code === "PHYSICAL_COUNT_REQUIRED" ||
+            legacyIds.has(blocker.shiftInventoryItemId),
+          ).map(blocker => ({ itemId: blocker.shiftInventoryItemId, itemName: blocker.itemName,
+            openingRequired: legacyIds.has(blocker.shiftInventoryItemId) })),
         };
       })
     );

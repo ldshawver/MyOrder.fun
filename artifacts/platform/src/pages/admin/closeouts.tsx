@@ -12,6 +12,7 @@ type PendingShift = {
   cashBankStart: number;
   cashBankEndReported: number;
   totalRevenue: number;
+  inventoryCorrections?: Array<{ itemId: number; itemName: string; openingRequired: boolean }>;
   inventoryAccountability: {
     total: string;
     blockers: Array<{ code: string; message: string; itemName: string }>;
@@ -34,6 +35,8 @@ export default function AdminCloseouts() {
   const [targetById, setTargetById] = useState<Record<number, number>>({});
   const [cashEndById, setCashEndById] = useState<Record<number, string>>({});
   const [reasonById, setReasonById] = useState<Record<number, string>>({});
+  const [correctionCounts, setCorrectionCounts] = useState<Record<number, { counted?: string; opening?: string }>>({});
+  const [correctionReasons, setCorrectionReasons] = useState<Record<number, string>>({});
   const [confirmedById, setConfirmedById] = useState<Record<number, boolean>>({});
 
   const load = useCallback(async () => {
@@ -94,6 +97,35 @@ export default function AdminCloseouts() {
   }
 
   useEffect(() => { load(); }, [load]);
+
+  async function saveInventoryCorrection(shift: PendingShift) {
+    const counts = (shift.inventoryCorrections ?? []).flatMap(item => {
+      const entered = correctionCounts[item.itemId];
+      if (!entered?.counted || (item.openingRequired && !entered.opening)) return [];
+      return [{ itemId: item.itemId, counted: entered.counted, opening: item.openingRequired ? entered.opening : undefined }];
+    });
+    if (!counts.length) return;
+    setBusyId(shift.shiftId);
+    setError(null);
+    setResultMessage(null);
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/shifts/${shift.shiftId}/closeout-inventory-correction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ counts, reason: correctionReasons[shift.shiftId] }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not save corrections.");
+      setConfirmedById(previous => ({ ...previous, [shift.shiftId]: false }));
+      setResultMessage(`Saved verified inventory corrections for shift #${shift.shiftId}.`);
+      await load();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Could not save corrections.");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function approve(shiftId: number) {
     setBusyId(shiftId);
@@ -230,6 +262,34 @@ export default function AdminCloseouts() {
                     <span className="md:col-span-2 font-medium">{line.itemName}</span><span>Expected {line.expectedQuantity}</span><span>Counted {line.countedQuantity}</span><span>Missing {line.missingQuantity}</span><span>80% unit ${line.unitReplacementValue} · line ${line.lineTotal}</span>
                   </div>)}
                   {s.inventoryAccountability.blockers.map(blocker => <div key={`${blocker.code}:${blocker.itemName}`} className="text-xs text-red-400"><b>{blocker.itemName}:</b> {blocker.message}</div>)}
+                  {!!s.inventoryCorrections?.length && (
+                    <fieldset disabled={busyId === s.shiftId} className="space-y-2 rounded-md border p-2">
+                      <legend className="px-1 text-xs font-semibold">Record verified inventory counts</legend>
+                      <p className="text-xs text-muted-foreground">Use the CSR’s original physical count and the opening records where requested. You can save completed rows as you verify them.</p>
+                      {s.inventoryCorrections.map(item => (
+                        <div key={item.itemId} className="flex flex-wrap items-center gap-2 text-xs">
+                          <span>{item.itemName}</span>
+                          {(item.openingRequired ? ["opening", "counted"] as const : ["counted"] as const).map(field => (
+                            <label key={field} className="flex items-center gap-1">
+                              {field === "opening" ? "Verified opening" : "Physical ending count"}
+                              <input type="text" inputMode="decimal" className="w-24 rounded border bg-background px-1.5 py-1"
+                                value={correctionCounts[item.itemId]?.[field] ?? ""}
+                                onChange={event => setCorrectionCounts(previous => ({
+                                  ...previous, [item.itemId]: { ...previous[item.itemId], [field]: event.target.value.trim() },
+                                }))} />
+                            </label>
+                          ))}
+                        </div>
+                      ))}
+                      <label className="block text-xs">Correction reason and source
+                        <textarea className="mt-1 w-full rounded border bg-background px-2 py-1"
+                          value={correctionReasons[s.shiftId] ?? ""} maxLength={500}
+                          onChange={event => setCorrectionReasons(previous => ({ ...previous, [s.shiftId]: event.target.value }))} />
+                      </label>
+                      <Button size="sm" variant="outline" onClick={() => saveInventoryCorrection(s)}
+                        disabled={(correctionReasons[s.shiftId]?.trim().length ?? 0) < 10}>Save verified counts</Button>
+                    </fieldset>
+                  )}
                   <label className="block text-xs">Supervisor shortage reason
                     <textarea className="mt-1 min-h-16 w-full rounded-md border bg-background px-2 py-1.5" value={reasonById[s.shiftId] ?? ""} onChange={event => setReasonById(prev => ({ ...prev, [s.shiftId]: event.target.value }))} placeholder="Required when a shortage is reported (minimum 10 characters)" maxLength={500} />
                   </label>
