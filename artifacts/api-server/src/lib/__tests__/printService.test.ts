@@ -504,3 +504,15 @@ describe("print job status integrity", () => {
     });
   });
 });
+
+it("prints and pulses a cash receipt only after a paid cash closeout", async () => {
+  const { automaticOrderReceiptPolicy } = await import("../printService");
+  const cash = { selectedPaymentMethod: "cash", paymentMethod: "cash", paymentStatus: "unpaid" };
+  expect(automaticOrderReceiptPolicy(cash)).toEqual({ printReceipt: false, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy({ ...cash, cashCloseout: true })).toEqual({ printReceipt: false, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy({ ...cash, paymentStatus: "paid" })).toEqual({ printReceipt: false, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy({ ...cash, cashCloseout: true, paymentStatus: "paid", paymentMethod: "customer_credit+cash" }))
+    .toEqual({ printReceipt: true, openCashDrawer: true });
+  expect(automaticOrderReceiptPolicy({ paymentMethod: "paypal", paymentStatus: "paid" }))
+    .toEqual({ printReceipt: true, openCashDrawer: false });
+});

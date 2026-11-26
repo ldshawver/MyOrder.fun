@@ -5,7 +5,7 @@ import { z } from "zod/v4";
 import {
   adminSettingsTable, auditLogsTable, cashLedgerEntriesTable, csrBoxesTable, db,
   generalQueueCashSessionParticipantsTable, generalQueueCashSessionsTable,
-  inventoryLocationsTable, labTechShiftsTable, ordersTable, shiftRoutingConfigTable, usersTable,
+  inventoryLocationsTable, labTechShiftsTable, orderFulfillmentGroupsTable, ordersTable, shiftRoutingConfigTable, usersTable,
 } from "@workspace/db";
 import { isShiftOrderRoutable, listActiveCsrs } from "../lib/orderRouting";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, normalizeRole } from "../lib/auth";
@@ -140,6 +140,28 @@ router.get("/shift-queue/status", requirePermission("queue.view"), async (req, r
   });
 });
 
+async function buildStaffOrderCards(tenantId: number, orders: Array<typeof ordersTable.$inferSelect>) {
+  if (!orders.length) return [];
+  const groups = await db.select({
+    orderId: orderFulfillmentGroupsTable.orderId, id: orderFulfillmentGroupsTable.id,
+    method: orderFulfillmentGroupsTable.method, provider: orderFulfillmentGroupsTable.provider,
+    status: orderFulfillmentGroupsTable.status,
+  }).from(orderFulfillmentGroupsTable).where(and(
+    eq(orderFulfillmentGroupsTable.tenantId, tenantId),
+    inArray(orderFulfillmentGroupsTable.orderId, orders.map(order => order.id)),
+  )).orderBy(orderFulfillmentGroupsTable.id);
+  const groupsByOrder = new Map<number, typeof groups>();
+  for (const group of groups) {
+    const previous = groupsByOrder.get(group.orderId) ?? [];
+    previous.push(group);
+    groupsByOrder.set(group.orderId, previous);
+  }
+  return Promise.all(orders.map(async order => ({
+    ...await buildOrderResponse(order),
+    fulfillmentGroups: groupsByOrder.get(order.id) ?? [],
+  })));
+}
+
 router.get("/shift-queue/orders", requirePermission("queue.view"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const tenantId = req.authorizedTenantId!;
@@ -150,11 +172,11 @@ router.get("/shift-queue/orders", requirePermission("queue.view"), async (req, r
       ? sql`(${ordersTable.assignedShiftId} = ${shift.id} OR (${ordersTable.assignedShiftId} IS NULL AND (${ordersTable.assignedCsrUserId} IS NULL OR ${ordersTable.assignedCsrUserId} = ${actor.id})))`
       : sql`(${ordersTable.assignedShiftId} IS NULL AND (${ordersTable.assignedCsrUserId} IS NULL OR ${ordersTable.assignedCsrUserId} = ${actor.id}))`;
     const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder, scope)).orderBy(desc(ordersTable.createdAt));
-    res.json({ orders: await Promise.all(orders.map(buildOrderResponse)), total: orders.length });
+    res.json({ orders: await buildStaffOrderCards(tenantId, orders), total: orders.length });
     return;
   }
   const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder)).orderBy(desc(ordersTable.createdAt));
-  res.json({ orders: await Promise.all(orders.map(buildOrderResponse)), total: orders.length });
+  res.json({ orders: await buildStaffOrderCards(tenantId, orders), total: orders.length });
 });
 
 router.get("/shift-queue/general", requirePermission("queue.view"), async (req, res): Promise<void> => {

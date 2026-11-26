@@ -650,11 +650,21 @@ async function renderAutomaticReceipt(
   return { text: renderCustomerReceipt({ ...legacyOrder, paperWidth }), plainText: renderCustomerReceiptBody({ ...legacyOrder, paperWidth }), templateId: null, templateVersion: null };
 }
 
+export function automaticOrderReceiptPolicy(order: {
+  paymentStatus: string; paymentMethod?: string | null; selectedPaymentMethod?: string | null; cashCloseout?: boolean;
+}) {
+  const isCash = (order.selectedPaymentMethod ?? order.paymentMethod) === "cash";
+  const cashReceipt = isCash && order.cashCloseout === true && order.paymentStatus === "paid";
+  return { printReceipt: isCash ? cashReceipt : !order.cashCloseout, openCashDrawer: cashReceipt };
+}
+
 export async function enqueueOrderPrintJobs(order: {
   id: number;
   status: string;
   paymentStatus: string;
   paymentMethod?: string | null;
+  selectedPaymentMethod?: string | null;
+  cashCloseout?: boolean;
   notes: string | null;
   subtotal: string;
   tax: string;
@@ -763,7 +773,8 @@ export async function enqueueOrderPrintJobs(order: {
   };
   const pendingDispatches: Array<() => Promise<void>> = [];
 
-  if (controls.autoPrintReceipts || controls.autoPrintOrders) {
+  const receiptPolicy = automaticOrderReceiptPolicy(order);
+  if ((controls.autoPrintReceipts || controls.autoPrintOrders) && receiptPolicy.printReceipt) {
     const result = await queueDocumentPrint({
       ...documentBase,
       documentType: "ORDER_RECEIPT",
@@ -772,7 +783,7 @@ export async function enqueueOrderPrintJobs(order: {
       idempotencyKey: `order_receipt:${tenantId}:${order.id}`,
       render: { kind: "thermal-text", text: async (_printer, columns) => {
         const receipt = await renderAutomaticReceipt(tenantId, order.id, printOrder, columns);
-        return { ...receipt, openCashDrawer: order.paymentMethod === "cash" };
+        return { ...receipt, openCashDrawer: receiptPolicy.openCashDrawer };
       } },
       legacyFallback: async () => (await resolveReceiptPrinters(profile, routeContext)).primary,
     });
@@ -780,7 +791,7 @@ export async function enqueueOrderPrintJobs(order: {
     else if (result.status === "no-route") pLog.warn({ event: "receipt_no_route", orderId: order.id, reason: result.reason }, "receipt not printed: no route");
   }
 
-  if (controls.autoPrintOrders) {
+  if (controls.autoPrintOrders && !order.cashCloseout) {
     const { loadReceiptData } = await import("./print/receiptPipeline");
     const { buildExpoTicket } = await import("./print/documents");
     // Customer receipts use the configured safe-name mode. Staff tickets must
@@ -817,7 +828,7 @@ export async function enqueueOrderPrintJobs(order: {
   }
 
   // ── Label ─────────────────────────────────────────────────────────────────
-  if (controls.autoPrintLabels) {
+  if (controls.autoPrintLabels && !order.cashCloseout) {
     const { resolveRoutingDecision, shouldPrintLabel } = await import("./printRoutingResolver.js");
 
     // Label eligibility gate — only delivery orders or Lucifer Cruz shipments

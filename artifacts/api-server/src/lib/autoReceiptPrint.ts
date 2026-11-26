@@ -1,35 +1,20 @@
-/**
- * autoReceiptPrint.ts
- *
- * Fire-and-forget receipt printing triggered automatically after order creation.
- * Called from POST /api/orders when RECEIPT_PRINT_ENABLED=true and
- * the order tenant's print controls have autoPrintReceipts=true.
- *
- * Never throws — all errors are logged and silently dropped so order creation
- * is never blocked by a printer being offline.
- */
-import { eq } from "drizzle-orm";
+/** Best-effort printing for an order whose cash closeout committed. */
+import { and, eq } from "drizzle-orm";
 import { db, ordersTable, orderItemsTable } from "@workspace/db";
 import { enqueueOrderPrintJobs } from "./printService";
-import { getPrintControls } from "./printControls";
 import { logger as _logger } from "./logger";
 
 const log = _logger.child({ module: "autoReceiptPrint" });
 
-export async function autoReceiptPrint(orderId: number): Promise<void> {
-  // Guard: env flag must be explicitly true
-  if (process.env.RECEIPT_PRINT_ENABLED !== "true") return;
+export async function printCashCloseoutReceipt(tenantId: number, orderId: number): Promise<void> {
 
   try {
     const [order] = await db
       .select()
       .from(ordersTable)
-      .where(eq(ordersTable.id, orderId))
+      .where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId)))
       .limit(1);
-    if (!order?.tenantId) return;
-
-    // Guard: the order's own tenant must have automatic receipts enabled.
-    if (!(await getPrintControls(order.tenantId)).autoPrintReceipts) return;
+    if (!order?.tenantId || order.paymentStatus !== "paid" || (order.selectedPaymentMethod ?? order.paymentMethod) !== "cash") return;
 
     const items = await db
       .select()
@@ -43,13 +28,15 @@ export async function autoReceiptPrint(orderId: number): Promise<void> {
       status: order.status,
       paymentStatus: order.paymentStatus,
       paymentMethod: order.paymentMethod,
+      selectedPaymentMethod: order.selectedPaymentMethod,
+      cashCloseout: true,
       notes: order.notes,
       subtotal: String(order.subtotal),
       tax: String(order.tax),
       total: String(order.total),
       createdAt: order.createdAt,
       tenantId: order.tenantId,
-      fulfillmentType: order.orderType,
+      fulfillmentType: order.deliveryMethod === "pickup" ? "pickup" : "delivery",
       shippingAddress: order.shippingAddress,
       assignedShiftId: order.assignedShiftId,
       items: items.map((item) => ({
