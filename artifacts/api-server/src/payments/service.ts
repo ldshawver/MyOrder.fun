@@ -25,7 +25,7 @@ export class PaymentServiceError extends Error {
 export class PaymentService {
   constructor(private readonly config: EnabledPaymentConfig, private readonly provider: PaymentProvider) {}
 
-  async create(input: { tenantId: number; customerId: number; orderId: number; idempotencyKey: string }) {
+  async create(input: { tenantId: number; customerId: number; orderId: number; idempotencyKey: string; fundingSource?: "google_pay" }) {
     const outcome = await db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, input.orderId), eq(ordersTable.tenantId, input.tenantId))).limit(1);
@@ -125,7 +125,7 @@ export class PaymentService {
       if (Number(amount) <= 0) throw new PaymentServiceError(409, "NO_EXTERNAL_BALANCE", "Customer Credit covers the full order; no PayPal order is permitted");
       const [attempt] = existing ? [existing] : await tx.insert(paymentAttemptsTable).values({ tenantId: input.tenantId, orderId: input.orderId, provider: "paypal", providerEnvironment: this.config.environment, idempotencyKey: input.idempotencyKey, requestedAmount: amount, requestedCurrency: CURRENCY, state: "creating" }).returning();
       let providerOrder;
-      try { providerOrder = await this.provider.createOrder({ amount: { value: amount, currency: CURRENCY }, requestId: `create-${attempt.id}`, internalOrderId: input.orderId }); }
+      try { providerOrder = await this.provider.createOrder({ amount: { value: amount, currency: CURRENCY }, requestId: `create-${attempt.id}`, internalOrderId: input.orderId, ...(input.fundingSource ? { fundingSource: input.fundingSource } : {}) }); }
       catch (error) {
         const unknown = error instanceof PayPalProviderError && error.failureClass === "unknown_outcome";
         await tx.update(paymentAttemptsTable).set({ state: unknown ? "reconciliation_required" : "failed", reconciliationState: unknown ? "pending" : "not_required", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id));

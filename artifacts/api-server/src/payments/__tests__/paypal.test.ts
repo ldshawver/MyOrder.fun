@@ -6,6 +6,23 @@ const config: EnabledPaymentConfig = { enabled: true, provider: "paypal", mode: 
 function json(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }); }
 
 describe("PayPal provider", () => {
+  it("configures Google Pay on the provider order without changing the server amount", async () => {
+    const amount = { value: "10.80", currency: "USD" };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(json({ access_token: "token" }))
+      .mockResolvedValueOnce(json({
+        id: "ORDER1", status: "CREATED",
+        purchase_units: [{ reference_id: "7", amount: { value: amount.value, currency_code: amount.currency } }],
+      }));
+    await new PayPalProvider(config, fetcher as typeof fetch).createOrder({
+      amount, requestId: "request-1", internalOrderId: 7, fundingSource: "google_pay",
+    });
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({
+      intent: "CAPTURE",
+      purchase_units: [{ reference_id: "7", amount: { value: "10.80", currency_code: "USD" } }],
+      payment_source: { google_pay: { attributes: { verification: { method: "SCA_WHEN_REQUIRED" } } } },
+    });
+  });
   it("uses only the internally selected Sandbox host and server amount", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []; const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => { calls.push({ url: String(url), init }); return calls.length === 1 ? json({ access_token: "token", expires_in: 300 }) : json({ id: "ORDER1", status: "CREATED", purchase_units: [{ reference_id: "7", amount: { value: "10.80", currency_code: "USD" } }], links: [{ rel: "approve", href: "https://www.sandbox.paypal.com/checkoutnow?token=ORDER1" }] }); });
     const result = await new PayPalProvider(config, fetcher as typeof fetch).createOrder({ amount: { value: "10.80", currency: "USD" }, requestId: "request-1", internalOrderId: 7 });
