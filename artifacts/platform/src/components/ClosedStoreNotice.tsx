@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/react";
+import { useStorefrontClosure } from "@/components/StorefrontClosureNotice";
 
 export type ClosedStoreLocation = {
   locationId?: number;
@@ -49,6 +50,7 @@ export function ClosedStoreNotice({ location }: { location: ClosedStoreLocation 
 
 export function CatalogClosedStoreNotice() {
   const { getToken } = useAuth();
+  const { data: closure } = useStorefrontClosure();
   const [locations, setLocations] = useState<ClosedStoreLocation[]>([]);
   useEffect(() => {
     let cancelled = false;
@@ -62,8 +64,8 @@ export function CatalogClosedStoreNotice() {
       .then(rows => { if (!cancelled) setLocations(rows); })
       .catch(() => { if (!cancelled) setLocations([]); });
     return () => { cancelled = true; };
-  }, [getToken]);
-  if (!locations.length || locations.some(location => location.immediateAvailable)) return null;
+  }, [getToken, closure]);
+  if (closure || !locations.length || locations.some(location => location.immediateAvailable)) return null;
   const closed = locations
     .filter(location => !location.immediateAvailable)
     .sort((a, b) => (a.nextOpenAt ?? "9999").localeCompare(b.nextOpenAt ?? "9999"));

@@ -22,6 +22,7 @@ export default function StorefrontClosures() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [quickMessage, setQuickMessage] = useState(holidayMessage);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -40,17 +41,27 @@ export default function StorefrontClosures() {
     return () => controller.abort();
   }, [getToken]);
 
-  function add(closeToday: boolean) {
-    if (!schedule || schedule.windows.length >= 50) return;
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setHours(24, 0, 0, 0);
-    setSaved(false);
-    setSchedule({ ...schedule, windows: [...schedule.windows, {
-      startsAt: closeToday ? now.toISOString() : "",
-      endsAt: closeToday ? tomorrow.toISOString() : "",
-      message: holidayMessage,
+  const now = Date.now();
+  const activeIndex = schedule?.windows.findIndex(window =>
+    Date.parse(window.startsAt) <= now && now < Date.parse(window.endsAt),
+  ) ?? -1;
+
+  function closeToday() {
+    if (!schedule || !quickMessage.trim() || schedule.windows.length >= 50) return;
+    const startsAt = new Date();
+    const endsAt = new Date(startsAt);
+    endsAt.setHours(24, 0, 0, 0);
+    void save({ ...schedule, windows: [...schedule.windows, {
+      startsAt: startsAt.toISOString(),
+      endsAt: endsAt.toISOString(),
+      message: quickMessage.trim(),
     }] });
+  }
+
+  function add() {
+    if (!schedule || schedule.windows.length >= 50) return;
+    setSaved(false);
+    setSchedule({ ...schedule, windows: [...schedule.windows, { startsAt: "", endsAt: "", message: "" }] });
   }
 
   function edit(index: number, update: Partial<ClosureWindow>) {
@@ -58,14 +69,15 @@ export default function StorefrontClosures() {
     setSchedule(current => current && ({ ...current, windows: current.windows.map((entry, i) => i === index ? { ...entry, ...update } : entry) }));
   }
 
-  async function save() {
-    if (!schedule) return;
+  async function save(draft: Schedule | null = schedule) {
+    if (!draft) return;
     setSaving(true);
+    setSaved(false);
     setError(null);
     try {
       const token = await getToken();
       const response = await fetch(endpoint, {
-        method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(schedule),
+        method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(draft),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Could not save the closure schedule.");
@@ -88,13 +100,23 @@ export default function StorefrontClosures() {
       {schedule && (
         <form onSubmit={event => { event.preventDefault(); void save(); }} className="space-y-4">
           <fieldset disabled={saving} className="space-y-4">
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="outline" disabled={schedule.windows.length >= 50} onClick={() => add(true)}>Close for the rest of today</Button>
-              <Button type="button" variant="outline" disabled={schedule.windows.length >= 50} onClick={() => add(false)}>Add closure</Button>
-            </div>
+            {activeIndex < 0 && (
+              <section className="space-y-3 rounded-xl border border-border p-4">
+                <h2 className="text-lg font-semibold">Close for the rest of today</h2>
+                <label className="block text-sm font-medium">Reason shown to customers
+                  <textarea maxLength={500} value={quickMessage} rows={3}
+                    className="mt-1 block w-full rounded-md border border-border bg-background p-3 text-base"
+                    onChange={event => setQuickMessage(event.target.value)} />
+                </label>
+                <Button type="button" disabled={!quickMessage.trim() || schedule.windows.length >= 50}
+                  onClick={closeToday}>Save and close until midnight</Button>
+              </section>
+            )}
             <p className="text-xs text-muted-foreground">Dates and times use {Intl.DateTimeFormat().resolvedOptions().timeZone}.</p>
+            <Button type="button" variant="outline" disabled={schedule.windows.length >= 50} onClick={add}>Schedule a closure</Button>
             {schedule.windows.map((window, index) => (
               <section key={index} className="space-y-3 rounded-xl border border-border p-4">
+                {index === activeIndex && <h2 className="text-lg font-bold">Current closure</h2>}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <label className="text-sm">Closes
                     <Input required type="datetime-local" value={localInput(window.startsAt)}
@@ -105,7 +127,7 @@ export default function StorefrontClosures() {
                       onChange={event => edit(index, { endsAt: event.target.value ? new Date(event.target.value).toISOString() : "" })} />
                   </label>
                 </div>
-                <label className="block text-sm">Popup message
+                <label className="block text-sm">Reason shown to customers
                   <textarea required maxLength={500} value={window.message} rows={3}
                     className="mt-1 block w-full rounded-md border border-border bg-background p-2"
                     onChange={event => edit(index, { message: event.target.value })} />
