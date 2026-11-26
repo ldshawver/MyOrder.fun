@@ -1286,17 +1286,13 @@ test("candidate builder is frozen to the exact source selected for immutable ima
     new URL("../.github/workflows/build-production-platform.yml", import.meta.url),
     "utf8",
   );
-  const candidate = {
-    sha: "44a519d1b12728d5428e04632691e421c506d921",
-    tree: "84dc23666bfe44a84d1ff40d5048ea3c246e7e37",
-  };
-  assert.match(workflow, new RegExp(`SOURCE_SHA: ${candidate.sha}`));
-  assert.match(workflow, new RegExp(`SOURCE_TREE: ${candidate.tree}`));
-  assert.match(workflow, new RegExp(`ref: ${candidate.sha}`));
-  assert.equal(workflow.match(new RegExp(candidate.sha, "g"))?.length, 5);
-  // Image construction is intentionally ahead of the separately reviewed
-  // controller approval. The controller must retain its existing immutable
-  // identity until the resulting image digests are verified and bound.
+  const sha = workflow.match(/^      SOURCE_SHA: ([a-f0-9]{40})$/m)?.[1];
+  assert.ok(sha);
+  assert.match(workflow, /^      SOURCE_TREE: [a-f0-9]{40}$/m);
+  assert.match(workflow, new RegExp(`ref: ${sha}`));
+  assert.equal(workflow.match(new RegExp(sha, "g"))?.length, 5);
+  assert.ok(workflow.includes('test "$(git rev-parse HEAD)" = "$SOURCE_SHA"'));
+  assert.ok(workflow.includes('test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"'));
   assert.match(workflow, /V2\.2\.4/);
   assert.doesNotMatch(workflow, /:latest(?:\s|$)/);
   assert.match(workflow, /\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);

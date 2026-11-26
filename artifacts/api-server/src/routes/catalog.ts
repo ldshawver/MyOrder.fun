@@ -30,7 +30,7 @@ const listCatalogItemsRequest = ListCatalogItemsQueryParams.extend({
 });
 
 function customerUnitPrice(row: typeof catalogItemsTable.$inferSelect, employee: boolean): number {
-  let retail = parseFloat(String(row.price));
+  let retail: number;
   try {
     retail = resolveEffectiveCatalogUnitPrice(row);
   } catch {
