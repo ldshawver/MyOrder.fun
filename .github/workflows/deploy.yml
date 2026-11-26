@@ -150,11 +150,11 @@ jobs:
 
       # Used only to match the pre-pinned SSH host key; never used as a
       # network destination.
-      VPS_SSH_HOST_KEY_ALIAS: ${{ secrets.VPS_SSH_HOST_KEY_ALIAS || secrets.VPS_HOST }}
+      VPS_SSH_HOST_KEY_ALIAS: ${{ secrets.VPS_PRODUCTION_KNOWN_HOSTS != '' && 'myorder-production' || secrets.VPS_SSH_HOST_KEY_ALIAS || secrets.VPS_HOST }}
 
       VPS_USER: ${{ secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin' }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
-      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_PRODUCTION_KNOWN_HOSTS || secrets.VPS_KNOWN_HOSTS }}
 
       DEPLOY_PATH: /opt/alavont
 
