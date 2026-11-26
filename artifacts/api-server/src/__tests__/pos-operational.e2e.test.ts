@@ -671,7 +671,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
       commissionBasis: "0.00",
       commissionPercent: 15,
       commissionAmount: "0.00",
-      commissionRule: expect.objectContaining({ basis: "discounted_product_sales" }),
+      commissionRule: expect.objectContaining({ basis: "net_shift_sales" }),
     });
 
     const persisted = await db.execute(sql`

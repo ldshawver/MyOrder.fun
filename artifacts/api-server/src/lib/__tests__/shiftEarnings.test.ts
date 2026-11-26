@@ -29,9 +29,16 @@ describe("shift earnings", () => {
     expect(result.orderCommissions.reduce((sum, item) => sum + Math.round(Number(item.commissionAmount) * 100), 0)).toBe(1);
     expect(result.orderCommissions.find(item => item.orderId === 1)?.commissionAmount).toBe("0.01");
   });
-  it("excludes memberships, explicitly excluded, unclassified, and General Queue sales", () => {
-    const excluded = ["membership", "excluded", "unclassified"].map((eligibility, i) => order({ orderId: i + 1, lines: [{ ...order().lines[0]!, eligibility: eligibility as never }] }));
-    expect(calculateShiftEarnings([...excluded, order({ orderId: 9, routeSource: "general_account" })], 18).commissionBasis).toBe("0.00");
+  it("includes ordinary paid shift sales regardless of item classification and excludes employee, comp, and queue sales", () => {
+    const sales = (["membership", "excluded", "unclassified"] as const).map((eligibility, i) =>
+      order({ orderId: i + 1, lines: [{ ...order().lines[0]!, eligibility }] }));
+    const result = calculateShiftEarnings([...sales,
+      order({ orderId: 4, employeeSale: true, tipAmount: "5.00" }),
+      order({ orderId: 5, paymentMethod: "comp" }),
+      order({ orderId: 6, routeSource: "general_account" }),
+      order({ orderId: 7, paymentStatus: "unpaid" }),
+    ], 17);
+    expect(result).toMatchObject({ commissionBasis: "240.00", commissionAmount: "40.80", customerTips: "5.00" });
   });
   it("keeps tips and CSR 80/20 delivery separate", () => {
     expect(calculateShiftEarnings([order({ deliveryMethod: "csr_delivery", fulfillmentStatus: "completed", deliveryFee: "10.01", tipAmount: "7.25" })], 15)).toMatchObject({ customerTips: "7.25", csrDeliveryEarnings: "8.01", houseDeliveryShare: "2.00", csrPayout: "27.26" });
