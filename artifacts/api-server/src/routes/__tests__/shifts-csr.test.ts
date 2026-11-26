@@ -231,11 +231,21 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     expect(db.update).not.toHaveBeenCalled();
   });
 
+  it("keeps closeout inventory and sales reports behind supervisor access", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+    const app = buildApp();
+    for (const path of ["/api/shifts/888/summary", "/api/shifts/888/receipts/ending_inventory", "/api/shifts/888/receipts/shift_sales"]) {
+      expect((await supertest(app).get(path)).status).toBe(403);
+    }
+  });
+
   it("clock-out writes an audit_logs row with action=shift.clock_out", async () => {
     const activeShift = { id: 888, techId: 50, status: "active", tenantId: 1, clockedInAt: new Date(), cashBankStart: "0" };
     configureDb({ user: makeUser("customer_service_rep", "approved"), activeShift });
     const res = await supertest(buildApp()).post("/api/shifts/clock-out").send({ cashBankEnd: 100, endingInventory: [] });
     expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty("summary");
+    expect(res.body.shift).not.toHaveProperty("paymentTotalsJson");
     expect(auditLogInsertSpy).toHaveBeenCalledTimes(1);
     const row = auditLogInsertSpy.mock.calls[0][0] as Record<string, unknown>;
     expect(row.action).toBe("shift.clock_out");

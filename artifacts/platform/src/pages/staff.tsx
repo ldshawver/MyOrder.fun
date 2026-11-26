@@ -9,14 +9,13 @@ import {
   ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
   Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
   Printer, Truck, HandshakeIcon, DoorOpen, AlertTriangle, Loader2,
-  CreditCard, Banknote, ExternalLink,
+  Banknote, ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { staffFulfillmentAction, STAFF_FULFILLMENT_STATUSES, staffVisibleFulfillmentState } from "@/lib/staffFulfillmentAction";
-import { expectedEndingQuantity } from "@/lib/shiftInventory";
 
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
@@ -652,19 +651,12 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
   onConfirm: (data: { endingInventory: { shiftInventoryItemId: number; quantityEndActual: number }[]; cashBankEnd: number }) => Promise<void>;
   onCancel: () => void;
 }) {
-  // Pre-populate actual counts with computed expected values
   const shiftInventory = safeArray<EnrichedItem>(shift.inventory);
-  const shiftStats = {
-    ...emptyShiftStats(),
-    ...(shift.stats ?? {}),
-    byItem: safeArray<ShiftStats["byItem"][number]>(shift.stats?.byItem),
-    byCustomer: safeArray<ShiftStats["byCustomer"][number]>(shift.stats?.byCustomer),
-  };
-  const expectedCash = (shift.cashBankStart ?? 0) + (shift.accountableCash ?? shiftStats.cashSales ?? 0);
 
   const [actualCounts, setActualCounts] = useState<Record<number, string>>({});
   const [cashBankEnd, setCashBankEnd] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const countable = shiftInventory.filter(item => item.rowType === "item");
   const isCount = (value: string | undefined) => Boolean(value?.trim()) && Number.isFinite(Number(value)) && Number(value) >= 0;
   const missingCounts = countable.filter(item => !isCount(actualCounts[item.id])).length;
@@ -673,6 +665,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
+    setSubmitError(null);
     try {
       const endingInventory = countable
         .map(i => ({
@@ -680,6 +673,8 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
           quantityEndActual: Number(actualCounts[i.id]),
         }));
       await onConfirm({ endingInventory, cashBankEnd: Number(cashBankEnd) });
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Could not end the shift.");
     } finally {
       setSubmitting(false);
     }
@@ -703,9 +698,6 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
     }
   }
 
-  const cashActual = parseFloat(cashBankEnd) || 0;
-  const cashDisc = expectedCash - cashActual;
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
       <div className="glass-card rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto border border-orange-500/20">
@@ -717,7 +709,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
             </div>
             <div>
               <div className="text-sm font-bold">End of Shift — Count Inventory</div>
-              <div className="text-xs text-muted-foreground">Enter actual counts to calculate discrepancies</div>
+              <div className="text-xs text-muted-foreground">Enter the quantities you physically count.</div>
             </div>
           </div>
           <button onClick={onCancel} className="text-muted-foreground hover:text-foreground transition-colors">
@@ -733,16 +725,6 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
               <span className="text-xs font-bold text-emerald-400 uppercase tracking-widest">Cash Bank</span>
             </div>
             <div className="divide-y divide-border/20">
-              <div className="grid grid-cols-3 px-4 py-3 text-xs text-muted-foreground">
-                <span>Starting Cash</span>
-                <span>+ Cash Sales</span>
-                <span className="font-bold text-emerald-400">= Expected Total</span>
-              </div>
-              <div className="grid grid-cols-3 px-4 py-3 font-mono font-bold text-sm">
-                <span>{fmtMoney(shift.cashBankStart ?? 0)}</span>
-                <span className="text-emerald-400">+{fmtMoney(shiftStats.cashSales ?? 0)}</span>
-                <span className="text-emerald-400">{fmtMoney(expectedCash)}</span>
-              </div>
               <div className="px-4 py-3 flex items-center gap-4">
                 <div className="flex-1">
                   <div className="text-xs font-semibold mb-1">Actual Cash Counted</div>
@@ -760,15 +742,6 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
                   />
                 </div>
               </div>
-              {Math.abs(cashDisc) > 0.005 && (
-                <div className={`px-4 py-2.5 flex items-center gap-2 ${cashDisc > 0 ? "bg-red-500/5" : "bg-emerald-500/5"}`}>
-                  <AlertTriangle size={12} className={cashDisc > 0 ? "text-red-400" : "text-emerald-400"} />
-                  <span className={`text-xs font-bold ${cashDisc > 0 ? "text-red-400" : "text-emerald-400"}`}>
-                    Cash discrepancy: {cashDisc > 0 ? `-${fmtMoney(cashDisc)}` : `+${fmtMoney(Math.abs(cashDisc))}`}
-                    {cashDisc > 0 ? " (short)" : " (over)"}
-                  </span>
-                </div>
-              )}
             </div>
           </div>
 
@@ -779,11 +752,9 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
             </div>
             <div className="rounded-xl border border-border/30 overflow-hidden">
               {/* Header */}
-              <div className="grid grid-cols-[1fr_72px_72px_80px] px-4 py-2 bg-muted/10 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest border-b border-border/20">
+              <div className="grid grid-cols-[1fr_96px] px-4 py-2 bg-muted/10 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest border-b border-border/20">
                 <span>Item</span>
-                <span className="text-right">Start</span>
-                <span className="text-right">Sold</span>
-                <span className="text-right">Actual #</span>
+                <span className="text-right">Counted</span>
               </div>
               {sections.map((section, si) => (
                 <div key={si}>
@@ -792,43 +763,22 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
                       {section.name}
                     </div>
                   )}
-                  {section.items.map(item => {
-                    const expected = expectedEndingQuantity(item);
-                    const actual = parseFloat(actualCounts[item.id] ?? String(expected));
-                    const disc = expected - actual;
-                    const hasDisc = Math.abs(disc) > 0.001;
-                    return (
-                      <div key={item.id} className={`grid grid-cols-[1fr_72px_72px_80px] items-center px-4 py-2.5 border-t border-border/15 ${hasDisc && disc > 0 ? "bg-red-500/5" : ""}`}>
-                        <div className="text-sm font-medium truncate pr-2 flex items-center gap-1.5">
-                          {hasDisc && disc > 0 && <AlertTriangle size={10} className="text-red-400 shrink-0" />}
-                          {item.itemName}
-                          {hasDisc && (
-                            <span className={`text-[10px] font-mono ml-1 ${disc > 0 ? "text-red-400" : "text-emerald-400"}`}>
-                              ({disc > 0 ? `-${disc}` : `+${Math.abs(disc)}`})
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-sm font-mono text-right text-muted-foreground">{fmtQty(item.quantityStart, item.unitType)}</div>
-                        <div className="text-sm font-mono text-right text-orange-400">{fmtQty(item.quantitySold, item.unitType)}</div>
-                        <div className="flex justify-end">
-                          <Input
-                            type="number"
-                            min="0"
-                            step={item.unitType === "G" ? "0.1" : "1"}
-                            value={actualCounts[item.id] ?? ""}
-                            onChange={e => setActualCounts(prev => ({ ...prev, [item.id]: e.target.value }))}
-                            className={`h-7 w-20 text-right text-xs font-mono rounded-lg bg-background/50 ${hasDisc && disc > 0 ? "border-red-500/40 text-red-400" : "border-border/50"}`}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {section.items.map(item => (
+                    <label key={item.id} className="grid grid-cols-[1fr_96px] items-center gap-2 border-t border-border/15 px-4 py-2.5">
+                      <span className="text-sm font-medium">{item.itemName}</span>
+                      <Input type="number" min="0" step={item.unitType === "G" ? "0.1" : "1"}
+                        value={actualCounts[item.id] ?? ""}
+                        onChange={event => setActualCounts(prev => ({ ...prev, [item.id]: event.target.value }))}
+                        className="h-8 text-right font-mono" />
+                    </label>
+                  ))}
                 </div>
               ))}
             </div>
           </div>
         </div>
 
+        {submitError && <p role="alert" className="px-6 pb-2 text-sm text-destructive">{submitError}</p>}
         {!canSubmit && <p className="px-6 pb-2 text-xs text-muted-foreground">Enter counted cash and all ending quantities. {missingCounts} item counts remaining.</p>}
         <div className="px-6 pb-6 flex gap-3">
           <Button variant="outline" className="flex-1 rounded-xl border-border/50" onClick={onCancel} disabled={submitting}>
@@ -849,308 +799,15 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
   );
 }
 
-// ─── Shift Summary Modal ──────────────────────────────────────────────────────
-
-type SummaryData = {
-  stats: ShiftStats;
-  cashBankStart: number;
-  cashBankEnd: number | null;
-  expectedCashBank: number;
-  cashDiscrepancy: number | null;
-  reportedInventoryDifference?: number;
-  differenceAmount?: number;
-  inventorySummary: {
-    itemName: string;
-    sectionName: string | null;
-    rowType: string;
-    unitType: string;
-    quantityStart: number;
-    quantitySold: number;
-    quantityEnd: number;
-    quantityEndActual: number | null;
-    discrepancy: number | null;
-    isFlagged: boolean;
-  }[];
-  clockedInAt: string;
-  clockedOutAt: string;
-};
-
-function normalizeSummaryData(raw: Partial<SummaryData> | null | undefined): SummaryData | null {
-  if (!raw) return null;
-  const stats = raw.stats ?? emptyShiftStats();
-  return {
-    stats: {
-      ...emptyShiftStats(),
-      ...stats,
-      paymentTotals: stats.paymentTotals ?? {},
-      byItem: safeArray<ShiftStats["byItem"][number]>(stats.byItem),
-      byCustomer: safeArray<ShiftStats["byCustomer"][number]>(stats.byCustomer),
-    },
-    cashBankStart: Number(raw.cashBankStart ?? 0),
-    cashBankEnd: raw.cashBankEnd ?? null,
-    expectedCashBank: Number(raw.expectedCashBank ?? 0),
-    cashDiscrepancy: raw.cashDiscrepancy ?? null,
-    reportedInventoryDifference: raw.reportedInventoryDifference,
-    differenceAmount: raw.differenceAmount,
-    inventorySummary: safeArray<SummaryData["inventorySummary"][number]>(raw.inventorySummary),
-    clockedInAt: raw.clockedInAt ?? new Date().toISOString(),
-    clockedOutAt: raw.clockedOutAt ?? new Date().toISOString(),
-  };
-}
-
-function ShiftSummaryModal({ summary, onClose }: {
-  summary: SummaryData | null;
-  onClose: () => void;
-}) {
-  if (!summary) return null;
-
-  const duration = summary.clockedOutAt && summary.clockedInAt
-    ? Math.round((new Date(summary.clockedOutAt).getTime() - new Date(summary.clockedInAt).getTime()) / 60000)
-    : 0;
-
-  const safeInventorySummary = safeArray<SummaryData["inventorySummary"][number]>(summary.inventorySummary);
-  const safeSummaryStats = {
-    ...emptyShiftStats(),
-    ...(summary.stats ?? {}),
-    byItem: safeArray<ShiftStats["byItem"][number]>(summary.stats?.byItem),
-    byCustomer: safeArray<ShiftStats["byCustomer"][number]>(summary.stats?.byCustomer),
-  };
-  const flaggedItems = safeInventorySummary.filter(i => i.isFlagged);
-  const hasCashDisc = summary.cashDiscrepancy != null && Math.abs(summary.cashDiscrepancy) > 0.005;
-  const hasProblems = flaggedItems.length > 0 || hasCashDisc;
-  const hasActualCounts = safeInventorySummary.some(i => i.rowType === "item" && i.quantityEndActual != null);
-  const paymentTotals = safeSummaryStats.paymentTotals ?? {};
-  const paypalSales = paymentTotals.paypal ?? 0;
-  const paypalCardSales = paymentTotals.paypal_card ?? 0;
-  const customerCreditSales = paymentTotals.customer_credit ?? 0;
-  const splitSales = paymentTotals.split ?? 0;
-  const differenceAmount = summary.differenceAmount ?? safeSummaryStats.totalRevenue;
-
-
+function ShiftHandoffModal({ shiftId, onClose }: { shiftId: number; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="glass-card rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-emerald-500/20">
-        {/* Header */}
-        <div className="px-6 py-5 border-b border-border/40 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-              <CheckCircle2 size={16} className="text-emerald-400" />
-            </div>
-            <div>
-              <div className="text-sm font-bold">Shift Complete</div>
-              <div className="text-xs text-muted-foreground">{duration} min · {safeSummaryStats.orderCount} orders</div>
-            </div>
-          </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="px-6 py-5 space-y-6">
-          {/* Problems banner */}
-          {hasProblems && (
-            <div className="flex items-start gap-3 p-3 rounded-xl bg-red-500/10 border border-red-500/20">
-              <AlertTriangle size={15} className="text-red-400 shrink-0 mt-0.5" />
-              <div>
-                <div className="text-xs font-bold text-red-400 mb-1">Discrepancies Found — Report to Admin</div>
-                <ul className="text-xs text-muted-foreground space-y-0.5">
-                  {hasCashDisc && (
-                    <li>
-                      Cash bank: expected {fmtMoney(summary.expectedCashBank)}, counted {fmtMoney(summary.cashBankEnd ?? 0)} ({summary.cashDiscrepancy! > 0 ? "short" : "over"} {fmtMoney(Math.abs(summary.cashDiscrepancy!))})
-                    </li>
-                  )}
-                  {flaggedItems.map(i => (
-                    <li key={i.itemName}>
-                      {i.itemName}: expected {fmtQty(i.quantityEnd, i.unitType)}{i.quantityEndActual != null ? `, counted ${fmtQty(i.quantityEndActual, i.unitType)}` : " ended below zero"}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* Revenue totals */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="glass-card rounded-xl p-3 border-emerald-500/15 bg-emerald-500/5">
-              <div className="text-[10px] font-semibold text-emerald-400 uppercase tracking-widest mb-1">Total Sales</div>
-              <div className="text-xl font-bold text-emerald-400">{fmtMoney(safeSummaryStats.totalRevenue)}</div>
-            </div>
-            <div className="glass-card rounded-xl p-3">
-              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 flex items-center gap-1"><Banknote size={9} />Cash</div>
-              <div className="text-xl font-bold">{fmtMoney(safeSummaryStats.cashSales)}</div>
-            </div>
-            <div className="glass-card rounded-xl p-3">
-              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 flex items-center gap-1"><CreditCard size={9} />Card</div>
-              <div className="text-xl font-bold">{fmtMoney(safeSummaryStats.cardSales)}</div>
-            </div>
-            <div className="glass-card rounded-xl p-3">
-              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1">Orders</div>
-              <div className="text-xl font-bold">{safeSummaryStats.orderCount}</div>
-            </div>
-          </div>
-
-          {/* Payment method totals */}
-          <div className="rounded-xl border border-border/30 overflow-hidden">
-            <div className="px-4 py-2.5 bg-muted/10 text-[10px] font-bold text-muted-foreground uppercase tracking-widest border-b border-border/20 flex items-center gap-1.5">
-              Payment Method Totals
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-border/20 text-sm">
-              <PaymentStat label="PayPal" amount={paypalSales} />
-              <PaymentStat label="PayPal Card" amount={paypalCardSales} />
-              <PaymentStat label="Customer Credit" amount={customerCreditSales} />
-              <PaymentStat label="Split tender" amount={splitSales} />
-            </div>
-          </div>
-
-          {/* Cash bank reconciliation */}
-          <div className="rounded-xl border border-border/30 overflow-hidden">
-            <div className="px-4 py-2.5 bg-muted/10 text-[10px] font-bold text-muted-foreground uppercase tracking-widest border-b border-border/20 flex items-center gap-1.5">
-              <Banknote size={10} />
-              Cash Bank Reconciliation
-            </div>
-            <div className="divide-y divide-border/20 text-sm">
-              <div className="flex justify-between px-4 py-2.5">
-                <span className="text-muted-foreground">Starting Cash Bank</span>
-                <span className="font-mono">{fmtMoney(summary.cashBankStart)}</span>
-              </div>
-              <div className="flex justify-between px-4 py-2.5">
-                <span className="text-muted-foreground">+ Cash Sales</span>
-                <span className="font-mono text-emerald-400">+{fmtMoney(safeSummaryStats.cashSales)}</span>
-              </div>
-              <div className="flex justify-between px-4 py-2.5 font-bold">
-                <span>Expected Bank Total</span>
-                <span className="font-mono text-emerald-400">{fmtMoney(summary.expectedCashBank)}</span>
-              </div>
-              <div className="flex justify-between px-4 py-2.5">
-                <span className="text-muted-foreground">Difference / Total Sales</span>
-                <span className="font-mono">{fmtMoney(differenceAmount)}</span>
-              </div>
-              {summary.cashBankEnd != null && (
-                <div className="flex justify-between px-4 py-2.5">
-                  <span className="text-muted-foreground">Actual Cash Counted</span>
-                  <span className="font-mono">{fmtMoney(summary.cashBankEnd)}</span>
-                </div>
-              )}
-              {hasCashDisc && (
-                <div className={`flex justify-between px-4 py-2.5 font-bold ${summary.cashDiscrepancy! > 0 ? "bg-red-500/5 text-red-400" : "bg-emerald-500/5 text-emerald-400"}`}>
-                  <span>Cash Discrepancy</span>
-                  <span className="font-mono">
-                    {summary.cashDiscrepancy! > 0 ? "-" : "+"}{fmtMoney(Math.abs(summary.cashDiscrepancy!))}
-                    {summary.cashDiscrepancy! > 0 ? " (short)" : " (over)"}
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Items sold */}
-          {safeSummaryStats.byItem.length > 0 && (
-            <div>
-              <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">Items Sold</div>
-              <div className="divide-y divide-border/30 rounded-xl overflow-hidden border border-border/30">
-                {safeSummaryStats.byItem.map(item => (
-                  <div key={item.catalogItemId} className="flex justify-between items-center px-4 py-3">
-                    <div className="text-sm font-medium">{item.name}</div>
-                    <div className="text-right">
-                      <div className="text-sm font-bold font-mono">{item.qtySold} units</div>
-                      <div className="text-xs text-emerald-400">{fmtMoney(item.revenue)}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* By customer */}
-          {safeSummaryStats.byCustomer.length > 0 && (
-            <div>
-              <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">By Customer</div>
-              <div className="divide-y divide-border/30 rounded-xl overflow-hidden border border-border/30">
-                {safeSummaryStats.byCustomer.map(c => (
-                  <div key={c.customerId} className="flex justify-between items-center px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium">{c.name}</div>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>{c.orderCount} order{c.orderCount !== 1 ? "s" : ""}</span>
-                        <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] border ${c.paymentMethod === "card" ? "bg-blue-500/10 text-blue-400 border-blue-500/20" : c.paymentMethod === "comp" ? "bg-purple-500/10 text-purple-400 border-purple-500/20" : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"}`}>
-                          {c.paymentMethod ?? "cash"}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="text-sm font-bold font-mono">{fmtMoney(c.total)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Inventory reconciliation */}
-          {safeInventorySummary.filter(i => i.rowType === "item" || i.rowType === "section").length > 0 && (
-            <div>
-              <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">Inventory Reconciliation</div>
-              <div className="rounded-xl overflow-hidden border border-border/30">
-                <div className={`grid gap-0 px-4 py-2 bg-muted/10 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest border-b border-border/20 ${hasActualCounts ? "grid-cols-[1fr_52px_52px_60px_60px_52px]" : "grid-cols-[1fr_52px_52px_60px]"}`}>
-                  <span>Item</span>
-                  <span className="text-right">Start</span>
-                  <span className="text-right">Sold</span>
-                  <span className="text-right">Expected</span>
-                  {hasActualCounts && <><span className="text-right">Actual</span><span className="text-right">Diff</span></>}
-                </div>
-                {safeInventorySummary.map((item, i) => {
-                  if (item.rowType === "section") {
-                    return (
-                      <div key={i} className="px-4 py-1.5 bg-muted/20 text-[10px] font-bold text-muted-foreground uppercase tracking-wider border-t border-border/20">
-                        {item.itemName}
-                      </div>
-                    );
-                  }
-                  if (item.rowType === "spacer") return null;
-                  const disc = item.discrepancy;
-                  const hasDisc = disc != null && Math.abs(disc) > 0.001;
-                  return (
-                    <div key={i} className={`gap-0 px-4 py-3 border-t border-border/15 ${item.isFlagged ? "bg-red-500/5" : ""} ${hasActualCounts ? "grid grid-cols-[1fr_52px_52px_60px_60px_52px]" : "grid grid-cols-[1fr_52px_52px_60px]"}`}>
-                      <div className="text-sm font-medium truncate pr-2 flex items-center gap-1.5">
-                        {item.isFlagged && <AlertTriangle size={11} className="text-red-400 shrink-0" />}
-                        {item.itemName}
-                      </div>
-                      <div className="text-sm font-mono text-right text-muted-foreground">{fmtQty(item.quantityStart, item.unitType)}</div>
-                      <div className="text-sm font-mono text-right text-orange-400">{fmtQty(item.quantitySold, item.unitType)}</div>
-                      <div className={`text-sm font-bold font-mono text-right ${item.isFlagged ? "text-red-400" : item.quantityEnd <= 0 ? "text-orange-400" : "text-emerald-400"}`}>
-                        {fmtQty(item.quantityEnd, item.unitType)}
-                      </div>
-                      {hasActualCounts && (
-                        <>
-                          <div className={`text-sm font-mono text-right ${item.quantityEndActual == null ? "text-muted-foreground/40" : hasDisc && disc! > 0 ? "text-red-400" : "text-foreground"}`}>
-                            {item.quantityEndActual != null ? fmtQty(item.quantityEndActual, item.unitType) : "—"}
-                          </div>
-                          <div className={`text-xs font-mono text-right font-bold ${!hasDisc ? "text-muted-foreground/30" : disc! > 0 ? "text-red-400" : "text-emerald-400"}`}>
-                            {!hasDisc ? "✓" : disc! > 0 ? `-${fmtQty(Math.abs(disc!), item.unitType)}` : `+${fmtQty(Math.abs(disc!), item.unitType)}`}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="px-6 pb-6">
-          <Button className="w-full rounded-xl" onClick={onClose}>
-            Close Summary
-          </Button>
-        </div>
+    <div role="dialog" aria-modal="true" aria-labelledby="shift-handoff-heading"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="glass-card w-full max-w-md space-y-4 rounded-2xl border border-border p-6">
+        <h2 id="shift-handoff-heading" className="text-xl font-bold">Shift #{shiftId} ended</h2>
+        <p>Take the cash bank or drawer to your supervisor so they can verify the cash and complete the checkout memo.</p>
+        <Button className="w-full" onClick={onClose}>Done</Button>
       </div>
-    </div>
-  );
-}
-
-function PaymentStat({ label, amount }: { label: string; amount: number }) {
-  return (
-    <div className="bg-background/50 px-3 py-2.5">
-      <div className="text-[10px] text-muted-foreground uppercase tracking-wider">{label}</div>
-      <div className="font-mono font-semibold">{fmtMoney(amount)}</div>
     </div>
   );
 }
@@ -1794,7 +1451,7 @@ function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
 function CustomerServiceRepQueueContent() {
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("pending");
-  const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
+  const [closedShiftId, setClosedShiftId] = useState<number | null>(null);
   const [queueData, setQueueData] = useState<{ orders: ExtendedOrder[]; total: number }>({ orders: [], total: 0 });
   const [isLoadingQueue, setIsLoadingQueue] = useState(false);
   const [queueLoadError, setQueueLoadError] = useState<string | null>(null);
@@ -1977,12 +1634,11 @@ function CustomerServiceRepQueueContent() {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(data),
     });
-    if (res.ok) {
-      const resData = await res.json();
-      setShift(null);
-      setShowClockOutModal(false);
-      setSummaryData(normalizeSummaryData(resData.summary));
-    }
+    const response = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(response?.error ?? "Could not end the shift.");
+    setClosedShiftId(response?.shift?.id ?? shift?.id ?? null);
+    setShift(null);
+    setShowClockOutModal(false);
   };
 
   // All roles that can clock in — must match SHIFT_OPERATOR_ROLES in shifts.ts
@@ -2211,10 +1867,7 @@ function CustomerServiceRepQueueContent() {
         />
       )}
 
-      {/* End-of-shift summary modal */}
-      {summaryData && (
-        <ShiftSummaryModal summary={summaryData} onClose={() => setSummaryData(null)} />
-      )}
+      {closedShiftId !== null && <ShiftHandoffModal shiftId={closedShiftId} onClose={() => setClosedShiftId(null)} />}
     </div>
   );
 }

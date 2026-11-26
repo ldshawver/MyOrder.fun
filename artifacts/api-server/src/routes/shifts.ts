@@ -1030,8 +1030,8 @@ function enrichInventoryWithSales(
     const computedEnd = qStart - qSold;
     const qEnd = storedEnd ?? computedEnd;
     const qEndActual = item.quantityEndActual != null ? parseFloat(String(item.quantityEndActual)) : null;
-    const discrepancy = qEndActual != null ? qEnd - qEndActual : null;
-    const flagged = item.rowType === "item" && (qEnd < 0 || (discrepancy != null && discrepancy > 0));
+    const discrepancy = qEndActual != null ? Math.max(0, qEnd - qEndActual) : null;
+    const flagged = item.rowType === "item" && discrepancy != null && discrepancy > 0;
 
     return {
       id: item.id,
@@ -1582,10 +1582,8 @@ router.post(
       if (item.rowType === "item" || item.rowType === "cash") {
         const actualEnd = actualMap.has(item.id) ? actualMap.get(item.id)! : null;
         const expectedEnd = item.quantityEnd ?? (item.quantityStart - item.quantitySold);
-        const disc = actualEnd != null ? expectedEnd - actualEnd : null;
-        const flagged = item.rowType === "item" && (
-          expectedEnd < 0 || (disc != null && disc > 0)
-        );
+        const disc = actualEnd != null ? Math.max(0, expectedEnd - actualEnd) : null;
+        const flagged = item.rowType === "item" && disc != null && disc > 0;
 
         await db
           .update(shiftInventoryItemsTable)
@@ -1687,7 +1685,10 @@ router.post(
       { kind: "clock_out", figures: { stats, expectedCash: expectedCashBank ?? null, countedCash: cashBankEndVal ?? null, variance: cashDiscrepancy ?? null } },
     );
 
-    res.json({ summary, shift: updatedShift });
+    const role = normalizeRole(tech.role);
+    res.json(["global_admin", "admin", "supervisor"].includes(role)
+      ? { summary, shift: updatedShift }
+      : { shift: { id: updatedShift.id, status: updatedShift.status, clockedOutAt: updatedShift.clockedOutAt } });
   }
 );
 
@@ -1811,7 +1812,7 @@ router.post("/shifts/:id/terminate", requireRole("global_admin", "admin", "super
 // ─── GET /api/shifts/:id/summary ─────────────────────────────────────────────
 router.get(
   "/shifts/:id/summary",
-  requireShiftOperatorRoleWithDebug,
+  requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -2370,8 +2371,8 @@ router.post("/shifts/:id/closeout-inventory-correction",
           quantityStart: count.opening ?? row.quantityStart,
           quantityEndActual: count.counted,
           quantityEnd: expected,
-          discrepancy: sql`${expected} - ${count.counted}::numeric`,
-          isFlagged: sql`${expected} > ${count.counted}::numeric OR ${expected} < 0`,
+          discrepancy: sql`greatest(${expected} - ${count.counted}::numeric, 0)`,
+          isFlagged: sql`${expected} > ${count.counted}::numeric`,
         }).where(and(eq(shiftInventoryItemsTable.id, count.itemId), eq(shiftInventoryItemsTable.shiftId, shiftId)));
       }
       await tx.insert(auditLogsTable).values({
@@ -2943,11 +2944,28 @@ async function buildShiftOperationsReceipt(tenantId: number, shiftId: number, ki
 }
 
 // GET /api/shifts/:id/receipts/:kind — six required closeout/operations receipts as JSON payloads.
-router.get("/shifts/:id/receipts/:kind", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
+router.get("/shifts/:id/receipts/:kind", requireRole("global_admin", "admin", "supervisor", "csr"), async (req, res): Promise<void> => {
   const tenantId = req.authorizedTenantId!;
   const shiftId = Number(req.params.id);
   const kind = ShiftReceiptKind.safeParse(req.params.kind);
   if (!Number.isInteger(shiftId) || shiftId <= 0 || !kind.success) { res.status(400).json({ error: "Invalid shift receipt request" }); return; }
+  if (normalizeRole(req.dbUser!.role) === "csr") {
+    if (kind.data !== "beginning_inventory") { res.status(403).json({ error: "Supervisor access required" }); return; }
+    const [ownShift] = await db.select({ id: labTechShiftsTable.id }).from(labTechShiftsTable)
+      .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, shiftId),
+        eq(labTechShiftsTable.techId, req.dbUser!.id))).limit(1);
+    if (!ownShift) { res.status(404).json({ error: "Shift not found" }); return; }
+    const items = await db.select({
+      catalogItemId: shiftInventoryItemsTable.catalogItemId,
+      itemName: shiftInventoryItemsTable.itemName,
+      quantityStart: shiftInventoryItemsTable.quantityStart,
+      unitType: shiftInventoryItemsTable.unitType,
+    }).from(shiftInventoryItemsTable)
+      .where(eq(shiftInventoryItemsTable.shiftId, ownShift.id))
+      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+    res.json({ receipt: { kind: kind.data, shiftId, beginningInventory: items } });
+    return;
+  }
   const receipt = await buildShiftOperationsReceipt(tenantId, shiftId, kind.data);
   if (!receipt) { res.status(404).json({ error: "Shift not found" }); return; }
   res.json({ receipt });

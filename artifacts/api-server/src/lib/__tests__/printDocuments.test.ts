@@ -86,14 +86,17 @@ describe("document catalogue", () => {
 describe("thermal documents", () => {
   const clock = { businessName: "Shop", locationName: "CSR Sales Box 2", employeeName: "Casey J.", at: "2026-09-28T10:05:00.000Z", timezone: "America/Los_Angeles", shiftRef: "42" };
 
-  it("clock slips show employee (first name + initial), time, location and shift only", () => {
+  it("clock slips show the shift and only clock-out includes the handoff instruction", () => {
     const text = plain(buildClockSlip({ ...clock, event: "in" }));
     expect(text).toContain("CLOCK IN");
     expect(text).toMatch(/Employee\s+Casey J\./);
     expect(text).toMatch(/Location\s+CSR Sales Box 2/);
     expect(text).toMatch(/Shift\s+#42/);
     expect(text).toContain("Sep 28, 2026");
-    expect(plain(buildClockSlip({ ...clock, event: "out" }))).toContain("CLOCK OUT");
+    expect(text).not.toContain("checkout memo");
+    const clockOut = plain(buildClockSlip({ ...clock, event: "out" }));
+    expect(clockOut).toContain("CLOCK OUT");
+    expect(clockOut).toContain("your supervisor for the checkout memo.");
     expect(displayPersonName("Casey", "Jones")).toBe("Casey J.");
     expect(displayPersonName(null, null)).toBe("Staff");
   });
