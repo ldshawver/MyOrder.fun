@@ -257,6 +257,11 @@ pgSuite("customer checkout through the production route composition (PostgreSQL 
 
     const created = await placeOrder("legacyCustomer");
     expect(created.status, created.text).toBe(201);
+    const orderId = created.body.id;
+    for (const path of ["/api/orders", `/api/orders/${orderId}`, `/api/orders/${orderId}/stage`, `/api/orders/${orderId}/notes`]) {
+      const response = await as("legacyCustomer").get(path);
+      expect(response.status, response.text).toBe(200);
+    }
 
     // Server-side pricing: the catalogue price is authoritative. Cash does
     // not add sales tax. Client totals are ignored.

@@ -354,8 +354,12 @@ async function resolveSpeedOrderMember(req: Request, res: Response, next: NextFu
 }
 
 function requireOrderRouteApproval(req: Request, res: Response, next: NextFunction): void {
+  const customerOrderRead = req.method === "GET"
+    && normalizeRole(req.dbUser?.role ?? "") === "user"
+    && /^\/orders(?:\/[1-9]\d*(?:\/(?:stage|notes))?)?\/?$/.test(req.path);
   if ((req.method === "POST" && CUSTOMER_CHECKOUT_POST_PATHS.has(req.path))
-    || (req.method === "GET" && CUSTOMER_CHECKOUT_GET_PATHS.has(req.path))) {
+    || (req.method === "GET" && CUSTOMER_CHECKOUT_GET_PATHS.has(req.path))
+    || customerOrderRead) {
     requireCustomerCheckoutAccess(req, res, next);
     return;
   }
