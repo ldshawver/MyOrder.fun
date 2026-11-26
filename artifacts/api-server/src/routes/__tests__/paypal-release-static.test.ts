@@ -18,7 +18,8 @@ describe("PayPal release security structure", () => {
   it("fails legacy Stripe endpoints closed without mock fallback reachability", () => { expect(legacy).toContain("PAYMENT_PROVIDER_RETIRED"); expect(legacy).toContain("status(410)"); expect(legacy).not.toContain("mockPayment"); });
   it("requires auth, approval, strict schemas, idempotency and refund permission", () => { expect(route).toContain("requireApproved"); expect(route).toContain(".strict()"); expect(route).toContain("Idempotency-Key"); expect(route).toContain('requirePermission("orders.refund")'); });
   it("accepts no browser total and derives the PayPal amount from the finalized server order", () => {
-    expect(route).toContain("Empty.parse(req.body)");
+    expect(route).toContain('const Create = z.object({ fundingSource: z.literal("google_pay").optional() }).strict();');
+    expect(route).toContain("const { fundingSource } = Create.parse(req.body);");
     expect(service).toContain("order.remainingTenderAmount");
     expect(service).toContain("FINANCIAL_SNAPSHOT_MISMATCH");
     expect(frontend).not.toMatch(/body:\s*JSON\.stringify\([^)]*(?:amount|total)/);
