@@ -1,9 +1,12 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import AdminInventory from "@/pages/admin/inventory";
+import AdminCatalogueProducts from "@/pages/admin/catalogue-products";
+import { useSearch } from "wouter";
 import { useAuth } from "@clerk/react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Edit2, Trash2, Search, RefreshCw, Loader2, FlaskConical, Link2,
-  Globe, Tag, Image, CheckCircle, XCircle, Package, X, Save, ArchiveRestore,
+  Tag, Image, CheckCircle, XCircle, Package, X, Save, ArchiveRestore,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -99,7 +102,7 @@ function fieldVal(v: unknown): string {
 
 // ─── Edit Dialog ───────────────────────────────────────────────────────────────
 
-function EditDialog({
+function ProductEditor({
   item,
   onClose,
   onSave,
@@ -119,26 +122,17 @@ function EditDialog({
 
   const [form, setForm] = useState<Record<string, string | boolean | number>>({
     name: fieldVal(item?.name),
-    alavontName: fieldVal(item?.alavontName),
-    luciferCruzName: fieldVal(item?.luciferCruzName),
+    alavontName: fieldVal(item?.alavontName ?? item?.name),
     category: fieldVal(item?.category),
-    alavontCategory: fieldVal(item?.alavontCategory),
-    luciferCruzCategory: fieldVal(item?.luciferCruzCategory),
-    description: fieldVal(item?.description),
-    alavontDescription: fieldVal(item?.alavontDescription),
-    luciferCruzDescription: fieldVal(item?.luciferCruzDescription),
+    alavontCategory: fieldVal(item?.alavontCategory ?? item?.category),
     price: fieldVal(item?.price),
     regularPrice: fieldVal(item?.regularPrice),
     compareAtPrice: fieldVal(item?.compareAtPrice),
     homiePrice: fieldVal(item?.homiePrice),
     imageUrl: fieldVal(item?.imageUrl),
-    alavontImageUrl: fieldVal(item?.alavontImageUrl),
     showCatalogueStockIndicator: item?.showCatalogueStockIndicator !== false,
-    luciferCruzImageUrl: fieldVal(item?.luciferCruzImageUrl),
     customerSafeName: fieldVal(item?.customerSafeName),
     customerSafeDescription: fieldVal(item?.customerSafeDescription),
-    labName: fieldVal(item?.labName),
-    receiptName: fieldVal(item?.receiptName),
     sku: fieldVal(item?.sku),
     isAvailable: item?.isAvailable !== false,
     isTaxable: item?.isTaxable !== false,
@@ -148,18 +142,11 @@ function EditDialog({
     parLevel: fieldVal(item?.parLevel),
     moq: fieldVal(item?.moq),
     preferredReorderQuantity: fieldVal(item?.preferredReorderQuantity),
-    displayName: fieldVal(item?.displayName),
-    displayCategory: fieldVal(item?.displayCategory),
-    displayDescription: fieldVal(item?.displayDescription),
-    displayImage: fieldVal(item?.displayImage),
-    marketingCopy: fieldVal(item?.marketingCopy),
-    upsellCopy: fieldVal(item?.upsellCopy),
-    promoBadges: Array.isArray(item?.promoBadges) ? item!.promoBadges!.join(", ") : "",
-    mediaGallery: JSON.stringify(item?.mediaGallery ?? []),
   });
   const [fieldErrors, setFieldErrors] = useState(validateCatalogProductDraft(form));
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [saved, setSaved] = useState(false);
   const submitLock = useRef(false);
   const requestPending = isSaving || submitting;
 
@@ -169,6 +156,7 @@ function EditDialog({
     const errorKey = k === "alavontName" ? "name" : k === "alavontCategory" ? "category" : k;
     setFieldErrors(errors => ({ ...errors, [errorKey]: undefined }));
     setSubmitError(null);
+    setSaved(false);
   };
 
   async function handleSave() {
@@ -179,9 +167,11 @@ function EditDialog({
     if (Object.keys(errors).length > 0) return;
     submitLock.current = true;
     setSubmitting(true);
-    const payload = createCatalogProductPayload(form);
+    const payload = Object.fromEntries(Object.entries(createCatalogProductPayload(form))
+      .filter(([key]) => key in form && (isNew || (key !== "name" && key !== "category"))));
     try {
       await onSave(payload);
+      setSaved(true);
     } catch (error) {
       setSubmitError(sanitizedCatalogError(error));
     } finally {
@@ -214,17 +204,14 @@ function EditDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => { if (!open && !requestPending) onClose(); }}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            {isNew ? <Plus size={16} /> : <Edit2 size={16} />}
-            {isNew ? "Add Catalog Product" : `Edit: ${item?.alavontName ?? item?.name}`}
-            {isWoo && <Badge variant="outline" className="text-orange-400 border-orange-400/40 text-[10px]">WooCommerce</Badge>}
-          </DialogTitle>
-        </DialogHeader>
-
-        <div className="space-y-5 pt-1">
+    <section className="scroll-mt-4 space-y-5 rounded-xl border border-border bg-card p-4 sm:p-6" aria-label="Product details">
+      <header className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold">{isNew ? "Add product" : item?.alavontName ?? item?.name}</h2>
+          {isWoo && <Badge variant="outline">WooCommerce</Badge>}
+        </div>
+        <Button variant="ghost" size="sm" onClick={onClose} disabled={requestPending} aria-label="Close product editor"><X size={16} /></Button>
+      </header>
           {!isNew && canManageCompliance && <section className="rounded-lg border border-orange-400/30 bg-orange-400/5 p-4 space-y-2" aria-label="Compliance">
             <h3 className="font-semibold">Compliance</h3>
             <p className="text-sm font-semibold">{item?.lifecycleStatus === "compliance_hold" ? "COMPLIANCE HOLD" : "No active compliance hold"}</p>
@@ -234,88 +221,30 @@ function EditDialog({
               {item?.lifecycleStatus === "compliance_hold" ? "Release compliance hold" : "Place compliance hold"}
             </Button>
           </section>}
-          {/* Alavont fields */}
-          <div>
-            <div className="text-xs font-bold uppercase tracking-widest text-blue-400 mb-3 flex items-center gap-1.5">
-              <FlaskConical size={11} /> Alavont Therapeutics
-            </div>
-            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">These fields describe the Alavont customer catalogue. Alavont Name and Category are the customer-facing label and category; the internal base name/category identify the underlying product record and are fallbacks. The base name is not a variant option.</p>
-            <div className="grid grid-cols-2 gap-3">
-              {input("Alavont Name", "alavontName", isWoo, "text", "Shown as the product name in the Alavont catalogue. Checkout conversion also uses this as its display-name fallback.")}
-              {input("Internal Name (base, optional)", "name", isWoo, "text", "Canonical base product name for the record and operations. Used when a branded name is missing; it is not a variant/option name.")}
-              {input("Alavont Category", "alavontCategory", isWoo, "text", "Shown as the category in the Alavont catalogue and preferred over the internal category in checkout conversion.")}
-              {input("Internal Category (base, optional)", "category", isWoo, "text", "Operational/base category and fallback when a brand-specific category is blank.")}
-              {input("Alavont Image URL", "alavontImageUrl", isWoo, "text", "Alavont-specific image fallback. The Base Image URL is tried first on the Alavont catalogue card and product details.")}
-              {input("Lab Name / Internal", "labName", isWoo, "text", "Internal lab/import identifier. It is not the customer-facing product name.")}
-              {input("SKU", "sku")}
-              {input("Price ($)", "price", isWoo, "number")}
-              {input("Regular / Compare-at Price ($)", "regularPrice", false, "number")}
-              {input("Sale Price ($)", "compareAtPrice", false, "number")}
-              {input("Employee Discount ($)", "homiePrice", false, "number", "Current employees pay this amount for this item instead of 20% off. Leave blank for the 20% employee discount.")}
+          <div className="grid gap-4 sm:grid-cols-2">
+            {input("Vendor Name", "alavontName", isWoo)}
+            {input("Safe Name", "customerSafeName", false, "text", "Used on checkout and payment records.")}
+            {input("Category", "alavontCategory", isWoo)}
+            {input("SKU", "sku")}
+            {input("Price ($)", "price", isWoo, "number")}
+            {input("Regular / Compare-at Price ($)", "regularPrice", false, "number")}
+            {input("Sale Price ($)", "compareAtPrice", false, "number")}
+            {input("Employee Price ($)", "homiePrice", false, "number")}
+          </div>
+          <label className="block text-sm font-medium">Safe Description
+            <textarea id="catalog-editor-safe-description" value={fieldVal(form.customerSafeDescription)}
+              onChange={set("customerSafeDescription")} disabled={requestPending} rows={3}
+              className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+          </label>
+          <details className="rounded-md border border-border/60 p-3">
+            <summary className="cursor-pointer text-sm font-semibold">Image and stock settings</summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {input("Image URL", "imageUrl")}
               {input("PAR", "parLevel", false, "number")}
               {input("Minimum Order Quantity", "moq", false, "number")}
               {input("Preferred Reorder Quantity", "preferredReorderQuantity", false, "number")}
-              {input("Receipt Name", "receiptName", false, "text", "Internal receipt/label name used by operational print flows; it does not replace the Alavont catalogue name.")}
             </div>
-            <label className="flex flex-col gap-1 mt-3">
-              <span className="text-xs text-muted-foreground font-medium">Alavont Description</span>
-              <textarea
-                value={fieldVal(form.alavontDescription)}
-                onChange={(e) => setForm(f => ({ ...f, alavontDescription: e.target.value }))}
-                disabled={isWoo || requestPending}
-                rows={2}
-                className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
-              />
-            </label>
-          </div>
-
-          {/* Lucifer Cruz mapping fields */}
-          <div>
-            <div className="text-xs font-bold uppercase tracking-widest mb-3 flex items-center gap-1.5" style={{ color: "#DC143C" }}>
-              <Globe size={11} /> Lucifer Cruz Mapping
-            </div>
-            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">These fields map the item to Lucifer Cruz branding for converted checkout and merchant processing. A mapping alone does not publish an Alavont item in the Lucifer Cruz storefront; that storefront is sourced from WooCommerce-managed products.</p>
-            <div className="grid grid-cols-2 gap-3">
-              {input("LC Display Name", "luciferCruzName", false, "text", "Branded mapping name used in the converted checkout and merchant payload when Customer Safe Name is blank; it can also label WooCommerce products in the Lucifer Cruz catalogue.")}
-              {input("LC Category", "luciferCruzCategory", false, "text", "Branded category used by the Lucifer Cruz catalogue for WooCommerce products and as the safe-category fallback during checkout conversion.")}
-              {input("LC Image URL", "luciferCruzImageUrl", false, "text", "Branded image used for Lucifer Cruz WooCommerce catalogue items and as the first image fallback in converted checkout/merchant data.")}
-              {input("Base Image URL", "imageUrl", false, "text", "Primary image shown on the Alavont catalogue card and product details. For Lucifer Cruz catalogue items, the LC Image URL is preferred.")}
-            </div>
-            <label className="flex flex-col gap-1 mt-3">
-              <span className="text-xs text-muted-foreground font-medium">LC Description</span>
-              <textarea
-                value={fieldVal(form.luciferCruzDescription)}
-                onChange={(e) => setForm(f => ({ ...f, luciferCruzDescription: e.target.value }))}
-                disabled={requestPending}
-                rows={2}
-                className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
-              />
-            </label>
-          </div>
-
-
-
-          {/* Canonical safe checkout fields */}
-          <div>
-            <div className="text-xs font-bold uppercase tracking-widest mb-3 flex items-center gap-1.5 text-emerald-500">
-              <CheckCircle size={11} /> Safe Checkout Presentation
-            </div>
-            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">This is the final discreet presentation used in the converted checkout/order review and passed to the payment/merchant payload. It is separate from the Lucifer Cruz mapping: an explicit Customer Safe Name or Description takes priority; otherwise the mapped Lucifer Cruz fields and then other server-side fallbacks are used. Category and image are derived from the mapping/fallbacks below; they are not separate overrides here.</p>
-            <div className="grid grid-cols-2 gap-3">
-              {input("Customer Safe Name", "customerSafeName", false, "text", "Explicit checkout-safe name. If blank, conversion falls back to the Lucifer Cruz name, merchant name, Alavont name, then base name.")}
-            </div>
-            <label className="flex flex-col gap-1 mt-3">
-              <span className="text-xs text-muted-foreground font-medium">Customer Safe Description</span>
-              <textarea
-                value={fieldVal(form.customerSafeDescription)}
-                onChange={(e) => setForm(f => ({ ...f, customerSafeDescription: e.target.value }))}
-                disabled={requestPending}
-                rows={2}
-                className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
-              />
-            </label>
-            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">If blank, the converted checkout description falls back to the Lucifer Cruz description, merchant description, then base description. The safe category falls back to LC Category, merchant category, then base Category; the safe image falls back to LC Image, merchant image, optional Display Image, then Base Image.</p>
-          </div>
+          </details>
 
           {/* Availability */}
           {!isWoo && (
@@ -346,7 +275,7 @@ function EditDialog({
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.isSaleFeatured)} onChange={e => setForm(f => ({ ...f, isSaleFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
-                <span className="text-sm">Sale (charge the sale price)</span>
+                <span className="text-sm">Show sale badge</span>
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.activeSale)} onChange={e => setForm(f => ({ ...f, activeSale: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
@@ -354,23 +283,6 @@ function EditDialog({
               </label>
             </div>
           )}
-
-          <div>
-            <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Optional presentation</div>
-            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">These are supporting fields for the staff-facing POS conversion preview and fallback display values. They do not decide catalogue visibility, availability, price, or merchant routing. Alavont name/category/description/image take precedence when present; Customer Safe Name/Description remain the explicit safe-checkout overrides.</p>
-            <div className="grid grid-cols-2 gap-3">
-              {input("Display Name", "displayName", false, "text", "Fallback name in the converted POS preview; Alavont Name is preferred when set.")}
-              {input("Display Category", "displayCategory", false, "text", "Fallback category in the converted POS preview; Alavont Category is preferred when set.")}
-              {input("Display Image URL", "displayImage", false, "text", "Fallback image in the converted POS preview. It does not replace the main catalogue image or LC image mapping.")}
-              {input("Promo Badges (comma separated)", "promoBadges", false, "text", "Badges shown on the POS conversion preview, such as a promotion label. They do not change price or discount rules.")}
-              {input("Marketing Copy", "marketingCopy", false, "text", "Supporting copy shown in the POS conversion preview; it is separate from the product’s safe checkout description.")}
-              {input("Upsell Copy", "upsellCopy", false, "text", "Optional upsell text carried in the conversion data. The current POS preview does not display this field.")}
-            </div>
-            <label className="flex flex-col gap-1 mt-3"><span className="text-xs text-muted-foreground font-medium">Display Description</span><textarea value={fieldVal(form.displayDescription)} onChange={e => setForm(f => ({ ...f, displayDescription: e.target.value }))} disabled={requestPending} rows={2} className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none" /></label>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Fallback description in the converted POS preview when Alavont Description is absent; the safe description may take precedence.</p>
-            <label className="flex flex-col gap-1 mt-3"><span className="text-xs text-muted-foreground font-medium">Media Gallery JSON</span><textarea value={fieldVal(form.mediaGallery)} onChange={e => setForm(f => ({ ...f, mediaGallery: e.target.value }))} disabled={requestPending} rows={2} className="w-full font-mono text-xs rounded-md border border-input bg-background px-3 py-2 resize-none" /></label>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Gallery images/videos appear in product details and rotate through the catalogue-card preview. Use valid JSON because this field is saved as structured media.</p>
-          </div>
 
           <div className="flex gap-2 pt-2">
             <Button type="button" onClick={() => void handleSave()} disabled={requestPending || !catalogProductDraftIsValid(form)} className="flex-1">
@@ -381,10 +293,9 @@ function EditDialog({
               Cancel
             </Button>
           </div>
+          {saved && <p role="status" className="text-sm text-emerald-600">Product details saved.</p>}
           {submitError && <div role="alert" className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{submitError}</div>}
-        </div>
-      </DialogContent>
-    </Dialog>
+    </section>
   );
 }
 
@@ -399,6 +310,12 @@ export default function AdminEditCatalog() {
   const [showWoo, setShowWoo] = useState(false);
   const [lifecycleFilter, setLifecycleFilter] = useState<"all" | CatalogLifecycleStatus>("all");
   const [editItem, setEditItem] = useState<Partial<CatalogProduct> | null>(null);
+  const [showInventory, setShowInventory] = useState(false);
+  const [editorRefresh, setEditorRefresh] = useState(0);
+  const searchParams = useSearch();
+  const requestedItemId = new URLSearchParams(searchParams).get("catalogItemId");
+  const editorAnchor = useRef<HTMLDivElement>(null);
+  const openedLink = useRef<string | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [saveConfirmation, setSaveConfirmation] = useState<string | null>(null);
   const [complianceItem, setComplianceItem] = useState<CatalogProduct | null>(null);
@@ -425,6 +342,20 @@ export default function AdminEditCatalog() {
     staleTime: 30_000,
   });
 
+  useEffect(() => {
+    if (!requestedItemId || openedLink.current === requestedItemId) return;
+    const item = items.find(entry => String(entry.id) === requestedItemId);
+    if (item) {
+      openedLink.current = requestedItemId;
+      setEditItem(item);
+    }
+  }, [items, requestedItemId]);
+  const editorOpen = editItem !== null;
+  const editorItemId = editItem?.id;
+  useEffect(() => {
+    if (editorOpen) editorAnchor.current?.scrollIntoView({ block: "start" });
+  }, [editorItemId, editorOpen]);
+
   const saveMutation = useMutation({
     mutationFn: async ({ id, data }: { id?: number; data: Record<string, unknown> }) => {
       const token = await getToken();
@@ -438,13 +369,14 @@ export default function AdminEditCatalog() {
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<CatalogProduct>;
     },
-    onSuccess: async (saved) => {
+    onSuccess: async (saved, { id }) => {
       qc.setQueryData<CatalogProduct[]>(["edit-catalog"], current => {
         const withoutSaved = (current ?? []).filter(item => item.id !== saved.id);
         return [...withoutSaved, saved];
       });
       setSaveConfirmation(`Product ${saved.id} saved.`);
-      setEditItem(null);
+      setEditItem(current => current && current.id === id ? { ...current, ...saved } : current);
+      setEditorRefresh(current => current + 1);
       await qc.invalidateQueries({ queryKey: ["edit-catalog"], refetchType: "active" });
     },
   });
@@ -498,6 +430,7 @@ export default function AdminEditCatalog() {
     return (
       item.name.toLowerCase().includes(s) ||
       (item.alavontName ?? "").toLowerCase().includes(s) ||
+      (item.customerSafeName ?? "").toLowerCase().includes(s) ||
       (item.luciferCruzName ?? "").toLowerCase().includes(s) ||
       (item.category ?? "").toLowerCase().includes(s)
     );
@@ -518,7 +451,7 @@ export default function AdminEditCatalog() {
       {/* Header */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl font-bold tracking-tight">Edit Catalog</h1>
+          <h1 className="text-xl font-bold tracking-tight">Catalog & Inventory</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             {alavontCount} Alavont products · {wooCount} WooCommerce (read-only)
           </p>
@@ -543,6 +476,21 @@ export default function AdminEditCatalog() {
           </Button>
         </div>
       </div>
+
+      {editItem !== null && (
+        <div ref={editorAnchor} className="scroll-mt-4 space-y-4">
+          <ProductEditor
+            key={editItem.id ?? "new"}
+            item={editItem}
+            onClose={() => setEditItem(null)}
+            onSave={async data => { await saveMutation.mutateAsync({ id: editItem.id, data }); }}
+            isSaving={saveMutation.isPending}
+            canManageCompliance={isGlobalAdmin}
+            onManageCompliance={() => { setComplianceItem(editItem as CatalogProduct); setComplianceReason(""); setComplianceError(null); }}
+          />
+          {editItem.id && !editItem.isWooManaged && <AdminCatalogueProducts key={editItem.id} catalogItemId={editItem.id} refreshKey={editorRefresh} />}
+        </div>
+      )}
 
       {/* Search + filters */}
       {saveConfirmation && (
@@ -613,8 +561,8 @@ export default function AdminEditCatalog() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border/30">
-                  <th className="text-left p-3 text-xs text-muted-foreground font-semibold">Product</th>
-                  <th className="text-left p-3 text-xs text-muted-foreground font-semibold">LC Name</th>
+                  <th className="text-left p-3 text-xs text-muted-foreground font-semibold">Vendor Name</th>
+                  <th className="text-left p-3 text-xs text-muted-foreground font-semibold">Safe Name</th>
                   <th className="text-left p-3 text-xs text-muted-foreground font-semibold">Category</th>
                   <th className="text-right p-3 text-xs text-muted-foreground font-semibold">Price</th>
                   <th className="text-center p-3 text-xs text-muted-foreground font-semibold">Status</th>
@@ -636,12 +584,12 @@ export default function AdminEditCatalog() {
                         )}
                         <div>
                           <div className="font-medium text-sm leading-tight">{item.alavontName || item.name}</div>
-                          {item.labName && <div className="text-[10px] text-muted-foreground">{item.labName}</div>}
+
                         </div>
                       </div>
                     </td>
                     <td className="p-3 text-muted-foreground text-sm">
-                      {item.luciferCruzName ?? <span className="text-muted-foreground/40 italic text-xs">—</span>}
+                      {item.customerSafeName ?? item.luciferCruzName ?? <span className="text-muted-foreground/40 italic text-xs">—</span>}
                     </td>
                     <td className="p-3">
                       <div className="flex items-center gap-1">
@@ -670,12 +618,7 @@ export default function AdminEditCatalog() {
                     </td>
                     <td className="p-3">
                       <div className="flex items-center gap-1 justify-end">
-                        {!item.isWooManaged && <a href={`/admin/catalogue-products?catalogItemId=${item.id}`}
-                          className="p-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
-                          title="Manage variants and location inventory"
-                          aria-label={`Manage variants and inventory for ${item.name}`}>
-                          <Package size={13} />
-                        </a>}
+
                         <button
                           onClick={() => setEditItem(item)}
                           className="p-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
@@ -710,17 +653,10 @@ export default function AdminEditCatalog() {
         )}
       </div>
 
-      {/* Edit dialog */}
-      {editItem !== null && (
-        <EditDialog
-          item={editItem}
-          onClose={() => setEditItem(null)}
-          onSave={async data => { await saveMutation.mutateAsync({ id: editItem.id, data }); }}
-          isSaving={saveMutation.isPending}
-          canManageCompliance={isGlobalAdmin}
-          onManageCompliance={() => { if (editItem) { setComplianceItem(editItem as CatalogProduct); setComplianceReason(""); setComplianceError(null); } }}
-        />
-      )}
+      <details className="rounded-xl border border-border p-3" onToggle={event => setShowInventory(event.currentTarget.open)}>
+        <summary className="cursor-pointer px-1 py-2 font-semibold">Inventory across all products and locations</summary>
+        {showInventory && <AdminInventory />}
+      </details>
 
       {complianceItem && <Dialog open onOpenChange={() => setComplianceItem(null)}><DialogContent className="max-w-md"><DialogHeader><DialogTitle>{complianceItem.lifecycleStatus === "compliance_hold" ? "Review compliance hold" : "Place compliance hold"}</DialogTitle></DialogHeader><p className="text-sm">{complianceItem.name}</p><p className="text-xs text-muted-foreground">Current hold: {complianceItem.lifecycleStatus === "compliance_hold" ? "Active" : "None"}. Reason: {complianceItem.metadata?.complianceReason || "—"}</p><label className="text-xs">Audit reason<Input value={complianceReason} onChange={event => setComplianceReason(event.target.value)} maxLength={500} aria-label="Compliance action reason" /></label>{complianceError && <p role="alert" className="text-xs text-red-400">{complianceError}</p>}<Button disabled={!complianceReason.trim() || complianceMutation.isPending} onClick={() => complianceMutation.mutate({ item: complianceItem, reason: complianceReason.trim() })}>{complianceItem.lifecycleStatus === "compliance_hold" ? "Remove hold as Global Admin" : "Place hold"}</Button></DialogContent></Dialog>}
 
