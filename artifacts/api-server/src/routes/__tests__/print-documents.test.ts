@@ -452,13 +452,15 @@ describe("test print against production's print_jobs constraints", () => {
     expect(dispatchJob).toHaveBeenCalledTimes(1);
   });
 
-  it("every thermal document type can be test printed on the chosen printer", async () => {
-    for (const documentType of ["CLOCK_IN", "CLOCK_OUT", "DEPOSIT", "EXPO", "WORK"]) {
+  it("test prints supported thermal documents and blocks work tickets", async () => {
+    for (const documentType of ["CLOCK_IN", "CLOCK_OUT", "DEPOSIT", "EXPO"]) {
       const res = await api.post("/api/print/documents/test").send({ documentType, printerId: 3, testId: `box2-${documentType}` });
       expect(res.status, documentType).toBe(200);
     }
-    expect(jobs().map((job) => job.printerId)).toEqual([3, 3, 3, 3, 3]);
-    expect(dispatchJob).toHaveBeenCalledTimes(5);
+    const work = await api.post("/api/print/documents/test").send({ documentType: "WORK", printerId: 3 });
+    expect(work.status).toBe(409);
+    expect(jobs().map((job) => job.printerId)).toEqual([3, 3, 3, 3]);
+    expect(dispatchJob).toHaveBeenCalledTimes(4);
   });
 
   it("validates the document type and enforces tenant and role", async () => {
