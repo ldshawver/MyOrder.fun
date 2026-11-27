@@ -2075,6 +2075,11 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
     return;
   }
 
+  if (order.status !== "completed" || order.paymentStatus !== "paid") {
+    res.status(409).json({ error: "Close and pay the order before printing its customer receipt." });
+    return;
+  }
+
   const operator = await selectActiveOperator(tenantId);
   const [assignment] = order.assignedShiftId
     ? await db

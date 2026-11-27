@@ -142,6 +142,7 @@ function formatField(block: DataBlock, data: ReceiptData, style: Style): Receipt
         if (item.optionLabel && block.showOption !== false) detail(item.optionLabel);
         if (item.sku && block.showSku === true) detail(`SKU ${item.sku}`);
         if (block.showUnitPrice === true) detail(`@ ${formatMoney(item.unitPriceCents)} ea`);
+        for (const pricing of item.pricingDetails ?? []) detail(pricing);
         if (item.note && block.showItemNotes !== false) detail(`* ${item.note}`);
       }
       return lines;
@@ -214,8 +215,12 @@ export function fitReceiptLines(lines: readonly ReceiptLine[], width: number): R
  * Renders a receipt template against server-built ReceiptData.
  * Throws if the layout is not valid under the strict template schema.
  */
-export function renderReceiptFromTemplate(layout: unknown, data: ReceiptData, width: number): RenderedReceiptLines {
+export function renderReceiptFromTemplate(layout: unknown, data: ReceiptData, width: number, requireSaleTotals = false): RenderedReceiptLines {
   const blocks = receiptTemplateLayoutSchema.parse(layout);
+  if (requireSaleTotals) {
+    const fields = blocks.flatMap(block => block.enabled && block.type === "data" && conditionHolds(block.when, data) ? [block.field] : []);
+    if (!fields.includes("total") || !fields.includes("items")) throw new Error("Printed receipts require item lines and an order total");
+  }
   const safeWidth = Math.min(MAX_RECEIPT_WIDTH, Math.max(MIN_RECEIPT_WIDTH, Math.trunc(width)));
   const lines: ReceiptLine[] = [];
   const skipped: SkippedBlock[] = [];

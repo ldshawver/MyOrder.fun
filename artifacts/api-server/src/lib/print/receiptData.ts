@@ -26,6 +26,7 @@ export interface ReceiptItem {
   readonly unitPriceCents: number;
   readonly lineTotalCents: number;
   readonly note: string | null;
+  readonly pricingDetails?: readonly string[];
 }
 
 export interface ReceiptData {
@@ -190,6 +191,7 @@ export interface ReceiptSnapshotInput {
     quantity: number;
     unitPrice: unknown;
     totalPrice: unknown;
+    pricingDetails?: readonly string[];
     note?: string | null;
   }>;
   lineNameMode: ReceiptLineNameMode;
@@ -251,6 +253,7 @@ export function buildReceiptData(input: ReceiptSnapshotInput): ReceiptData {
         quantity: Math.max(0, Math.trunc(Number(item.quantity) || 0)),
         unitPriceCents: toCents(item.unitPrice),
         lineTotalCents: toCents(item.totalPrice),
+        ...(item.pricingDetails?.length ? { pricingDetails: item.pricingDetails } : {}),
         note: optionalText(item.note, 160),
       };
     }),

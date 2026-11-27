@@ -283,6 +283,10 @@ router.post("/print/documents/test", adminOnly, async (req, res): Promise<void> 
   if (!parsed.success) { badRequest(res, "Invalid test print request", parsed.error.issues.slice(0, 10)); return; }
   const tenantId = tenantOf(req);
   const { documentType, printerId } = parsed.data;
+  if (documentType === "WORK") {
+    res.status(409).json({ error: "Work tickets are disabled. Use the Expo ticket for order preparation." });
+    return;
+  }
   const printer = await tenantPrinter(tenantId, printerId);
   if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
   const problem = await validatePrinterForDocument(printer, { tenantId, locationId: printer.locationId, documentType });

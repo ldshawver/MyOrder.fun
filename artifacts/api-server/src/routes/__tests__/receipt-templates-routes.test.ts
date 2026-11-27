@@ -181,14 +181,14 @@ function seedTemplate(tenantId: number, text: string, extra: Row = {}) {
 function seedOrder(tenantId: number) {
   const order = {
     id: store.nextId++, tenantId, customerId: 900, assignedCsrUserId: 901, assignedShiftId: null, createdAt: new Date("2026-09-28T10:05:00Z"),
-    orderType: "pickup", notes: null, paymentStatus: "paid", paymentMethod: "cash",
+    orderType: "pickup", status: "completed", notes: null, paymentStatus: "paid", paymentMethod: "cash",
     subtotal: "52.00", grossSubtotal: "52.00", discountTotal: "2.00", taxableSubtotal: "50.00", tax: "4.00", total: "54.00",
     customerCreditApplied: "0.00", remainingTenderAmount: "54.00", amountTendered: "60.00", changeGiven: "6.00",
     taxSnapshot: { taxRate: 0.08, jurisdiction: "Sacramento, California" }, paymentToken: "tok_secret_do_not_print",
   };
   (store.tables.ordersTable ??= []).push(order);
   (store.tables.orderItemsTable ??= []).push(
-    { id: store.nextId++, orderId: order.id, catalogItemId: 55, catalogItemName: "Catalog Name", receiptName: "Snapshot Product", alavontName: null, luciferCruzName: null, quantity: 2, unitPrice: "26.00", totalPrice: "52.00" },
+    { id: store.nextId++, orderId: order.id, catalogItemId: 55, catalogItemName: "Catalog Name", receiptName: "Snapshot Product", alavontName: null, luciferCruzName: null, quantity: 2, unitPrice: "26.00", totalPrice: "52.00", variantSnapshot: { receiptPricing: { saleUnitCents: 3250, employeeDiscountCents: 1300, employeeDiscountPercent: 20 } } },
   );
   // The live catalogue has since changed; receipts must not read it.
   (store.tables.catalogItemsTable ??= []).push({ id: 55, tenantId, name: "Renamed In Catalogue", price: "99.00" });
@@ -324,6 +324,14 @@ describe("receipt preview", () => {
 });
 
 describe("reprint uses the shared receipt data builder", () => {
+  it("rejects printing a customer receipt before order completion", async () => {
+    const order = seedOrder(1);
+    order.status = "confirmed";
+    const response = await api.post(`/api/print/orders/${order.id}/receipt`).send({});
+    expect(response.status).toBe(409);
+    expect(store.tables.printJobsTable ?? []).toHaveLength(0);
+  });
+
   it("stores exactly the shared pipeline's receipt text", async () => {
     seedTemplate(1, "TENANT A");
     const order = seedOrder(1);
@@ -333,9 +341,22 @@ describe("reprint uses the shared receipt data builder", () => {
     // Rendered for the chosen printer's width (80mm = 48 columns).
     const expected = await renderOrderReceipt(1, order.id, 48);
     expect(job!.renderedText).toBe(expected!.receipt.text);
+    expect(expected!.receipt.plainText).toContain("Sale price: $32.50 ea");
+    expect(expected!.receipt.plainText).toContain("Employee discount (20%): -$13.00");
+    expect(expected!.receipt.plainText).toContain("$54.00");
     expect(job).toMatchObject({ tenantId: 1, orderId: order.id, printerId: 1, templateId: expected!.receipt.templateId });
     expect(JSON.stringify(job!.payloadJson)).not.toMatch(/Casey|Jones|tok_/);
     expect(dispatchReceiptJob).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a complete receipt when the selected print template omits the total", async () => {
+    seedTemplate(1, "INCOMPLETE", { templateJson: [{ type: "data", id: "items", field: "items" }] });
+    const order = seedOrder(1);
+    const rendered = await renderOrderReceipt(1, order.id, 48);
+    expect(rendered?.receipt.source).toBe("fallback");
+    expect(rendered?.receipt.plainText).toContain("$54.00");
+    expect(rendered?.receipt.plainText).toContain("Sale price: $32.50 ea");
+    expect(rendered?.receipt.plainText).toContain("Employee discount (20%)");
   });
 
   it("refuses another tenant's order", async () => {
@@ -367,7 +388,7 @@ describe("automatic and reprint receipts share one path (source contract)", () =
   it("renders automatic receipts through renderOrderReceipt", () => {
     const helper = printService.slice(printService.indexOf("async function renderAutomaticReceipt"), printService.indexOf("export async function enqueueOrderPrintJobs"));
     expect(helper).toContain("renderOrderReceipt(tenantId, orderId, columns)");
-    const receiptBranch = printService.slice(printService.indexOf("// ── Receipt, expo and work tickets"), printService.indexOf("// ── Label ──"));
+    const receiptBranch = printService.slice(printService.indexOf("// ── Customer receipt and Expo ticket"), printService.indexOf("// ── Label ──"));
     expect(receiptBranch).toContain("renderAutomaticReceipt(tenantId, order.id, printOrder, columns)");
     expect(receiptBranch).toContain('documentType: "ORDER_RECEIPT"');
     expect(receiptBranch).toContain('loadReceiptData(tenantId, order.id, "alavont_only")');
