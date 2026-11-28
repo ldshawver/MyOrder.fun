@@ -96,6 +96,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const showOperationalQueueStatus = ["global_admin", "admin", "supervisor"].includes(userRole);
   const [queueStatus, setQueueStatus] = useState<{
     activeShift: { clockedInAt: string } | null;
+    hasActiveShift?: boolean;
     activeCsr: { firstName?: string | null; lastName?: string | null; email?: string | null } | null;
     queueCounts: { defaultQueue: number };
   } | null>(null);
@@ -503,7 +504,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
                 canManageQueue: showOperationalQueueStatus,
                 isCustomer,
                 hasQueueStatus: Boolean(queueStatus),
-                hasActiveShift: Boolean(queueStatus?.activeShift),
+                hasActiveShift: queueStatus?.hasActiveShift ?? Boolean(queueStatus?.activeShift),
               }) && queueStatus && (
                 <div className="mb-5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3" data-testid="queue-status-banner">
                   <div>
