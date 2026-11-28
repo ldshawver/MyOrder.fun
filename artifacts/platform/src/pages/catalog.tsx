@@ -9,7 +9,7 @@ import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-quer
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Search, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame, Trash } from "lucide-react";
+import { Search, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame, Trash, TicketPercent } from "lucide-react";
 import { useBrand } from "@/contexts/BrandContext";
 import { useCart } from "@/contexts/CartContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
@@ -982,10 +982,6 @@ export default function Catalog() {
       return response.json();
     },
   });
-  const showCouponOffer = couponOffer?.coupon === "PHARMACY1"
-    && (category === "all" || category.trim().toLowerCase() === "pharmacy")
-    && "pharmacy1 pharmacy coupon $1 off".includes(search.trim().toLowerCase());
-
   const { data: categoriesRes } = useQuery({
     queryKey: ["listCatalogCategories", menuMode, isCustomerPreview],
     queryFn: async (): Promise<{ categories: string[] }> => {
@@ -1020,8 +1016,15 @@ export default function Catalog() {
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   const isLC = menuMode === "lucifer";
-  const categories = ["all", ...(categoriesRes?.categories ?? [])]
-    .filter(cat => cat === "all" || (isLC ? LC_MAIN_CATEGORIES.includes(cat) : true))
+  const catalogCategories = categoriesRes?.categories ?? [];
+  const packageCategory = catalogCategories.find(name => /^packages?$/i.test(name.trim()))
+    ?? catalogCategories.find(name => /^deals$/i.test(name.trim()))
+    ?? "Package";
+  const couponAvailable = couponOffer?.coupon === "PHARMACY1";
+  const showCouponOffer = couponAvailable && category === packageCategory
+    && "$1 off pharmacy coupon pharmacy1".includes(search.trim().toLowerCase());
+  const categories = [...new Set(["all", ...catalogCategories, ...(couponAvailable ? [packageCategory] : [])])]
+    .filter(cat => cat === "all" || !isLC || LC_MAIN_CATEGORIES.includes(cat) || (couponAvailable && cat === packageCategory))
     .sort((a, b) => {
       if (a === "all") return -1;
       if (b === "all") return 1;
@@ -1160,17 +1163,6 @@ export default function Catalog() {
       </div>
 
       <div id="catalogue" className="scroll-mt-24 space-y-4">
-      {showCouponOffer && (
-        <article aria-label="Pharmacy coupon" className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-primary/40 bg-primary/5 px-5 py-4">
-          <div className="space-y-1">
-            <h2 className="font-semibold">$1 off Pharmacy</h2>
-            <p className="text-sm text-muted-foreground">Spend $5 or more on Pharmacy items before tax, delivery, and tips.</p>
-          </div>
-          <Button type="button" variant="outline" disabled={isCustomerPreview || coupon === "PHARMACY1"} onClick={() => setCoupon("PHARMACY1")}>
-            {coupon === "PHARMACY1" ? "Coupon added" : "Add coupon to cart"}
-          </Button>
-        </article>
-      )}
       {catalogQuery.isError && (
         <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm">
           The catalogue and product options could not be loaded.
@@ -1183,7 +1175,7 @@ export default function Catalog() {
             <div key={i} className="aspect-square rounded-2xl bg-muted/20 animate-pulse" />
           ))}
         </div>
-      ) : !displayItems.length ? (
+      ) : !displayItems.length && !showCouponOffer ? (
         <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center px-6" data-testid="text-empty-state">
           {isLC ? (
             <Flame size={32} style={{ color: "#DC143C", marginBottom: 12 }} />
@@ -1233,6 +1225,27 @@ export default function Catalog() {
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          {showCouponOffer && (
+            <article aria-label="Pharmacy coupon" className="electric-catalog-card glass-card flex flex-col overflow-hidden rounded-2xl">
+              <div className="holiday-product-image grid aspect-square place-items-center bg-primary/10 text-primary" aria-hidden="true">
+                <div className="grid justify-items-center gap-2">
+                  <TicketPercent className="size-10" />
+                  <span className="text-3xl font-bold">$1 OFF</span>
+                </div>
+              </div>
+              <div className="flex flex-1 flex-col gap-3 p-4">
+                <div className="flex-1">
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{packageCategory}</div>
+                  <h2 className="text-sm font-bold leading-snug">$1 off Pharmacy</h2>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Spend $5 or more on Pharmacy items before tax, delivery, and tips.</p>
+                </div>
+                <Button type="button" size="sm" variant="outline" className="h-auto min-h-9 whitespace-normal"
+                  disabled={isCustomerPreview || coupon === "PHARMACY1"} onClick={() => setCoupon("PHARMACY1")}>
+                  {coupon === "PHARMACY1" ? "Coupon added" : "Add coupon to cart"}
+                </Button>
+              </div>
+            </article>
+          )}
           {displayItems.map((item) => (
             <CatalogItemCard
               key={item.id}
