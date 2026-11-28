@@ -130,7 +130,7 @@ const FORWARD_MIGRATIONS = Object.freeze([
   { tag: "0087_cj_fulfillment_events", sha256: "0c619f151b0bb2ee407c27396d6a22f91b3c83ae3773fa240c58ff23a46bb281" },
 ]);
 const STOREFRONT_CLOSURE_MIGRATION = Object.freeze({ tag: "0088_storefront_closures", sha256: "9fb0386f3bef0aed5abba2d80a2efcb8b99e6b70f866dfb60f2d3e22f03f0c87" });
-const HOLIDAY_DECORATIONS_MIGRATION = Object.freeze({ tag: "0089_holiday_decorations", sha256: "d5feb28cabdddd06d950cfdea037794ad872ab14bc4cc070ab6cfb3bd534b0c1f52e8414efb6cb603d9b" });
+const HOLIDAY_DECORATIONS_MIGRATION = Object.freeze({ tag: "0089_holiday_decorations", sha256: "d5feb28cabdddd06d950cf88927183a65b3bd534b0c1f52e8414efb6cb603d9b" });
 const PRODUCTION_PREDECESSOR_LEDGER_ROWS = 63;
 const PRODUCTION_TARGET_LEDGER_ROWS = 64;
 const VERIFIED_RESTORE_LEDGER_ROWS = [51, 52, 53, 54, 55, 56, 58, 62, PRODUCTION_PREDECESSOR_LEDGER_ROWS];

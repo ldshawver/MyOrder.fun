@@ -1741,3 +1741,10 @@ test("recognizes only the verified oneshot SSH firewall service as a non-writer"
     { Type: "simple" },
   ]) assert.throws(() => assertKnownNonWriterService(unit, { ...properties, ...drift }), /mismatch/);
 });
+
+test("the exact pending production migration matches its reviewed source file", () => {
+  for (const [migration, filename] of migrationsForRestoredLedger(63)) {
+    const source = readFileSync(new URL(`../lib/db/drizzle/${filename}`, import.meta.url));
+    assert.equal(createHash("sha256").update(source).digest("hex"), migration.sha256);
+  }
+});
