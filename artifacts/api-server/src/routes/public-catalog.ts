@@ -6,6 +6,8 @@ import { normalizeStorefrontHost, resolvePublicStorefrontTenantIdForHost } from 
 
 import { activeStorefrontClosure, loadStorefrontClosures } from "../lib/storefrontClosures";
 
+import { holidayDisplay } from "../lib/holidayDecorations";
+
 const router: IRouter = Router();
 
 const querySchema = z.object({
@@ -80,6 +82,14 @@ router.get("/public/storefront-closure", async (req, res): Promise<void> => {
   if (!tenantId) { res.status(404).json({ error: "Storefront not configured" }); return; }
   const settings = await loadStorefrontClosures(tenantId);
   res.json({ closure: activeStorefrontClosure(settings.windows) });
+});
+
+router.get("/public/holiday-decorations", async (req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  const host = normalizeStorefrontHost(req.headers.host);
+  const tenantId = host ? await tenantForPublicHost(host) : null;
+  if (!tenantId) { res.status(404).json({ error: "Storefront not configured" }); return; }
+  res.json(await holidayDisplay(tenantId));
 });
 
 /** A guest-only projection of published Lucifer Cruz storefront products. */

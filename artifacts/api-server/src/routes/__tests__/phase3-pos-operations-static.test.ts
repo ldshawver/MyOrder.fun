@@ -87,7 +87,7 @@ describe("Phase 3 POS operations Product Master integration", () => {
   describe("/api/shifts/:id/receipts/:kind", () => {
     it("supports six receipt kinds, rejects invalid kinds, scopes by tenant, and uses server data", () => {
       expect(shifts).toContain('z.enum(["beginning_inventory", "ending_inventory", "shift_sales", "restocking", "deposit", "supervisor_checkout"])');
-      expect(shifts).toContain('router.get("/shifts/:id/receipts/:kind", requireRole("global_admin", "admin", "csr")');
+      expect(shifts).toContain('router.get("/shifts/:id/receipts/:kind", requireRole("global_admin", "admin", "supervisor", "csr")');
       expect(shifts).toContain("if (!Number.isInteger(shiftId) || shiftId <= 0 || !kind.success)");
       expect(shifts).toContain("eq(labTechShiftsTable.tenantId, tenantId)");
       expect(shifts).toContain("computeShiftStats(shiftId)");

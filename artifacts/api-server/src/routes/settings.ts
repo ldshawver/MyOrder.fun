@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { and, eq, sql } from "drizzle-orm";
-import { db, adminSettingsTable, auditLogsTable, customerDisclaimerAcceptancesTable, inventoryLocationsTable, locationPickupSchedulesTable, uberDirectSettingsTable } from "@workspace/db";
+import { db, holidayDecorationsTable, adminSettingsTable, auditLogsTable, customerDisclaimerAcceptancesTable, inventoryLocationsTable, locationPickupSchedulesTable, uberDirectSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, requireCustomerCheckoutAccess, writeAuditLog } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { encrypt, hasConfiguredSettingsEncryptionKey, safeDecrypt } from "../lib/crypto";
@@ -15,6 +15,7 @@ import { loadPickupSchedule, pickupOperatingWindow, pickupScheduleInputSchema, v
 import { pushRaspberryPiWifi } from "../lib/raspberryPiWifi";
 
 import { closureSettingsBody, loadStorefrontClosures, STOREFRONT_CLOSURE_LOCK } from "../lib/storefrontClosures";
+import { holidaySettingsBody, holidayThemes, loadHolidaySettings } from "../lib/holidayDecorations";
 
 const router: IRouter = Router();
 // The customer disclaimer must be accepted before an order can be created, so
@@ -424,14 +425,51 @@ router.post("/customer/disclaimer/accept", async (req, res): Promise<void> => {
   res.status(201).json({ accepted: true, version: currentVersion, acceptedAt: created.acceptedAt });
 });
 
-const closureManagers = requireRole("global_admin", "admin", "supervisor");
+const storefrontSettingsManagers = requireRole("global_admin", "admin", "supervisor");
 
-router.get("/admin/settings/storefront-closures", closureManagers, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.get("/admin/settings/holiday-decorations", storefrontSettingsManagers, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ...await loadHolidaySettings(req.authorizedTenantId!), themes: holidayThemes });
+});
+
+router.put("/admin/settings/holiday-decorations", storefrontSettingsManagers, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  const parsed = holidaySettingsBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ error: "Invalid decoration settings." });
+    return;
+  }
+  const tenantId = req.authorizedTenantId!;
+  const actor = req.dbUser!;
+  const { version, ...settings } = parsed.data;
+  const savedVersion = await db.transaction(async tx => {
+    const [saved] = version === 0
+      ? await tx.insert(holidayDecorationsTable).values({ tenantId, preferences: settings })
+        .onConflictDoNothing().returning({ version: holidayDecorationsTable.version })
+      : await tx.update(holidayDecorationsTable).set({ preferences: settings, version: version + 1 })
+        .where(and(eq(holidayDecorationsTable.tenantId, tenantId), eq(holidayDecorationsTable.version, version)))
+        .returning({ version: holidayDecorationsTable.version });
+    if (!saved) return null;
+    await tx.insert(auditLogsTable).values({
+      actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, tenantId,
+      action: "HOLIDAY_DECORATIONS_UPDATED", resourceType: "holiday_decorations", resourceId: String(tenantId),
+      metadata: { version: saved.version }, ipAddress: req.ip ?? null,
+    });
+    return saved.version;
+  });
+  if (savedVersion === null) {
+    res.status(409).json({ error: "Settings changed. Reload before saving." });
+    return;
+  }
+  res.json({ settings, version: savedVersion });
+});
+
+router.get("/admin/settings/storefront-closures", storefrontSettingsManagers, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
   res.json(await loadStorefrontClosures(req.authorizedTenantId!));
 });
 
-router.put("/admin/settings/storefront-closures", closureManagers, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.put("/admin/settings/storefront-closures", storefrontSettingsManagers, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   const parsed = closureSettingsBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(422).json({ error: parsed.error.issues[0]?.message ?? "Invalid closure schedule." }); return;

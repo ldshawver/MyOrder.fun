@@ -22,6 +22,8 @@ import { resolveEffectiveCatalogUnitPrice } from "../lib/checkoutNormalizer";
 import { publicCatalogEligibility } from "../lib/catalogEligibility";
 import { catalogAmountError } from "../lib/catalogPricing";
 
+import { holidayDisplay } from "../lib/holidayDecorations";
+
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireCatalogReadAccess, requireTenantContext);
 
@@ -380,6 +382,11 @@ async function getShowOutOfStockSetting(tenantId: number): Promise<boolean> {
 }
 
 // GET /api/catalog
+router.get("/catalog/holiday-decorations", async (req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json(await holidayDisplay(req.authorizedTenantId!));
+});
+
 router.get("/catalog", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const query = listCatalogItemsRequest.safeParse(req.query);

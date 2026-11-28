@@ -48,6 +48,8 @@ import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
+import HolidaySettings from "@/pages/admin/holiday-settings";
+import { HolidayStorefront } from "@/components/HolidayDecorations";
 import StorefrontClosures from "@/pages/admin/storefront-closures";
 import { StorefrontClosureNotice } from "@/components/StorefrontClosureNotice";
 import AdminSettingsPage from "@/pages/admin/settings-page";
@@ -562,6 +564,8 @@ function AuthenticatedApp() {
           {isStaff && <Route path="/admin/catalogue-products">{() => protect(<AdminCatalogueProducts />)}</Route>}
 
           {["global_admin", "admin", "supervisor"].includes(appRole) &&
+            <Route path="/admin/settings/holiday-decorations">{() => protect(<HolidaySettings />)}</Route>}
+          {["global_admin", "admin", "supervisor"].includes(appRole) &&
             <Route path="/admin/settings/store-closures">{() => protect(<StorefrontClosures />)}</Route>}
           {["global_admin", "admin"].includes(appRole) && (
             <>
@@ -678,7 +682,7 @@ function ClerkProviderWithRoutes() {
           <ClerkAuthTokenSetter />
           <ClerkQueryClientCacheInvalidator />
           <StorefrontClosureNotice />
-          <Router />
+          <HolidayStorefront><Router /></HolidayStorefront>
         </QueryClientProvider>
       </CartProvider>
     </ClerkProvider>

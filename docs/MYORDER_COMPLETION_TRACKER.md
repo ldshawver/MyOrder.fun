@@ -6,6 +6,15 @@ Development branch: `release/all-owner-requests-20261123`
 
 ## Verified increments
 
+### Automatic seasonal holiday decorations (2026-11-26)
+
+- Implemented ten themes across the guest catalog, signed-in catalog, product details, cart, checkout, and customer order pages. Product image accents use CSS overlays. Effects use built-in glyphs, ignore pointer input, and respect the system reduced-motion setting.
+- Automatic scheduling starts one calendar month before each holiday, clamped to the last day of shorter months, and ends at midnight after the holiday in the tenant timezone. In overlaps, the nearest holiday takes precedence. Open pages refresh their shared decoration setting every five minutes.
+- Settings → Holiday Decorations gives approved administrators and supervisors tenant-scoped controls for individual holidays, motion, local previews, and manual override. The override stays active until cleared. Settings saves check for concurrent edits and write an audit entry.
+- Verified holiday date and timezone boundaries, admin roles, cross-tenant requests, shared catalog fetching, and existing catalog interactions. Chromium checks at 375px and 1440px confirmed stable layout, usable checkout controls, and reduced motion. Migration 0089 passed journal validation and ran against a disposable PostgreSQL engine.
+- API and platform builds and type checks passed. Full-suite failures in the POS receipt contract, catalog field help and admin workspace tests, and PayPal callback contract also reproduce on the unchanged base commit `42908f77`.
+- Staging validation and application of migration 0089 remain pending. Production rollout requires owner approval.
+
 ### Owner-request integration release candidate (2026-11-23)
 
 - Added a mobile-first, tenant-scoped 3x3 Speed Order screen for CSR, supervisor, admin, and global-admin sessions. Customers have neither a route nor a navigation link.
