@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import AdminInventory from "@/pages/admin/inventory";
 import AdminCatalogueProducts from "@/pages/admin/catalogue-products";
 import { useSearch } from "wouter";
 import { useAuth } from "@clerk/react";
@@ -26,6 +25,9 @@ type CatalogProduct = {
   luciferCruzCategory: string | null;
   luciferCruzDescription: string | null;
   luciferCruzImageUrl: string | null;
+  merchantImage?: string | null;
+  merchantCategory?: string | null;
+  merchantSku?: string | null;
   customerSafeName: string | null;
   customerSafeDescription: string | null;
   alavontCategory: string | null;
@@ -129,11 +131,14 @@ function ProductEditor({
     regularPrice: fieldVal(item?.regularPrice),
     compareAtPrice: fieldVal(item?.compareAtPrice),
     homiePrice: fieldVal(item?.homiePrice),
-    imageUrl: fieldVal(item?.imageUrl),
+    alavontImageUrl: fieldVal(item?.alavontImageUrl),
+    alavontDescription: fieldVal(item?.alavontDescription ?? item?.description),
+    merchantImage: fieldVal(item?.merchantImage),
+    merchantCategory: fieldVal(item?.merchantCategory ?? item?.luciferCruzCategory),
+    merchantSku: fieldVal(item?.merchantSku),
     showCatalogueStockIndicator: item?.showCatalogueStockIndicator !== false,
     customerSafeName: fieldVal(item?.customerSafeName),
     customerSafeDescription: fieldVal(item?.customerSafeDescription),
-    sku: fieldVal(item?.sku),
     isAvailable: item?.isAvailable !== false,
     isTaxable: item?.isTaxable !== false,
     isFeatured: item?.isFeatured === true,
@@ -143,6 +148,7 @@ function ProductEditor({
     moq: fieldVal(item?.moq),
     preferredReorderQuantity: fieldVal(item?.preferredReorderQuantity),
   });
+  const savedForm = useRef(form);
   const [fieldErrors, setFieldErrors] = useState(validateCatalogProductDraft(form));
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -168,9 +174,13 @@ function ProductEditor({
     submitLock.current = true;
     setSubmitting(true);
     const payload = Object.fromEntries(Object.entries(createCatalogProductPayload(form))
-      .filter(([key]) => key in form && (isNew || (key !== "name" && key !== "category"))));
+      .filter(([key]) => key in form && (isNew || (
+        key !== "name" && key !== "category" &&
+        (!["merchantImage", "merchantCategory", "merchantSku", "alavontImageUrl", "alavontDescription"].includes(key) || form[key] !== savedForm.current[key])
+      ))));
     try {
       await onSave(payload);
+      savedForm.current = form;
       setSaved(true);
     } catch (error) {
       setSubmitError(sanitizedCatalogError(error));
@@ -221,30 +231,48 @@ function ProductEditor({
               {item?.lifecycleStatus === "compliance_hold" ? "Release compliance hold" : "Place compliance hold"}
             </Button>
           </section>}
-          <div className="grid gap-4 sm:grid-cols-2">
-            {input("Vendor Name", "alavontName", isWoo)}
-            {input("Safe Name", "customerSafeName", false, "text", "Used on checkout and payment records.")}
-            {input("Category", "alavontCategory", isWoo)}
-            {input("SKU", "sku")}
-            {input("Price ($)", "price", isWoo, "number")}
-            {input("Regular / Compare-at Price ($)", "regularPrice", false, "number")}
-            {input("Sale Price ($)", "compareAtPrice", false, "number")}
-            {input("Employee Price ($)", "homiePrice", false, "number")}
+          <div className="grid gap-5 lg:grid-cols-2">
+            <section className="space-y-3 rounded-lg border border-border/60 p-4">
+              <h3 className="font-semibold">Alavont / Vendor</h3>
+              {input("Vendor Name", "alavontName", isWoo)}
+              {input("Alavont Image URL", "alavontImageUrl", isWoo)}
+              {input("Alavont Category", "alavontCategory", isWoo)}
+              <label className="block text-sm font-medium">Alavont Description
+                <textarea value={fieldVal(form.alavontDescription)} onChange={set("alavontDescription")}
+                  disabled={isWoo || requestPending} rows={3}
+                  className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+              </label>
+            </section>
+            <section className="space-y-3 rounded-lg border border-border/60 p-4">
+              <h3 className="font-semibold">Safe checkout</h3>
+              {input("Safe Name", "customerSafeName")}
+              {input("Safe Image URL", "merchantImage")}
+              {input("Safe Category", "merchantCategory")}
+              {input("Safe SKU", "merchantSku")}
+              <label className="block text-sm font-medium">Safe Description
+                <textarea value={fieldVal(form.customerSafeDescription)} onChange={set("customerSafeDescription")}
+                  disabled={requestPending} rows={3}
+                  className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+              </label>
+            </section>
           </div>
-          <label className="block text-sm font-medium">Safe Description
-            <textarea id="catalog-editor-safe-description" value={fieldVal(form.customerSafeDescription)}
-              onChange={set("customerSafeDescription")} disabled={requestPending} rows={3}
-              className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
-          </label>
-          <details className="rounded-md border border-border/60 p-3">
-            <summary className="cursor-pointer text-sm font-semibold">Image and stock settings</summary>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              {input("Image URL", "imageUrl")}
-              {input("PAR", "parLevel", false, "number")}
-              {input("Minimum Order Quantity", "moq", false, "number")}
-              {input("Preferred Reorder Quantity", "preferredReorderQuantity", false, "number")}
+          <section className="space-y-3 rounded-lg border border-border/60 p-4">
+            <h3 className="font-semibold">Pricing and stock</h3>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {input("Safe Price ($)", "price", isWoo, "number")}
+              {input("Safe Sale Price ($)", "compareAtPrice", false, "number")}
+              {input("Safe Regular / Compare-at Price ($)", "regularPrice", false, "number")}
+              {input("Safe Employee Price ($)", "homiePrice", false, "number")}
+              {input("Safe PAR", "parLevel", false, "number")}
             </div>
-          </details>
+            <details>
+              <summary className="cursor-pointer text-sm font-medium">Reorder settings</summary>
+              <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                {input("Minimum Order Quantity", "moq", false, "number")}
+                {input("Preferred Reorder Quantity", "preferredReorderQuantity", false, "number")}
+              </div>
+            </details>
+          </section>
 
           {/* Availability */}
           {!isWoo && (
@@ -267,8 +295,9 @@ function ProductEditor({
               </label>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.showCatalogueStockIndicator)} onChange={e => setForm(f => ({ ...f, showCatalogueStockIndicator: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
-                <span className="text-sm">Show catalogue stock indicator</span>
+                <span className="text-sm">Show stock count</span>
               </label>
+              <p className="ml-6 text-xs text-muted-foreground">Controls whether shoppers see the quantity available.</p>
               <label className="mt-3 flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={Boolean(form.isFeatured)} onChange={e => setForm(f => ({ ...f, isFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
                 <span className="text-sm">Featured (promote in catalogue)</span>
@@ -310,7 +339,6 @@ export default function AdminEditCatalog() {
   const [showWoo, setShowWoo] = useState(false);
   const [lifecycleFilter, setLifecycleFilter] = useState<"all" | CatalogLifecycleStatus>("all");
   const [editItem, setEditItem] = useState<Partial<CatalogProduct> | null>(null);
-  const [showInventory, setShowInventory] = useState(false);
   const [editorRefresh, setEditorRefresh] = useState(0);
   const searchParams = useSearch();
   const requestedItemId = new URLSearchParams(searchParams).get("catalogItemId");
@@ -369,13 +397,13 @@ export default function AdminEditCatalog() {
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<CatalogProduct>;
     },
-    onSuccess: async (saved, { id }) => {
+    onSuccess: async (saved, { id, data }) => {
       qc.setQueryData<CatalogProduct[]>(["edit-catalog"], current => {
         const withoutSaved = (current ?? []).filter(item => item.id !== saved.id);
         return [...withoutSaved, saved];
       });
       setSaveConfirmation(`Product ${saved.id} saved.`);
-      setEditItem(current => current && current.id === id ? { ...current, ...saved } : current);
+      setEditItem(current => current && current.id === id ? { ...current, ...data, ...saved } : current);
       setEditorRefresh(current => current + 1);
       await qc.invalidateQueries({ queryKey: ["edit-catalog"], refetchType: "active" });
     },
@@ -652,11 +680,6 @@ export default function AdminEditCatalog() {
           </div>
         )}
       </div>
-
-      <details className="rounded-xl border border-border p-3" onToggle={event => setShowInventory(event.currentTarget.open)}>
-        <summary className="cursor-pointer px-1 py-2 font-semibold">Inventory across all products and locations</summary>
-        {showInventory && <AdminInventory />}
-      </details>
 
       {complianceItem && <Dialog open onOpenChange={() => setComplianceItem(null)}><DialogContent className="max-w-md"><DialogHeader><DialogTitle>{complianceItem.lifecycleStatus === "compliance_hold" ? "Review compliance hold" : "Place compliance hold"}</DialogTitle></DialogHeader><p className="text-sm">{complianceItem.name}</p><p className="text-xs text-muted-foreground">Current hold: {complianceItem.lifecycleStatus === "compliance_hold" ? "Active" : "None"}. Reason: {complianceItem.metadata?.complianceReason || "—"}</p><label className="text-xs">Audit reason<Input value={complianceReason} onChange={event => setComplianceReason(event.target.value)} maxLength={500} aria-label="Compliance action reason" /></label>{complianceError && <p role="alert" className="text-xs text-red-400">{complianceError}</p>}<Button disabled={!complianceReason.trim() || complianceMutation.isPending} onClick={() => complianceMutation.mutate({ item: complianceItem, reason: complianceReason.trim() })}>{complianceItem.lifecycleStatus === "compliance_hold" ? "Remove hold as Global Admin" : "Place hold"}</Button></DialogContent></Dialog>}
 

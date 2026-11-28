@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -126,6 +126,9 @@ export default function AdminCatalogueProducts({ catalogItemId, refreshKey }: { 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<number | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [inventoryRows, setInventoryRows] = useState<Record<number, Location[]>>({});
+  const [inventoryLoadError, setInventoryLoadError] = useState("");
+  const [inventoryLoading, setInventoryLoading] = useState(false);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [create, setCreate] = useState(defaultProduct);
   const [creationVariants, setCreationVariants] = useState([defaultCreationVariant]);
@@ -149,6 +152,19 @@ export default function AdminCatalogueProducts({ catalogItemId, refreshKey }: { 
   const [preview, setPreview] = useState<InventoryPreview | null>(null);
   const [confirmReconciliation, setConfirmReconciliation] = useState(false);
   const selected = products.find(product => product.id === selectedId);
+  const stockIdentities = useMemo(() => {
+    const identities = new Map<number, { labels: string[]; unit: string | null }>();
+    for (const option of selected?.options ?? []) {
+      if (option.inventoryItemId === null) continue;
+      const identity = identities.get(option.inventoryItemId) ?? { labels: [], unit: option.baseUnit };
+      identity.labels.push(option.label);
+      identities.set(option.inventoryItemId, identity);
+    }
+    return identities;
+  }, [selected]);
+  const stockIds = [...stockIdentities.keys()].join(",");
+  const locationColumns = Array.from(new Map(Object.values(inventoryRows).flat().map(location => [location.locationId, location])).values())
+    .sort((a, b) => a.name.localeCompare(b.name) || a.locationId - b.locationId);
   const selectedIdValue = selected?.id;
   const selectedName = selected?.name ?? "";
   const selectedInventoryModel = selected?.inventoryModel;
@@ -188,12 +204,38 @@ export default function AdminCatalogueProducts({ catalogItemId, refreshKey }: { 
     const option = product?.options.find(candidate => candidate.catalogItemId === requestedId);
     if (product && option) { setSelectedId(product.id); setSelectedItemId(option.inventoryItemId); }
   }, [products, catalogItemId, selectedId]);
-  const loadLocations = useCallback(async (inventoryItemId: number, signal?: AbortSignal) => {
+  const fetchLocations = useCallback(async (inventoryItemId: number, signal?: AbortSignal) => {
     const result = await request(`/api/admin/catalogue/inventory/${inventoryItemId}/locations`, { signal }) as { locations: Location[] };
-    if (!signal?.aborted) setLocations(result.locations.filter(location => location.eligible !== false).map(location =>
+    return result.locations.filter(location => location.eligible !== false).map(location =>
       location.hasBalance === false ? { ...location, quantityOnHand: "" } : location,
-    ));
+    );
   }, [request]);
+  const loadLocations = useCallback(async (inventoryItemId: number, signal?: AbortSignal) => {
+    const result = await fetchLocations(inventoryItemId, signal);
+    if (!signal?.aborted) setLocations(result);
+  }, [fetchLocations]);
+  useEffect(() => {
+    if (!embedded || !stockIds) return;
+    const controller = new AbortController();
+    setInventoryLoading(true);
+    setInventoryLoadError("");
+    void (async () => {
+      // Fetch in small batches so products with many variants do not flood the API.
+      const ids = stockIds.split(",").map(Number);
+      const rows: Record<number, Location[]> = {};
+      for (let start = 0; start < ids.length && !controller.signal.aborted; start += 6) {
+        const batch = await Promise.all(ids.slice(start, start + 6).map(async id =>
+          [id, await fetchLocations(id, controller.signal)] as const));
+        Object.assign(rows, Object.fromEntries(batch));
+      }
+      if (!controller.signal.aborted) setInventoryRows(rows);
+    })().catch(error => {
+      if (!controller.signal.aborted) setInventoryLoadError(error.message);
+    }).finally(() => {
+      if (!controller.signal.aborted) setInventoryLoading(false);
+    });
+    return () => controller.abort();
+  }, [embedded, stockIds, fetchLocations]);
   useEffect(() => {
     setLocations([]);
     if (!selectedItemId) return;
@@ -301,6 +343,48 @@ export default function AdminCatalogueProducts({ catalogItemId, refreshKey }: { 
         <p className="rounded-xl border p-4 text-sm text-muted-foreground">No variants are linked to this catalog item.</p>
       )}
       {selected && <div className="space-y-5">
+        {embedded && <section className="space-y-3 rounded-xl border p-4" aria-label="Inventory by location">
+          <h2 className="font-semibold">Inventory by location</h2>
+          {!stockIds ? <p className="text-sm text-muted-foreground">Set up an inventory item under Options / variants to count stock.</p>
+            : inventoryLoading ? <p role="status" className="text-sm">Loading location counts…</p>
+            : inventoryLoadError ? <p role="alert" className="text-sm text-destructive">{inventoryLoadError}</p>
+            : locationColumns.length === 0 ? <p className="text-sm text-muted-foreground">No eligible locations are configured for this product.</p>
+            : <div className="overflow-x-auto rounded-lg border" tabIndex={0} aria-label="Location inventory columns">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40"><tr>
+                  <th scope="col" className="px-3 py-2 text-left">Stock</th>
+                  {locationColumns.map(location => <th key={location.locationId} scope="col" className="min-w-32 px-3 py-2 text-left">{location.name}</th>)}
+                </tr></thead>
+                <tbody>{[...stockIdentities].map(([id, identity]) => {
+                  const label = selected.inventoryModel === "SHARED" ? `Shared inventory pool #${id}` : identity.labels.join(", ");
+                  return <tr key={id} className="border-t">
+                    <th scope="row" className="px-3 py-2 text-left">{label}{identity.unit && <div className="font-normal text-muted-foreground">{identity.unit}</div>}</th>
+                    {locationColumns.map(column => {
+                      const location = inventoryRows[id]?.find(row => row.locationId === column.locationId);
+                      return <td key={column.locationId} className="px-3 py-2">
+                        {location ? <>
+                          <Input aria-label={stockIdentities.size === 1 ? `${location.name} on hand` : `${label} at ${location.name}`}
+                            inputMode="decimal" value={location.quantityOnHand} placeholder="Not counted" disabled={busy}
+                            onChange={event => {
+                              const quantityOnHand = event.target.value;
+                              setInventoryRows(rows => ({ ...rows, [id]: rows[id].map(row =>
+                                row.locationId === location.locationId ? { ...row, quantityOnHand } : row) }));
+                            }} />
+                          <Button type="button" size="sm" variant="outline" className="mt-2"
+                            aria-label={`Save ${label} at ${location.name}`}
+                            disabled={busy || !location.quantityOnHand.trim()} onClick={() => void perform(async () => {
+                              await request(`/api/admin/catalogue/inventory/${id}/locations/${location.locationId}/balance`, {
+                                method: "PUT", body: JSON.stringify({ quantityOnHand: location.quantityOnHand }),
+                              });
+                            })}>Save count</Button>
+                        </> : <span className="text-muted-foreground">Unavailable</span>}
+                      </td>;
+                    })}
+                  </tr>;
+                })}</tbody>
+              </table>
+            </div>}
+        </section>}
         <section className="rounded-xl border p-4 space-y-3">
           <h2 className="font-semibold">{embedded ? "Variants and inventory settings" : selected.name}</h2>
           {!embedded && <div className="flex gap-2"><label className="flex-1">Product name<Input value={editName} onChange={event => setEditName(event.target.value)} /></label>
@@ -439,7 +523,7 @@ export default function AdminCatalogueProducts({ catalogItemId, refreshKey }: { 
         </section>
         {selectedItemId && <section className="space-y-3 rounded-xl border p-4">
           <div>
-            <h2 className="font-semibold">Inventory by location</h2>
+            <h2 className="font-semibold">{embedded ? "Stock unit and location settings" : "Inventory by location"}</h2>
             <p className="text-xs text-muted-foreground">
               {selected.inventoryModel === "SHARED" ? "Shared inventory pool" : "Variant inventory"} #{selectedItemId}
             </p>
@@ -448,7 +532,7 @@ export default function AdminCatalogueProducts({ catalogItemId, refreshKey }: { 
             <Button disabled={busy} onClick={() => void perform(async () => {
               await request(`/api/admin/catalogue/inventory/${selectedItemId}`, { method: "PATCH", body: JSON.stringify({ baseUnit: editBaseUnit }) });
             })}>Save unit</Button></div>
-          {locations.length > 0 && <div className="overflow-x-auto rounded-lg border" tabIndex={0} aria-label="Location inventory columns">
+          {!embedded && locations.length > 0 && <div className="overflow-x-auto rounded-lg border" tabIndex={0} aria-label="Location inventory columns">
             <table className="w-full text-sm">
               <thead className="bg-muted/40"><tr><th scope="col" className="px-3 py-2 text-left">Stock</th>
                 {locations.map(location => <th key={location.locationId} scope="col" className="min-w-32 px-3 py-2 text-left">{location.name}</th>)}

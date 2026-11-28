@@ -196,7 +196,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           icon: PackageOpen,
           roles: ["global_admin", "admin", "supervisor"],
           children: [
-            { href: "/admin/catalogue-products", label: "Products & Variants", icon: PackageOpen, roles: ["supervisor"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
           ],
         },
@@ -225,7 +224,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
         { href: "/global-admin/integrations", label: "Platform Integrations", icon: PlugZap, roles: ["global_admin"] },
         { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "supervisor"] },
-        { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
         { href: "/admin/web-editor", label: "Web Editor", icon: Palette, roles: ["global_admin", "admin"] },
         {
           href: "/admin/settings",
