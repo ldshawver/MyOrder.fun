@@ -338,6 +338,23 @@ describe("customer catalogue visibility", () => {
     expect(response.body.items.find((item: { id: number }) => item.id === 4)?.isAvailable).toBe(true);
   });
 
+  it("excludes archived records and replacement aliases before paginating the admin shopping view", async () => {
+    actor.role = "admin";
+    rows.catalog = [
+      catalogRow(1, { metadata: { archived: true } }),
+      catalogRow(2, { metadata: { safeOnlyDuplicate: true } }),
+      catalogRow(3, { metadata: { mergedIntoCatalogItemId: 4 } }),
+      catalogRow(4),
+      catalogRow(5, { isAvailable: false }),
+    ];
+
+    const response = await supertest(app).get("/api/catalog?mode=alavont&limit=1&excludeArchived=true");
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.total).toBe(2);
+    expect(response.body.items.map((item: { id: number }) => item.id)).toEqual([4]);
+    expect(rows.selectedIds).toEqual([4, 5]);
+  });
+
   it("uses customer eligibility filters for an authorized admin preview without exposing restricted or admin-only rows", async () => {
     actor.role = "admin";
     rows.catalog = [

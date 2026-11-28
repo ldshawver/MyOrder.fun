@@ -996,7 +996,7 @@ export default function Catalog() {
     queryKey: ["listCatalogItems", search, category, menuMode, isCustomerPreview],
     initialPageParam: 1,
     queryFn: async ({ pageParam }): Promise<CatalogPage> => {
-      const query = new URLSearchParams({ limit: "200", page: String(pageParam), mode: menuMode === "lucifer" ? "lucifer" : "alavont" });
+      const query = new URLSearchParams({ limit: "200", page: String(pageParam), excludeArchived: "true", mode: menuMode === "lucifer" ? "lucifer" : "alavont" });
       if (isCustomerPreview) query.set("customerPreview", "true");
       if (search) query.set("search", search);
       if (category !== "all") query.set("category", category);

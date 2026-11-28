@@ -1,13 +1,20 @@
 import { and, sql } from "drizzle-orm";
 import { catalogItemsTable } from "@workspace/db";
 
+/** Keeps archived records and their replacement aliases out of shopping lists. */
+export function nonArchivedCatalogRows() {
+  return and(
+    sql`coalesce(${catalogItemsTable.metadata}->>'archived', 'false') <> 'true'`,
+    sql`coalesce(${catalogItemsTable.metadata}->>'safeOnlyDuplicate', 'false') <> 'true'`,
+    sql`${catalogItemsTable.metadata}->>'mergedIntoCatalogItemId' IS NULL`,
+  );
+}
+
 /** Sale eligibility is independent of stock display preferences and menu source. */
 export function publicCatalogEligibility() {
   return and(
-    sql`coalesce(${catalogItemsTable.metadata}->>'archived', 'false') <> 'true'`,
+    nonArchivedCatalogRows(),
     sql`coalesce(${catalogItemsTable.metadata}->>'complianceHold', 'false') <> 'true'`,
-    sql`coalesce(${catalogItemsTable.metadata}->>'safeOnlyDuplicate', 'false') <> 'true'`,
-    sql`${catalogItemsTable.metadata}->>'mergedIntoCatalogItemId' IS NULL`,
   );
 }
 

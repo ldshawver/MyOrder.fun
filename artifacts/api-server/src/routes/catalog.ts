@@ -19,7 +19,7 @@ import { requireTenantContext } from "../lib/tenantContext";
 import { hasSellableProductSchema, loadSellableProducts } from "../lib/catalogueSellable";
 import { resolveEmployeeUnitPrice } from "../lib/employeePricing";
 import { resolveEffectiveCatalogUnitPrice } from "../lib/checkoutNormalizer";
-import { publicCatalogEligibility } from "../lib/catalogEligibility";
+import { nonArchivedCatalogRows, publicCatalogEligibility } from "../lib/catalogEligibility";
 import { catalogAmountError } from "../lib/catalogPricing";
 
 import { holidayDisplay } from "../lib/holidayDecorations";
@@ -30,6 +30,7 @@ const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireCatalogReadAccess, requireTenantContext);
 
 const listCatalogItemsRequest = ListCatalogItemsQueryParams.extend({
+  excludeArchived: z.enum(["true", "false"]).optional().transform(value => value === "true"),
   customerPreview: z.enum(["true", "false"]).optional().transform(value => value === "true"),
 });
 
@@ -430,7 +431,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
 
   const tenantId = req.authorizedTenantId!;
   let rows = await db.select().from(catalogItemsTable)
-    .where(and(eq(catalogItemsTable.tenantId, tenantId), isCustomerView ? publicCatalogEligibility() : undefined))
+    .where(and(eq(catalogItemsTable.tenantId, tenantId), isCustomerView ? publicCatalogEligibility() : query.data.excludeArchived ? nonArchivedCatalogRows() : undefined))
     .orderBy(asc(catalogItemsTable.name));
 
   // Eligibility is enforced in SQL before search, counts, and pagination.
