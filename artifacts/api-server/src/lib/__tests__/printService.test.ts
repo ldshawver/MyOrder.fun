@@ -68,7 +68,7 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...values) => values),
   inArray: vi.fn((column, values) => ({ column, values })),
   lt: vi.fn((column, value) => ({ column, lt: value })),
-  sql: vi.fn(),
+  sql: vi.fn((parts: TemplateStringsArray) => ({ sql: parts.join("?") })),
 }));
 
 vi.mock("../logger", () => ({
@@ -113,6 +113,7 @@ describe("print job status integrity", () => {
       { column: "jobTenantId", value: 1 },
       { column: "jobId", value: 43 },
       { column: "status", values: ["queued", "retrying"] },
+      { sql: expect.stringContaining("o.pickup_at <= now() + interval '30 minutes'") },
     ]);
     expect(updateSets.at(-1)).toMatchObject({ status: "printed" });
   });

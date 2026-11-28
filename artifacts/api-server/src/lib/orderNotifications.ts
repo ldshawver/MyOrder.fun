@@ -11,14 +11,18 @@ const POLL_MS = 2_000;
 const IO_TIMEOUT_MS = 8_000;
 
 type SqlExecutor = { execute: (query: SQL) => Promise<unknown> };
-export async function enqueueOrderCreated(tx: SqlExecutor, tenantId: number, orderId: number, createdAt: Date): Promise<void> {
+export async function enqueueOrderCreated(tx: SqlExecutor, tenantId: number, orderId: number, createdAt: Date, scheduledPickupAt?: Date): Promise<void> {
   const inserted = await tx.execute(sql`INSERT INTO order_notification_events (tenant_id,order_id,event_type)
     VALUES (${tenantId},${orderId},'ORDER_CREATED') ON CONFLICT DO NOTHING RETURNING id`);
   const event = (Array.isArray(inserted) ? inserted : (inserted as { rows?: Array<{ id: string }> }).rows ?? [])[0] as { id: string } | undefined;
   if (!event) return;
-  await tx.execute(sql`INSERT INTO order_notification_jobs (tenant_id,event_id,order_id,notification_type)
-    SELECT ${tenantId},${event.id},${orderId},kind FROM (VALUES ('tuya_on'),('staff_sms')) AS kinds(kind)
+  const lightDueAt = new Date(Math.max(createdAt.getTime(), (scheduledPickupAt?.getTime() ?? 0) - 30 * 60_000));
+  await tx.execute(sql`INSERT INTO order_notification_jobs (tenant_id,event_id,order_id,notification_type,next_attempt_at)
+    SELECT ${tenantId},${event.id},${orderId},kind,
+      CASE WHEN kind='tuya_on' THEN ${lightDueAt.toISOString()}::timestamptz ELSE now() END FROM (VALUES ('tuya_on'),('staff_sms')) AS kinds(kind)
     ON CONFLICT DO NOTHING`);
+  // A future order must not extend the deadline of a currently lit alert.
+  if (lightDueAt > createdAt) return;
   await tx.execute(sql`INSERT INTO order_light_alerts (tenant_id,off_at,generation)
     SELECT ${tenantId},${createdAt}::timestamptz + (s.alert_duration_seconds * interval '1 second'),1
     FROM order_notification_settings s WHERE s.tenant_id=${tenantId} AND s.light_enabled=true
@@ -149,10 +153,11 @@ async function processLight(pool: pg.Pool, job: Job, providers: NotificationProv
     // Persist the durable OFF deadline before network I/O. Event creation time
     // makes retries idempotent: they cannot extend the alert window again.
     await client.query(`UPDATE order_light_alerts l SET
-      off_at=GREATEST(COALESCE(l.off_at,'-infinity'::timestamptz),e.created_at+($2::integer * interval '1 second')),
+      off_at=GREATEST(COALESCE(l.off_at,'-infinity'::timestamptz),GREATEST(e.created_at, CASE WHEN o.delivery_method='pickup' AND o.pickup_schedule_snapshot->>'mode'='scheduled'
+        THEN o.pickup_at - interval '30 minutes' END)+($2::integer * interval '1 second')),
       generation=l.generation+1,is_on=true,on_result=CASE WHEN l.is_on THEN l.on_result ELSE 'pending' END,
       off_next_attempt_at=NULL,updated_at=now()
-      FROM order_notification_events e WHERE l.tenant_id=$1 AND e.tenant_id=l.tenant_id AND e.id=$3`,
+      FROM order_notification_events e JOIN orders o ON o.id=e.order_id AND o.tenant_id=e.tenant_id WHERE l.tenant_id=$1 AND e.tenant_id=l.tenant_id AND e.id=$3`,
       [job.tenant_id, config.rows[0].alert_duration_seconds, job.event_id]);
     await client.query("COMMIT");
     if (needsOn) await providers.light(true);
@@ -215,12 +220,21 @@ export async function processOneNotificationJob(pool: pg.Pool, providers: Notifi
   await pool.query("UPDATE order_notification_jobs SET state='uncertain',failure_class='worker_restart_after_dispatch',lease_until=NULL,updated_at=now() WHERE state='processing' AND notification_type='staff_sms' AND lease_until<now()");
   const result = await pool.query<Job>(`UPDATE order_notification_jobs SET state='processing',attempts=attempts+1,lease_until=now()+interval '30 seconds',updated_at=now()
     WHERE id=(SELECT id FROM order_notification_jobs WHERE (state='queued' OR (state='processing' AND notification_type='tuya_on' AND lease_until<now()))
-      AND ($1::integer IS NULL OR tenant_id=$1) AND next_attempt_at<=now() ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`, [tenantFilter]);
+      AND ($1::integer IS NULL OR tenant_id=$1) AND next_attempt_at<=now()
+      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.id=order_notification_jobs.order_id AND o.tenant_id=order_notification_jobs.tenant_id
+        AND order_notification_jobs.notification_type='tuya_on' AND o.delivery_method='pickup'
+        AND o.pickup_schedule_snapshot->>'mode'='scheduled' AND o.pickup_at>now()+interval '30 minutes')
+      ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`, [tenantFilter]);
   const job = result.rows[0];
   if (!job) return false;
   try {
-    if (job.notification_type === "tuya_on") await processLight(pool, job, providers);
-    else await processSms(pool, job, providers);
+    if (job.notification_type === "tuya_on") {
+      const { rowCount } = await pool.query(`SELECT 1 FROM orders WHERE id=$1 AND tenant_id=$2
+        AND delivery_method='pickup' AND pickup_schedule_snapshot->>'mode'='scheduled'
+        AND status IN ('cancelled','refunded','archived','voided','completed')`, [job.order_id, job.tenant_id]);
+      if (rowCount) await finishJob(pool, job, "skipped", "order_closed");
+      else await processLight(pool, job, providers);
+    } else await processSms(pool, job, providers);
   } catch {
     await finishJob(pool, job, "failed", "worker_error");
   }

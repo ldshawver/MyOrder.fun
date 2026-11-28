@@ -26,6 +26,8 @@ export type StageOrder = {
   fulfillmentStatus?: string | null;
   createdAt: string | Date;
   updatedAt?: string | Date | null;
+  pickupAt?: string | Date | null;
+  pickupSchedule?: Record<string, unknown> | null;
   estimatedReadyAt?: string | Date | null;
   readyAt?: string | Date | null;
   serverNow?: string | Date | null;
@@ -91,9 +93,15 @@ export function CustomerOrderStage({ order }: { order: StageOrder }) {
   });
 
   const serverNow = Date.parse(asIso(order.serverNow) ?? "");
+  const pickupAt = asIso(stage?.pickupAt ?? order.pickupAt);
+  const scheduledPickup = (stage?.deliveryMethod ?? order.deliveryMethod) === "pickup"
+    && order.pickupSchedule?.mode === "scheduled" ? pickupAt : null;
+  const scheduledLabel = scheduledPickup && (typeof order.pickupSchedule?.localLabel === "string"
+    ? order.pickupSchedule.localLabel
+    : new Date(scheduledPickup).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
   const tracker = customerTracker({
     createdAt: asIso(order.createdAt) ?? new Date().toISOString(),
-    estimatedReadyAt: stage?.estimatedReadyAt ?? asIso(order.estimatedReadyAt),
+    estimatedReadyAt: scheduledPickup ?? stage?.estimatedReadyAt ?? asIso(order.estimatedReadyAt),
     readyAt: stage?.readyAt ?? asIso(order.readyAt),
     fulfillmentStatus: order.fulfillmentStatus,
     status: order.status,
@@ -107,12 +115,14 @@ export function CustomerOrderStage({ order }: { order: StageOrder }) {
   const accepted = Boolean(stage?.acceptedAt);
   const ready = tracker.phase === "ready" || state === "ready";
   const finished = tracker.phase === "completed" || state === "completed" || state === "delivered";
+  const waitingForPickup = scheduledLabel && !ready && !finished && tracker.phase !== "cancelled";
+  const stageMessage = waitingForPickup ? `Your order will be ready for pickup at ${scheduledLabel}.` : tracker.label;
   const preparing = accepted || ["in_progress", "preparing", "processing", "accepted"].includes(state);
   const preparer = stage?.preparerName || (accepted || preparing ? "Your specialist" : "Waiting for a specialist");
   const steps = [
     { id: "received", label: "Received", detail: "Your order is in." },
     { id: "started", label: "Started", detail: accepted || preparing ? `${preparer} is on it.` : "A specialist will start it." },
-    { id: "preparing", label: "Preparing", detail: tracker.label },
+    { id: "preparing", label: "Preparing", detail: stageMessage },
     { id: "ready", label: personal ? "Heading out" : uber ? "Driver" : "Ready", detail: personal ? "Your specialist brings it to you." : uber ? "Driver updates land here." : "Ready for pickup." },
     { id: "finish", label: finished ? "Complete" : delivery ? "On the way" : "Pickup", detail: finished ? "This order is finished." : delivery ? "On the way to you." : "Come pick it up." },
   ];
@@ -121,10 +131,6 @@ export function CustomerOrderStage({ order }: { order: StageOrder }) {
   const mins = Math.floor((remaining ?? 0) / 60000);
   const secs = Math.floor(((remaining ?? 0) % 60000) / 1000);
   const readyClock = clock(stage?.readyAt ?? asIso(order.readyAt)) ?? clock(stage?.estimatedReadyAt ?? asIso(order.estimatedReadyAt));
-  const pickupAtDate = stage?.pickupAt ? new Date(stage.pickupAt) : null;
-  const pickupClock = pickupAtDate && !Number.isNaN(pickupAtDate.getTime())
-    ? pickupAtDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
-    : null;
   const specialNotes = withoutGeneralQueueNote(stage ? stage.specialNotes : order.notes);
   const pickupInstructions = withoutGeneralQueueNote(stage?.pickupInstructions);
 
@@ -137,16 +143,16 @@ export function CustomerOrderStage({ order }: { order: StageOrder }) {
       `}</style>
       <div className="relative grid gap-8 lg:grid-cols-[280px_1fr]">
         <div className="flex flex-col items-center text-center">
-          <AnimatedHourglass size={230} message={tracker.label} progress={tracker.phase === "placed" && tracker.progress === 0 ? undefined : tracker.progress} />
+          <AnimatedHourglass size={230} message={stageMessage} progress={tracker.phase === "placed" && tracker.progress === 0 ? undefined : tracker.progress} />
           <div className="mt-2 w-full" data-testid="hourglass-countdown">
             <div className={`font-mono text-4xl font-bold tracking-tight ${tracker.phase === "overdue" ? "text-amber-300" : "text-primary"}`}>
-              {finished ? "Done" : ready ? "Ready" : remaining == null ? "15:00" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
+              {finished ? "Done" : ready ? "Ready" : waitingForPickup ? "Scheduled" : remaining == null ? "15:00" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
             </div>
             <p className="mt-1 text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
-              {finished ? "order complete" : ready ? "ready now" : remaining == null ? "starts when your order is accepted" : tracker.phase === "overdue" ? "finishing up" : "until ready"}
+              {finished ? "order complete" : ready ? "ready now" : waitingForPickup ? "pickup confirmed" : remaining == null ? "starts when your order is accepted" : tracker.phase === "overdue" ? "finishing up" : "until ready"}
             </p>
           </div>
-          <p className="mt-3 max-w-xs text-sm text-foreground/90" data-testid="customer-stage-message" role="status" aria-live="polite">{tracker.label}</p>
+          <p className="mt-3 max-w-xs text-sm text-foreground/90" data-testid="customer-stage-message" role="status" aria-live="polite">{stageMessage}</p>
         </div>
         <div className="space-y-4">
           <ol className="grid gap-2 sm:grid-cols-5" data-testid="customer-order-steps">
@@ -168,12 +174,11 @@ export function CustomerOrderStage({ order }: { order: StageOrder }) {
             <div className="rounded-2xl border border-border/40 bg-background/70 p-4">
               <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-primary"><UserRound size={13} /> Preparing</div>
               <div className="mt-1 text-lg font-semibold" data-testid="customer-preparer">{preparer}</div>
-              <p className="text-xs text-muted-foreground">{accepted || preparing ? "Accepted and in progress." : "The countdown starts when this order is accepted."}</p>
+              <p className="text-xs text-muted-foreground">{accepted || preparing ? "Accepted and in progress." : waitingForPickup ? "Preparation is scheduled." : "The countdown starts when this order is accepted."}</p>
             </div>
             <div className="rounded-2xl border border-border/40 bg-background/70 p-4">
               <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-primary"><Clock size={13} /> Ready</div>
-              <div className="mt-1 text-lg font-semibold" data-testid="customer-ready-time">{ready ? "Ready now" : readyClock ? `Around ${readyClock}` : "15 minutes after it starts"}</div>
-              {pickupClock && !delivery && <p className="text-xs text-muted-foreground">Scheduled pickup {pickupClock}</p>}
+              <div className="mt-1 text-lg font-semibold" data-testid="customer-ready-time">{finished ? "Order complete" : ready ? "Ready now" : waitingForPickup ? scheduledLabel : readyClock ? `Around ${readyClock}` : "15 minutes after it starts"}</div>
             </div>
             {pickupInstructions && (
               <div className="rounded-2xl border border-border/40 bg-background/70 p-4 sm:col-span-2" data-testid="customer-pickup-instructions">
