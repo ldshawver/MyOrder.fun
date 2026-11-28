@@ -489,13 +489,21 @@ router.get("/catalog", async (req, res): Promise<void> => {
     : await getLinkedInventoryStockByCatalogId(tenantId);
   const sellableByCatalogId = new Map<number, Awaited<ReturnType<typeof loadSellableProducts>>[number]>();
   if (sellableSchemaPresent) {
-    for (const product of await loadSellableProducts(tenantId, { isCurrentEmployee: employeeView })) {
+    const placeholders = new Set<number>();
+    const products = await loadSellableProducts(tenantId, { isCurrentEmployee: employeeView, includeInactiveOptionIds: true });
+    for (const { inactiveOptionCatalogIds, ...product } of products) {
+      for (const id of inactiveOptionCatalogIds ?? []) placeholders.add(id);
       for (const option of product.options) {
         sellableByCatalogId.set(option.catalogItemId, product);
         stockByCatalogId.set(option.catalogItemId,
           option.inventoryStatus === "ready" ? Number(option.availableQuantity ?? 0) : null);
+        if (product.inventoryModel === "SHARED" && option.inventoryCatalogItemId != null && option.inventoryCatalogItemId !== option.catalogItemId) {
+          placeholders.add(option.inventoryCatalogItemId);
+        }
       }
     }
+    // A backing row is not a card unless it is independently offered for sale.
+    rows = rows.filter(row => row.isAvailable || !placeholders.has(row.id) || sellableByCatalogId.has(row.id));
   }
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);

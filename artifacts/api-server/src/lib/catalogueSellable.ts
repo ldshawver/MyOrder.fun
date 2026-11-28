@@ -4,7 +4,7 @@ import { formatEmployeeUnitPrice } from "./employeePricing";
 import { resolveEffectiveCatalogUnitPrice } from "./checkoutNormalizer";
 import { formatRetailQuantity, groupSpecialStock, loadSpecialComponentRows, specialsAvailable } from "./specialComponents";
 
-type Product = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
+type Product = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean; inactiveOptionCatalogIds?: number[] };
 export type InventoryStatus = "ready" | "missing_identity" | "missing_balance";
 type Option = { id: number; productId: number; catalogItemId: number; inventoryItemId: number | null; inventoryCatalogItemId: number | null; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string | null; active: boolean; isAvailable: boolean; showCatalogueStockIndicator: boolean; inventoryStatus: InventoryStatus; balanceRowCount: number; stockOnHand: string | null; reservedQuantity: string | null; availableQuantity: string | null; orderable: boolean; components?: Array<{ name: string; label: string; quantity: string }> };
 export type SellableProduct = Product & { options: Option[] };
@@ -210,10 +210,15 @@ export async function hasSellableProductSchema(): Promise<boolean> {
 }
 
 /** The customer card and options endpoint use the same tenant-scoped option set. */
-export async function loadSellableProducts(tenantId: number, pricing?: { isCurrentEmployee?: boolean }): Promise<SellableProduct[]> {
+export async function loadSellableProducts(tenantId: number, pricing?: { isCurrentEmployee?: boolean; includeInactiveOptionIds?: boolean }): Promise<SellableProduct[]> {
   const products = rows<Product>(await db.execute(sql`
     SELECT id, tenant_id AS "tenantId", name, inventory_model AS "inventoryModel",
       location_evaluation AS "locationEvaluation", active
+      ${pricing?.includeInactiveOptionIds ? sql`, ARRAY(
+        SELECT co.catalog_item_id FROM catalogue_options co
+        WHERE co.tenant_id = catalogue_products.tenant_id AND co.product_id = catalogue_products.id
+          AND co.active = false
+      ) AS "inactiveOptionCatalogIds"` : sql``}
     FROM catalogue_products WHERE tenant_id = ${tenantId} AND active = true ORDER BY id
   `));
   const options = rows<Option>(await db.execute(sql`

@@ -173,6 +173,33 @@ describe("customer catalogue visibility", () => {
       .toEqual([[179, "Small"], [180, "Medium"], [181, "Large"]]);
   });
 
+  it("omits inactive parents and inventory-only shared records while preserving variant options", async () => {
+    rows.catalog = [
+      catalogRow(26, { name: "Burner stem", isAvailable: false }),
+      catalogRow(441, { name: "Burner stem regular" }),
+      catalogRow(442, { name: "Burner stem colored" }),
+      catalogRow(416, { name: "Tina small" }),
+      catalogRow(417, { name: "Tina large" }),
+      catalogRow(1885, { name: "Tina shared grams", isAvailable: false }),
+      catalogRow(1890, { name: "Unrelated unavailable item", isAvailable: false }),
+    ];
+    rows.products = [
+      { id: 26, tenantId: 1, name: "Burner stem", active: true, inventoryModel: "SEPARATE_VARIANTS", inactiveOptionCatalogIds: [26] },
+      { id: 6, tenantId: 1, name: "Tina", active: true, inventoryModel: "SHARED" },
+    ];
+    const option = (catalogItemId: number, productId: number, inventoryCatalogItemId: number) => ({
+      id: catalogItemId, catalogItemId, productId, inventoryCatalogItemId, label: String(catalogItemId),
+      price: "10.00", sku: null, isAvailable: true, orderable: true, showCatalogueStockIndicator: true, inventoryStatus: "ready",
+    });
+    rows.options = [option(441, 26, 441), option(442, 26, 442), option(416, 6, 1885), option(417, 6, 1885)];
+    const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont");
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.items.map((item: { id: number }) => item.id).sort((a: number, b: number) => a - b))
+      .toEqual([416, 417, 441, 442, 1890]);
+    expect(response.body.items.find((item: { id: number }) => item.id === 416).sellableProduct.options)
+      .toMatchObject([{ catalogItemId: 416, orderable: true }, { catalogItemId: 417, orderable: true }]);
+  });
+
   it.each([true, false])("keeps an unavailable item visible when its stock indicator is %s", async (showIndicator) => {
     rows.catalog = [catalogRow(186, { isAvailable: false, metadata: { showCatalogueStockIndicator: showIndicator } })];
     rows.products = [{ id: 181, tenantId: 1, name: "Tina", active: true }];
