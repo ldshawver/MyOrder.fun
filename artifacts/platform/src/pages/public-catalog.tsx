@@ -76,7 +76,7 @@ export default function PublicCatalog() {
       <nav aria-label="Account"><Link href="/waitlist">BECOME A MEMBER</Link><Link href="/sign-in">SIGN IN</Link></nav>
     </header>
     <main className="pc-main">
-      <div className="pc-heading">
+      <div className="pc-heading holiday-catalog-heading">
         <span>CURATED FOR THE CURIOUS · 18+</span>
         <h1>THE ADULT BOUTIQUE</h1>
         <p>Explore the Lucifer Cruz collection.</p>

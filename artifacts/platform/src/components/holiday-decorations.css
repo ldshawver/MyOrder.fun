@@ -62,21 +62,73 @@
   box-shadow: inset 0 0 .75rem color-mix(in srgb, var(--holiday-color) 45%, transparent);
   background: linear-gradient(to top, color-mix(in srgb, var(--holiday-secondary) 45%, transparent), transparent 5%);
 }
-[data-holiday="christmas"] .holiday-product-image::after {
-  background: radial-gradient(ellipse at bottom left, #edfaffc0 0, transparent 23%),
-    radial-gradient(ellipse at top right, #d6f3ffad 0, transparent 19%),
-    radial-gradient(circle at 10% 10%, #edfdff 0 1px, transparent 3px),
-    radial-gradient(circle at 90% 88%, #edfdff 0 2px, transparent 4px);
+/* Lighting follows the top edge of the existing heading without shifting the layout. */
+[data-holiday="christmas"] .holiday-catalog-heading { position: relative; }
+[data-holiday="christmas"] .holiday-catalog-heading::before {
+  content: "";
+  position: absolute;
+  z-index: 9;
+  inset: 0 0 auto;
+  height: .65rem;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 25% 70%, #ff9fab 0 2px, #ff45666b 3px, transparent 5px) 0 0 / 3rem 100%,
+    radial-gradient(circle at 75% 65%, #fff2b2 0 2px, #ffcf646e 3px, transparent 5px) 0 0 / 3rem 100%,
+    repeating-linear-gradient(125deg, #184534 0 4px, #28694d 4px 8px, #13392c 8px 12px);
+  box-shadow: 0 .15rem .45rem #0a2419a6;
 }
+[data-holiday="christmas"] .holiday-product-image::after {
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 2px #ecfaffc4, inset 0 0 1.1rem #c9efff99;
+  background:
+    radial-gradient(ellipse at bottom left, #f4fcffea, transparent 31%),
+    radial-gradient(ellipse at top right, #e4f7ffdf, transparent 27%),
+    radial-gradient(circle at 10% 10%, #edfdff 0 2px, transparent 4px),
+    radial-gradient(circle at 90% 88%, #edfdff 0 3px, transparent 5px);
+}
+[data-holiday="christmas"] .holiday-product-image::before {
+  content: "❄" / "";
+  position: absolute;
+  top: .3rem;
+  right: .35rem;
+  z-index: 2;
+  pointer-events: none;
+  color: #f4fcff;
+  font-size: clamp(.8rem, 2.1vw, 1.2rem);
+  line-height: 1;
+  text-shadow: 0 1px 3px #28698b;
+}
+.holiday-layer[data-theme="christmas"] .holiday-corner {
+  bottom: max(4.6rem, calc(env(safe-area-inset-bottom) + .5rem));
+  margin-inline: .25rem;
+  opacity: .85;
+  text-shadow: 0 1px 7px #143e33;
+}
+.holiday-layer[data-theme="christmas"][data-preview] .holiday-corner { bottom: .5rem; }
+.holiday-layer[data-theme="christmas"] .holiday-particle {
+  top: -1.25rem;
+  right: auto;
+  left: 6%;
+  font-size: clamp(.65rem, 1.5vw, 1rem);
+  text-shadow: 0 1px 3px #407091;
+  animation-duration: 20s;
+  animation-delay: -3s;
+  animation-iteration-count: infinite;
+}
+.holiday-layer[data-theme="christmas"] .holiday-particle:nth-of-type(3n) { left: 18%; animation-delay: -15s; }
+.holiday-layer[data-theme="christmas"] .holiday-particle:nth-of-type(3n + 1) { left: 82%; animation-delay: -9s; }
+.holiday-layer[data-theme="christmas"] .holiday-particle:nth-of-type(3n + 2) { left: 94%; animation-delay: -12s; }
+.holiday-layer[data-theme="christmas"] .holiday-particle:nth-of-type(5n) { left: 32%; animation-delay: -7s; }
+.holiday-layer[data-theme="christmas"] .holiday-particle:nth-of-type(7n) { left: 68%; animation-delay: -17s; }
+
 [data-holiday="easter"] .holiday-product-image::after {
   border-bottom: .25rem solid color-mix(in srgb, var(--holiday-color) 65%, transparent);
 }
-@media (prefers-reduced-motion: reduce) {
-  .holiday-particle { display: none; animation: none; }
-}
 @media (max-width: 640px) {
-  .holiday-particle:nth-child(n + 7) { display: none; }
+  .holiday-layer:not([data-theme="christmas"]) .holiday-particle:nth-child(n + 7),
+  .holiday-layer[data-theme="christmas"] .holiday-particle:nth-child(n + 10) { display: none; }
   .holiday-corner { opacity: .33; }
+  .holiday-layer[data-theme="christmas"] .holiday-corner { font-size: 1.3rem; }
 }
 .holiday-layer[data-theme="independence"] .holiday-corner-left { color: #ff6a73; }
 .holiday-layer[data-theme="independence"] .holiday-corner-right { color: #8eb4ff; }
@@ -106,4 +158,8 @@
 .holiday-layer[data-theme="thanksgiving"] .holiday-corner {
   opacity: .85;
   text-shadow: 0 1px 3px #54200f;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .holiday-layer .holiday-particle { display: none; animation: none; }
 }

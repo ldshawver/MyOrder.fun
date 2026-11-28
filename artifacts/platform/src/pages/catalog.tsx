@@ -1071,7 +1071,7 @@ export default function Catalog() {
         Read-only customer preview. Customer eligibility filters are applied; ordering and product editing are disabled.
       </div>}
       {/* Hero/header: banner sits behind the title and brand buttons. */}
-      <div className="relative aspect-[3/1] w-full overflow-hidden rounded-3xl border border-border/30 bg-background/95 catalog-hero" data-testid="catalog-hero-banner">
+      <div className="relative aspect-[3/1] w-full overflow-hidden rounded-3xl border border-border/30 bg-background/95 catalog-hero holiday-catalog-heading" data-testid="catalog-hero-banner">
         {!isLC && (
           <div className="absolute inset-0 z-0">
             {getSafeImageSources(bannerImages).map((src, index) => (

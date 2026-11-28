@@ -32,6 +32,8 @@ it("shares one decoration request across catalog, product and checkout without r
       await vi.waitFor(() => expect(client.getQueryData(["holiday-decorations", "customer", null])).toBeDefined());
     });
     expect(container.querySelector("[data-holiday]")?.getAttribute("data-holiday")).toBe("christmas");
+    expect(container.querySelectorAll(".holiday-particle")).toHaveLength(14);
+    expect(container.querySelector(".holiday-layer")?.textContent).toContain("🎄");
     for (const path of ["/catalog/12", "/cart", "/checkout"]) {
       await act(async () => location.navigate(path));
       expect(container.querySelector("[data-products]")).toBe(grid);
