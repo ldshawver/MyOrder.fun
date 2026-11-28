@@ -10,7 +10,7 @@
  *  - decideRouting → general_account fallback when no active CSR
  *  - decideRouting → active_csr with assignedShiftId for the picked CSR
  *  - round_robin distributes to the CSR with the oldest routedAt
- *  - supervisor_manual_assignment never auto-routes
+ *  - supervisor_manual_assignment falls back to round robin during active CSR shifts
  *  - default ETA of 30 minutes from admin_settings.defaultEtaMinutes
  *  - supervisor ETA adjustment emits order.updated with etaAdjustedBySupervisor=true
  *  - SSE filters: admin (all), CSR (own + null fallback), customer (own customerId)
@@ -179,16 +179,17 @@ describe("decideRouting", () => {
     expect(r.routeSource).toBe("active_csr");
   });
 
-  it("supervisor_manual_assignment with multiple active CSRs sits in the General Account queue", async () => {
+  it("supervisor_manual_assignment with multiple active CSRs routes to a shift", async () => {
     adminSettings.orderRoutingRule = "supervisor_manual_assignment";
     activeCsrUsers = [
       { userId: 42, shiftId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
       { userId: 43, shiftId: 8, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
     ];
     const r = await decideRouting(1);
-    expect(r.assignedCsrUserId).toBeNull();
-    expect(r.routeSource).toBe("general_account");
-    expect(r.rule).toBe("supervisor_manual_assignment");
+    expect(r.assignedCsrUserId).toBe(42);
+    expect(r.assignedShiftId).toBe(7);
+    expect(r.routeSource).toBe("active_csr");
+    expect(r.rule).toBe("round_robin");
   });
 
   it("supervisor_manual_assignment with exactly one active CSR still routes to that CSR", async () => {

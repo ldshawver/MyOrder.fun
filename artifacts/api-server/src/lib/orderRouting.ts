@@ -206,7 +206,7 @@ export async function decideRouting(tenantId: number): Promise<RoutingDecision> 
   //    (info@adiken.com) by leaving assignedCsrUserId/shiftId null.
   // 4. If one ready CSR remains, route directly to that CSR.
   // 5. If multiple ready CSRs remain, use the configured strategy:
-  //    supervisor_manual_assignment => General Account/manual queue;
+  //    manual/general-queue configurations use round-robin during active shifts;
   //    least_recent_order => least recently accepted order;
   //    round_robin/default => least recently routed order.
   // general_account always carries assignedShiftId=null — the order is unowned,
@@ -247,27 +247,11 @@ export async function decideRouting(tenantId: number): Promise<RoutingDecision> 
     };
   }
 
-  if (rule === "supervisor_manual_assignment") {
-    return { ...baseGeneral, rule };
-  }
-
-  const approved = tenantId ? await getApprovedMultiShiftConfig(tenantId) : ({ routingStrategy: rule } as { routingStrategy: string });
-  // POS acceptance rule: active CSR shifts should receive orders even when an
-  // explicit multi-shift approval row has not been created yet. Falling back to
-  // round_robin prevents orders from landing in the General Queue while active,
-  // clocked-in, boxed CSRs are available.
-  const activeConfig = approved ?? ({ routingStrategy: rule === "least_recent_order" ? "least_recent_order" : "round_robin" } as { routingStrategy: string });
-  const approvedRule = activeConfig.routingStrategy === "default_queue" || activeConfig.routingStrategy === "manual" ? "supervisor_manual_assignment" : "round_robin";
-  if (approvedRule === "supervisor_manual_assignment") {
-    return { ...baseGeneral, rule: approvedRule, routingMessage: "Multiple active CSR shifts approved; orders are routing to default queue/manual assignment." };
-  }
-
+  const approved = await getApprovedMultiShiftConfig(tenantId);
+  const configuredStrategy = approved?.routingStrategy ?? rule;
+  const routingRule = configuredStrategy === "default_queue" || configuredStrategy === "manual" || configuredStrategy === "supervisor_manual_assignment"
+    ? "round_robin" : configuredStrategy;
   let pick: ActiveCsr;
-
-  if (activeConfig.routingStrategy === "round_robin" || activeConfig.routingStrategy === "geo" || activeConfig.routingStrategy === "pickup_delivery") {
-    // Current data model does not yet have geo/pickup buckets; use a fair
-    // round-robin fallback while preserving the approved strategy on orders.
-  }
   if (rule === "least_recent_order") {
     const stats = await db
       .select({
@@ -311,7 +295,7 @@ export async function decideRouting(tenantId: number): Promise<RoutingDecision> 
     routedToEmail: null,
     routingStatus: "green",
     routingMessage: "Orders are routing across approved active CSR shifts.",
-    rule: activeConfig.routingStrategy as RoutingRule,
+    rule: routingRule as RoutingRule,
     estimatedReadyAt: eta,
     promisedMinutes: defaultEtaMinutes,
   };

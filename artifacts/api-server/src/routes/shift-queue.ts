@@ -1,3 +1,4 @@
+import { hasClockedInCsrShift, lockQueueOperatingMode } from "../lib/queueOperatingMode";
 import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter } from "express";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
@@ -104,6 +105,7 @@ async function latestRoutingConfig(tenantId: number) {
 router.get("/shift-queue/status", requirePermission("queue.view"), async (req, res): Promise<void> => {
   const tenantId = req.authorizedTenantId!;
   const shifts = await listActiveCsrs(tenantId);
+  const hasActiveShift = shifts.length > 0 || await hasClockedInCsrShift(tenantId);
   const config = await latestRoutingConfig(tenantId);
   const current = shifts.sort((a, b) => new Date(b.clockedInAt).getTime() - new Date(a.clockedInAt).getTime())[0];
   const [operator] = current ? await db.select({
@@ -120,7 +122,7 @@ router.get("/shift-queue/status", requirePermission("queue.view"), async (req, r
   const approved = config?.allowMultipleActiveShifts === true && !!config.routingStrategy;
   const generalQueueSession = await currentGeneralQueueSession(tenantId);
   let health: "green" | "yellow" = "green";
-  let message = activeShift ? `Orders are routing to active CSR: ${`${activeShift.firstName ?? ""} ${activeShift.lastName ?? ""}`.trim() || activeShift.email || "staff member"}. Shift active for ${Math.floor(activeDurationSeconds / 3600)}h ${Math.floor((activeDurationSeconds % 3600) / 60)}m.` : "General Queue Active";
+  let message = activeShift ? `Orders are routing to active CSR: ${`${activeShift.firstName ?? ""} ${activeShift.lastName ?? ""}`.trim() || activeShift.email || "staff member"}. Shift active for ${Math.floor(activeDurationSeconds / 3600)}h ${Math.floor((activeDurationSeconds % 3600) / 60)}m.` : hasActiveShift ? "A CSR shift is active and needs routing setup." : "General Queue Active";
   if (!activeShift) health = "yellow";
   if (multiple && !approved) {
     health = "yellow";
@@ -130,6 +132,7 @@ router.get("/shift-queue/status", requirePermission("queue.view"), async (req, r
     health,
     message,
     activeShift,
+    hasActiveShift,
     activeDurationSeconds,
     activeCsr: activeShift ? { id: activeShift.techId, firstName: activeShift.firstName, lastName: activeShift.lastName, email: activeShift.email } : null,
     generalQueueSession: generalQueueSession ? { id: generalQueueSession.id, status: generalQueueSession.status, openedAt: generalQueueSession.openedAt, locationId: generalQueueSession.locationId, registerBoxId: generalQueueSession.registerBoxId } : null,
@@ -192,8 +195,11 @@ router.get("/shift-queue/general/session", requirePermission("cash_sessions.view
   const tenantId = req.authorizedTenantId!;
   const requestedLocationId = req.query.locationId == null ? undefined : Number(req.query.locationId);
   if (requestedLocationId != null && !Number.isInteger(requestedLocationId)) { res.status(400).json({ error: "Invalid location" }); return; }
-  const session = await currentGeneralQueueSession(tenantId, requestedLocationId);
-  if (!session) { res.json({ session: null, participants: [] }); return; }
+  const [session, hasActiveShift] = await Promise.all([
+    currentGeneralQueueSession(tenantId, requestedLocationId),
+    hasClockedInCsrShift(tenantId),
+  ]);
+  if (!session) { res.json({ session: null, participants: [], hasActiveShift }); return; }
   const participants = await db.select({
     id: usersTable.id, firstName: usersTable.firstName, lastName: usersTable.lastName,
     email: usersTable.email, joinedAt: generalQueueCashSessionParticipantsTable.joinedAt,
@@ -230,6 +236,7 @@ router.get("/shift-queue/general/session", requirePermission("cash_sessions.view
       expectedClosingCash: (Number(session.openingBalance) + accountableCash).toFixed(2),
     },
     participants,
+    hasActiveShift,
   });
 });
 
@@ -264,7 +271,7 @@ router.post("/shift-queue/general/session/open", requirePermission("cash_session
   const tenantId = req.authorizedTenantId!;
   try {
     const session = await db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${parsed.data.locationId})`);
+      await lockQueueOperatingMode(tx, tenantId);
       const [location] = await tx.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.id, parsed.data.locationId), eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))).limit(1);
       if (!location) return { kind: "invalid" as const };
       let register: typeof csrBoxesTable.$inferSelect | null = null;
@@ -277,12 +284,14 @@ router.post("/shift-queue/general/session/open", requirePermission("cash_session
         const same = replay.locationId === location.id && replay.registerBoxId === (register?.id ?? null) && Number(replay.openingBalance) === parsed.data.openingBalance;
         return same ? { kind: "replay" as const, session: replay } : { kind: "key_conflict" as const, session: replay };
       }
+      if (await hasClockedInCsrShift(tenantId, tx)) return { kind: "shift_active" as const };
       const [existing] = await tx.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.locationId, location.id), eq(generalQueueCashSessionsTable.status, "open"))).limit(1);
       if (existing) return { kind: "open_conflict" as const, session: existing };
       const [created] = await tx.insert(generalQueueCashSessionsTable).values({ tenantId, locationId: location.id, registerBoxId: register?.id ?? null, openedByUserId: actor.id, openingBalance: parsed.data.openingBalance.toFixed(2), openIdempotencyKey: parsed.data.idempotencyKey }).returning();
       await tx.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "GENERAL_QUEUE_SESSION_OPENED", resourceType: "general_queue_session", resourceId: String(created.id), metadata: { locationId: location.id, registerBoxId: register?.id ?? null, openingBalance: parsed.data.openingBalance } });
       return { kind: "created" as const, session: created };
     });
+    if (session.kind === "shift_active") { res.status(409).json({ error: "General Queue is paused while a CSR shift is active" }); return; }
     if (session.kind === "invalid") { res.status(422).json({ error: "The location or optional register is not authorized for this tenant" }); return; }
     if (session.kind === "key_conflict") { res.status(409).json({ error: "Idempotency key was already used for a different request" }); return; }
     if (session.kind === "open_conflict") { res.status(409).json({ error: "An active General Queue cash session already exists for this location", conflict: { sessionId: session.session.id, locationId: session.session.locationId } }); return; }

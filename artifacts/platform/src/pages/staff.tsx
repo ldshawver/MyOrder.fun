@@ -20,6 +20,7 @@ import { staffFulfillmentAction, STAFF_FULFILLMENT_STATUSES, staffVisibleFulfill
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
 type GeneralQueueSessionState = {
+  hasActiveShift?: boolean;
   session: { id: number; status: string; openedAt: string; openingBalance: string; locationId: number; registerBoxId: number | null; locationName?: string; registerLabel?: string | null; accountableCash?: string; expectedClosingCash?: string; opener?: { firstName?: string | null; lastName?: string | null; email?: string | null } | null } | null;
   participants: { id: number; firstName?: string | null; lastName?: string | null; email?: string | null; joinedAt: string }[];
 };
@@ -1223,7 +1224,7 @@ function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
               </span>
             )}
             <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-border/50">
-              {order.assignedCsrUserId ? `Claimed by agent ${order.assignedCsrUserId}` : "Unassigned · General Queue"}
+              {order.assignedCsrUserId ? `Claimed by agent ${order.assignedCsrUserId}` : "Unassigned"}
             </span>
             {fulfillment && (
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-primary/20 bg-primary/10 text-primary capitalize">
@@ -1527,6 +1528,7 @@ function CustomerServiceRepQueueContent() {
     }
   }, [canManageGeneralSession, getToken]);
 
+  const generalQueuePaused = Boolean(shift || generalSession.hasActiveShift);
   const safeOrders = safeArray<ExtendedOrder>(queueData.orders);
   const visibleOrders = safeOrders.filter(order => {
     const lifecycle = order.fulfillmentStatus ?? (order.status === "pending" ? "submitted" : order.status === "processing" ? "preparing" : order.status);
@@ -1561,10 +1563,12 @@ function CustomerServiceRepQueueContent() {
   }, [fetchGeneralSession, fetchQueue, shift]);
 
   useEffect(() => {
-    if (!shift) return;
-    const timer = setInterval(() => { refetchShift(); void fetchQueue(); }, 30_000);
+    const timer = setInterval(() => {
+      void fetchGeneralSession();
+      if (shift) { refetchShift(); void fetchQueue(); }
+    }, 30_000);
     return () => clearInterval(timer);
-  }, [shift, refetchShift, fetchQueue]);
+  }, [shift, refetchShift, fetchQueue, fetchGeneralSession]);
 
   const handleClockIn = async (snapshot: InventorySnapshot[], cashBankStart: number, setup: ShiftSetup) => {
     const token = await getToken();
@@ -1719,15 +1723,15 @@ function CustomerServiceRepQueueContent() {
         <CsrAlertBanner currentUserId={user.id} onAccepted={refresh} />
       )}
 
-      <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-4" data-testid="general-queue-management">
+      {(!shiftLoading && (!generalQueuePaused || (canManageGeneralSession && generalSession.session))) && <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-4" data-testid="general-queue-management">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="font-semibold">View General Queue</h2>
+            <h2 className="font-semibold">{generalQueuePaused ? "Reconcile prior General Queue cash" : "View General Queue"}</h2>
             <p className="text-xs text-muted-foreground mt-1">
               Cash session: <span className={generalSession.session ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"}>{generalSession.session ? "Open" : "No open cash session"}</span>
             </p>
           </div>
-          {generalSession.session && isCsrOnly && !generalSession.participants.some(participant => participant.id === user?.id) && <Button size="sm" onClick={() => void joinGeneralQueueSession()} data-testid="button-join-general-session">Join Cash Session</Button>}
+          {!generalQueuePaused && generalSession.session && isCsrOnly && !generalSession.participants.some(participant => participant.id === user?.id) && <Button size="sm" onClick={() => void joinGeneralQueueSession()} data-testid="button-join-general-session">Join Cash Session</Button>}
         </div>
         {generalSession.session ? (
           <div className="space-y-3">
@@ -1748,12 +1752,12 @@ function CustomerServiceRepQueueContent() {
             </div>
             {canManageGeneralSession && (
               <div className="space-y-2 max-w-xl">
-                <div className="flex gap-2">
+                {!generalQueuePaused && <div className="flex gap-2">
                   <select className="h-10 flex-1 rounded-md border bg-background px-3 text-sm" value={selectedParticipantId} onChange={event => setSelectedParticipantId(event.target.value)} aria-label="Eligible CSR">
                     {sessionOptions.eligibleCsrs.filter(csr => !generalSession.participants.some(participant => participant.id === csr.id)).map(csr => <option key={csr.id} value={csr.id}>{`${csr.firstName ?? ""} ${csr.lastName ?? ""}`.trim() || csr.email || `CSR ${csr.id}`}</option>)}
                   </select>
                   <Button variant="outline" onClick={() => void manageParticipant("POST", Number(selectedParticipantId))} disabled={!selectedParticipantId}>Add Participant</Button>
-                </div>
+                </div>}
                 <div className="grid gap-2 sm:grid-cols-2">
                   <Input inputMode="decimal" placeholder="Counted cash" value={closingBalance} onChange={event => setClosingBalance(event.target.value)} />
                   <Input placeholder="Discrepancy reason (required above threshold)" value={discrepancyReason} onChange={event => setDiscrepancyReason(event.target.value)} />
@@ -1780,7 +1784,7 @@ function CustomerServiceRepQueueContent() {
         )}
         {sessionMessage && <p className="text-xs text-muted-foreground">{sessionMessage}</p>}
         {generalSessionLoadError && <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs"><span>{generalSessionLoadError}</span><Button size="sm" variant="outline" onClick={() => void fetchGeneralSession()}>Retry</Button></div>}
-      </section>
+      </section>}
 
       {/* Shift panel */}
       {isStaff && (

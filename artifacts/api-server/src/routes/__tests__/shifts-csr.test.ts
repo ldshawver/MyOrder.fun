@@ -55,6 +55,7 @@ vi.mock("@workspace/db", () => {
   const inventoryLocationsTable = { id: "id_col", tenantId: "tenantId_col", name: "name_col", type: "type_col", isActive: "isActive_col", displayOrder: "displayOrder_col" };
   const inventoryBalancesTable = { id: "id_col", tenantId: "tenantId_col", productId: "productId_col", locationId: "locationId_col", quantityOnHand: "quantityOnHand_col", inventoryKind: "inventoryKind_col", quarantineStatus: "quarantineStatus_col", quarantineReason: "quarantineReason_col" };
   const adminSettingsTable = {};
+  const generalQueueCashSessionsTable = { id: "session-id", tenantId: "session-tenant", status: "session-status" };
   const cashLedgerEntriesTable = { tenantId: "tenantId_col", shiftId: "shiftId_col", entryType: "entryType_col", amount: "amount_col" };
 
   const db = {
@@ -87,7 +88,7 @@ vi.mock("@workspace/db", () => {
     delete: vi.fn(),
   };
 
-  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, catalogItemsTable, ordersTable, orderItemsTable, auditLogsTable, csrBoxesTable, inventoryLocationsTable, inventoryBalancesTable, adminSettingsTable, cashLedgerEntriesTable };
+  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, catalogItemsTable, ordersTable, orderItemsTable, auditLogsTable, csrBoxesTable, inventoryLocationsTable, inventoryBalancesTable, adminSettingsTable, cashLedgerEntriesTable, generalQueueCashSessionsTable };
 });
 
 vi.mock("drizzle-orm", () => ({
@@ -104,7 +105,7 @@ vi.mock("../../lib/logger", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), child: vi.fn(() => ({ info: vi.fn(), error: vi.fn() })) },
 }));
 
-import { db } from "@workspace/db";
+import { db, csrBoxesTable, generalQueueCashSessionsTable } from "@workspace/db";
 import shiftsRouter from "../shifts";
 
 function makeUser(role: string, status: string = "pending", isActive = true, tenantId: number | null = 1) {
@@ -117,10 +118,14 @@ function makeUser(role: string, status: string = "pending", isActive = true, ten
  *   call 2 = active-shift lookup (clock-in / clock-out)
  *   call 3+ = empty (orders / inventory snapshot lookups)
  */
-function configureDb(opts: { user: ReturnType<typeof makeUser> | null; activeShift?: unknown; emptyThirdSelect?: boolean; correctionRows?: unknown[] }) {
+function configureDb(opts: { user: ReturnType<typeof makeUser> | null; activeShift?: unknown; emptyThirdSelect?: boolean; correctionRows?: unknown[]; openGeneralSession?: boolean }) {
   let n = 0;
   (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
     n++;
+    if (opts.openGeneralSession && n > 1) return {
+      from: (table: unknown) => makeChain(table === generalQueueCashSessionsTable ? [{ id: 5 }]
+        : table === csrBoxesTable ? [{ id: 1, tenantId: 1, slug: "sales-box-1", isActive: true }] : []),
+    };
     if (n === 1) return makeChain(opts.user ? [opts.user] : []);
     if (n === 2 && opts.activeShift) return makeChain([opts.activeShift]);
     if (n === 3 && opts.correctionRows) return makeChain(opts.correctionRows);
@@ -164,6 +169,15 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ boxAssignmentId: "sales-box-1", setup: { wifiReady: true, printerReady: true, locationReady: true } });
     expect(res.status).toBe(201);
     expect(res.body.shift).toBeDefined();
+  });
+
+  it("requires reconciliation of open General Queue cash before clock-in", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved"), emptyThirdSelect: true, openGeneralSession: true });
+    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({
+      boxAssignmentId: "sales-box-1", setup: { wifiReady: true, printerReady: true, locationReady: true },
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Reconcile and close");
   });
 
   it("duplicate clock-in returns 200 with existing shift instead of erroring", async () => {

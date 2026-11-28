@@ -1,3 +1,4 @@
+import { lockQueueOperatingMode } from "../lib/queueOperatingMode";
 import { customerVisibleNote } from "../lib/orderStage";
 import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
@@ -18,6 +19,7 @@ import {
   shiftRoutingConfigTable,
   printJobsTable,
   cashLedgerEntriesTable,
+  generalQueueCashSessionsTable,
   shiftCloseoutPackagesTable,
   commissionSnapshotsTable,
   shiftEarningLinesTable,
@@ -1369,6 +1371,13 @@ router.post(
     const hasAssignedPrinter = setup?.printerReady === true;
 
     const shiftResult = await db.transaction(async tx => {
+      await lockQueueOperatingMode(tx, tenantId);
+      const [openSession] = await tx.select({ id: generalQueueCashSessionsTable.id })
+        .from(generalQueueCashSessionsTable).where(and(
+          eq(generalQueueCashSessionsTable.tenantId, tenantId),
+          eq(generalQueueCashSessionsTable.status, "open"),
+        )).limit(1);
+      if (openSession) return { openSession } as const;
       await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${selectedBoxRow.id})`);
       const [occupied] = await tx.select({ id: labTechShiftsTable.id, techId: labTechShiftsTable.techId })
         .from(labTechShiftsTable).where(and(
@@ -1406,6 +1415,7 @@ router.post(
       }).returning();
       return { created } as const;
     });
+    if ("openSession" in shiftResult) { res.status(409).json({ error: "Reconcile and close the General Queue cash session before starting a CSR shift" }); return; }
     if ("occupied" in shiftResult) { res.status(409).json({ error: "This CSR box is already checked out" }); return; }
     const shift = shiftResult.created;
 

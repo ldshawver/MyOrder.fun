@@ -860,9 +860,6 @@ operationalDescribe("POS opening-manager operational flow", () => {
     expect((await as("outsider").post(`/api/shift-queue/general/session/${sessionId}/join`).send({})).status).toBe(404);
     expect((await as("outsider").post("/api/shift-queue/general/session/open").send({ registerBoxId: box.id, locationId: location.id, openingBalance: 0, idempotencyKey: "outsider-open" })).status).toBe(422);
 
-    const [personalShift] = await db.insert(labTechShiftsTable).values({ tenantId: tenant.id, techId: csr.id, status: "active", boxAssignmentId: box.slug, cashBankStart: "100.00", setupJson: { boxAssignmentId: box.slug, inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }).returning();
-    await db.update(ordersTable).set({ assignedShiftId: personalShift.id }).where(sql`${ordersTable.id} = ${order.id}`);
-
     const managed = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/participants`).send({ userId: csr.id });
     expect(managed.status, managed.text).toBe(200);
     const managedAgain = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/participants`).send({ userId: csr.id });
@@ -949,6 +946,8 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const conflictingClose = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/close`).send({ closingBalance: 126, idempotencyKey: `close-other-${sessionId}`, discrepancyReason: "Different recount" });
     expect(conflictingClose.status, conflictingClose.text).toBe(409);
 
+    const [personalShift] = await db.insert(labTechShiftsTable).values({ tenantId: tenant.id, techId: csr.id, status: "active", boxAssignmentId: box.slug, cashBankStart: "100.00", setupJson: { boxAssignmentId: box.slug, inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }).returning();
+
     const [nextOrder] = await db.insert(ordersTable).values({
       tenantId: tenant.id, customerId: customer.id, status: "in_progress", fulfillmentStatus: "in_progress",
       paymentStatus: "unpaid", subtotal: "10.00", tax: "0.80", total: "10.80",
@@ -967,6 +966,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const [postSessionLedger] = await db.select().from(cashLedgerEntriesTable).where(sql`${cashLedgerEntriesTable.orderId} = ${nextOrder.id}`);
     expect(postSessionLedger).toMatchObject({ shiftId: personalShift.id, generalQueueSessionId: null });
     const supervisorOpen = await as("supervisor").post("/api/shift-queue/general/session/open").send({ locationId: generalLocation.id, registerBoxId: null, openingBalance: 0, idempotencyKey: `supervisor-open-${order.id}` });
-    expect(supervisorOpen.status, supervisorOpen.text).toBe(201);
+    expect(supervisorOpen.status, supervisorOpen.text).toBe(409);
+    expect(supervisorOpen.body.error).toContain("paused while a CSR shift is active");
   }, 60_000);
 });

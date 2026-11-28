@@ -1,3 +1,4 @@
+import { hasClockedInCsrShift, lockQueueOperatingMode } from "../lib/queueOperatingMode";
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { eq, and, desc, lt, gt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
@@ -2239,12 +2240,12 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
   const tenantId = req.authorizedTenantId!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
-  if (["admin", "global_admin"].includes(normalizeRole(actor.role)) && order.assignedCsrUserId == null && order.assignedShiftId == null) {
+  const eligibleShifts = await listActiveCsrs(tenantId);
+  if (eligibleShifts.length === 0 && ["admin", "global_admin"].includes(normalizeRole(actor.role)) && order.assignedCsrUserId == null && order.assignedShiftId == null) {
     await startDefaultQueueOrder(req, res, order);
     return;
   }
 
-  const eligibleShifts = await listActiveCsrs(tenantId);
   const eligibleShift = eligibleShifts.find(candidate => candidate.userId === actor.id);
   const [shift] = eligibleShift
     ? await db.select().from(labTechShiftsTable).where(and(
@@ -2487,6 +2488,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     let locationId: number | null;
     const assignedToActor = order.assignedCsrUserId === actor.id;
 
+    if (usesGeneralQueueCashSession(order.routeSource, 1)) await lockQueueOperatingMode(tx, tenantId);
     const openSessions = await tx.select().from(generalQueueCashSessionsTable).where(and(
       eq(generalQueueCashSessionsTable.tenantId, tenantId),
       eq(generalQueueCashSessionsTable.status, "open"),
@@ -2498,6 +2500,9 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     }
 
     if (useGeneralQueueSession) {
+      if (await hasClockedInCsrShift(tenantId, tx)) {
+        return { status: 409, error: "General Queue is paused. Claim the order into the active CSR shift before accepting cash" } as const;
+      }
       [session] = openSessions;
       if (!assignedToActor && !parsed.data.supervisorOverride) return { status: 403, error: "Claim this General Queue order before accepting cash" } as const;
       const [participant] = await tx.select().from(generalQueueCashSessionParticipantsTable).where(and(
