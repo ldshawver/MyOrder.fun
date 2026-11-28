@@ -1478,9 +1478,9 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.ok(workflow.includes('git cat-file -e "${TOOLING_SHA}^{commit}"'));
   assert.ok(workflow.includes('TOOLING_SHA: ${{ github.sha }}'));
   assert.doesNotMatch(workflow, /git show "\$\{GITHUB_SHA\}:artifacts\/api-server\/src\/routes\/__tests__\/myorder-pos-stabilization-static\.test\.ts"/);
-  assert.ok(workflow.includes("Candidate release-identity assertion is missing or ambiguous"));
-  assert.ok(workflow.includes('sha: "${process.env.RELEASE_SHA}"'));
-  assert.ok(workflow.includes('tree: "${process.env.RELEASE_TREE}"'));
+  assert.ok(workflow.includes('test "${RELEASE_SHA}" = "${PINNED_RELEASE_SHA}"'));
+  assert.ok(workflow.includes('test "${RELEASE_TREE}" = "${PINNED_RELEASE_TREE}"'));
+  assert.doesNotMatch(workflow, /writeFileSync\(\s*testPath/);
   assert.ok(workflow.includes('git show "${GITHUB_SHA}:.github/workflows/deploy.yml"'));
   assert.ok(workflow.includes('git show "${GITHUB_SHA}:deploy/production-release.mjs"'));
   assert.doesNotMatch(workflow, /git show "HEAD:(?:artifacts\/api-server\/src\/routes\/__tests__\/myorder-pos-stabilization-static\.test\.ts|\.github\/workflows\/deploy\.yml|deploy\/production-release\.mjs)"/);
