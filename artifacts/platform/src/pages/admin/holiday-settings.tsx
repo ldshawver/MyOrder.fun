@@ -118,7 +118,7 @@ export default function HolidaySettings() {
             ))}
           </fieldset>
           {preview && (
-            <div className="relative min-h-40 overflow-hidden rounded-lg border bg-card p-4" data-holiday={preview}>
+            <div className="holiday-catalog-heading relative min-h-40 overflow-hidden rounded-lg border bg-card p-4" data-holiday={preview}>
               <p className="font-medium">{current.themes.find(theme => theme.id === preview)?.name} preview</p>
               <div className="holiday-product-image mt-2 grid h-20 w-24 place-items-center rounded bg-muted text-sm">Product</div>
               <HolidayDecorationLayer key={preview} theme={preview} animated={settings.animated} preview />

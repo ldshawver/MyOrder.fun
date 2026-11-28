@@ -5,7 +5,7 @@ import { useLocation } from "wouter";
 import "./holiday-decorations.css";
 
 const motifs = {
-  christmas: ["❄", "🌿", "✦"],
+  christmas: ["🎄", "🎁", "✦"],
   halloween: ["🕸", "🎃", "🕷"],
   easter: ["🥚", "🐇", "🌱"],
   valentines: ["♥", "♡", "♥"],
@@ -25,11 +25,12 @@ export function HolidayDecorationLayer({ theme, animated, preview = false }: Dis
   if (!theme || !Object.hasOwn(motifs, theme)) return null;
   const [left, right, particle] = motifs[theme];
   const effects = animated && ["christmas", "independence", "newyear"].includes(theme);
+  const particleCount = theme === "christmas" ? 14 : 8;
   return (
     <div aria-hidden="true" className="holiday-layer" data-theme={theme} data-preview={preview || undefined}>
       <span className="holiday-corner holiday-corner-left">{left}</span>
       <span className="holiday-corner holiday-corner-right">{right}</span>
-      {effects && Array.from({ length: 8 }, (_, index) => (
+      {effects && Array.from({ length: particleCount }, (_, index) => (
         <span key={index} className="holiday-particle">{theme === "christmas" ? "❄" : particle}</span>
       ))}
     </div>
