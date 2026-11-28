@@ -117,16 +117,24 @@ describe("catalog product submission", () => {
     expect(source).toContain('id="catalog-field-description"');
   });
 
-  it("explains base, Alavont, Lucifer Cruz, safe checkout, and optional presentation fields", () => {
-    const source = readFileSync(new URL("../../pages/admin/edit-catalog.tsx", import.meta.url), "utf8");
-    expect(source).toContain("These fields describe the Alavont customer catalogue.");
-    expect(source).toContain("Canonical base product name for the record and operations.");
-    expect(source).toContain("A mapping alone does not publish an Alavont item in the Lucifer Cruz storefront");
-    expect(source).toContain("This is the final discreet presentation used in the converted checkout/order review");
-    expect(source).toContain("Fallback name in the converted POS preview");
-    expect(source).toContain("The current POS preview does not display this field.");
-    expect(source).toContain("Gallery images/videos appear in product details and rotate through the catalogue-card preview.");
-    expect(source.match(/input\("LC Category", "luciferCruzCategory"/g)).toHaveLength(1);
-    expect(source.match(/input\("LC Image URL", "luciferCruzImageUrl"/g)).toHaveLength(1);
+  it("builds the vendor and safe checkout fields", () => {
+    const form = {
+      ...valid,
+      alavontDescription: "Vendor description",
+      alavontImageUrl: "https://example.com/vendor.png",
+      customerSafeName: "Safe product",
+      merchantImage: "https://example.com/safe.png",
+      merchantCategory: "Safe category",
+      merchantSku: "SAFE-1",
+    };
+    expect(createCatalogProductPayload(form)).toMatchObject({
+      alavontDescription: form.alavontDescription,
+      alavontImageUrl: form.alavontImageUrl,
+      customerSafeName: form.customerSafeName,
+      merchantImage: form.merchantImage,
+      merchantCategory: form.merchantCategory,
+      merchantSku: form.merchantSku,
+    });
+    expect(validateCatalogProductDraft({ ...form, merchantImage: "file:///private/image.png" }).merchantImage).toBeDefined();
   });
 });

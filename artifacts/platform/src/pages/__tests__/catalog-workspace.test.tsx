@@ -39,23 +39,31 @@ it("shows one inventory row with location columns and distinguishes zero from mi
   }
 });
 
-it("edits product details inline beside the matching variant and shared location counts", async () => {
+it.each(["SHARED", "SEPARATE_VARIANTS"] as const)("edits product details and %s location counts inline", async inventoryModel => {
+  const shared = inventoryModel === "SHARED";
   const item = { id: 17, name: "Legacy name", alavontName: "Vendor product", customerSafeName: "Safe product",
     luciferCruzName: "Legacy alias", luciferCruzDescription: "Legacy description", category: "Test category",
     price: 10, isAvailable: true, lifecycleStatus: "customer_visible" };
   const writes: Record<string, unknown>[] = [];
+  const countWrites: { path: string; body: unknown }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
+    if (path.endsWith("/balance") && init?.method === "PUT") {
+      countWrites.push({ path, body: JSON.parse(String(init.body)) });
+      return Response.json({ ok: true });
+    }
     if (path === "/api/catalog/17" && init?.method === "PATCH") {
       writes.push(JSON.parse(String(init.body)));
       return Response.json(item);
     }
     if (path.startsWith("/api/catalog?")) return Response.json({ items: [item] });
     if (path === "/api/admin/catalogue/products") return Response.json({ products: [{
-      id: 4, name: "Vendor product", inventoryModel: "SHARED", locationEvaluation: "COMBINED_LOCATIONS",
-      options: [{ id: 5, catalogItemId: 17, label: "Test variant", inventoryItemId: 34, optionValues: {}, price: "10",
-        active: true, isAvailable: true, inventoryStatus: "ready", consumptionQuantity: "1" }],
+      id: 4, name: "Vendor product", inventoryModel, locationEvaluation: "COMBINED_LOCATIONS",
+      options: [17, 18].map((catalogItemId, index) => ({
+        id: index + 5, catalogItemId, label: `Variant ${index + 1}`, inventoryItemId: shared ? 34 : 34 + index, optionValues: {}, price: "10",
+        active: true, isAvailable: true, inventoryStatus: "ready", consumptionQuantity: "1",
+      })),
     }] });
-    if (path === "/api/admin/catalogue/inventory/34/locations") return Response.json({ locations: [
+    if (/inventory\/(34|35)\/locations$/.test(path)) return Response.json({ locations: [
       { locationId: 1, name: "Storefront", quantityOnHand: "0", hasBalance: true },
       { locationId: 2, name: "Backstock", quantityOnHand: "0", hasBalance: false },
     ] });
@@ -69,12 +77,24 @@ it("edits product details inline beside the matching variant and shared location
     await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(AdminEditCatalog) })));
     await vi.waitFor(() => expect(host.querySelector('button[title="Edit"]')).not.toBeNull());
     await act(async () => host.querySelector<HTMLButtonElement>('button[title="Edit"]')!.click());
-    await vi.waitFor(() => expect(host.querySelector('input[aria-label="Storefront on hand"]')).not.toBeNull());
+    const rowLabel = shared ? "Shared inventory pool #34" : "Variant 2";
+    const storefrontLabel = shared ? "Storefront on hand" : `${rowLabel} at Storefront`;
+    const backstockLabel = shared ? "Backstock on hand" : `${rowLabel} at Backstock`;
+    await vi.waitFor(() => expect(host.querySelector(`input[aria-label="${storefrontLabel}"]`)).not.toBeNull());
     expect(host.querySelector('section[aria-label="Product details"]')?.textContent).toContain("Vendor Name");
     expect(host.querySelector('section[aria-label="Product details"]')?.textContent).toContain("Safe Name");
     expect(host.querySelector('section[aria-label="Product details"]')?.textContent).not.toContain("LC Display Name");
-    expect(host.querySelector('input[aria-label="Backstock on hand"]')?.getAttribute("placeholder")).toBe("Not counted");
-    expect(host.textContent).toContain("Shared inventory pool #34");
+    expect(host.querySelector(`input[aria-label="${backstockLabel}"]`)?.getAttribute("placeholder")).toBe("Not counted");
+    const matrix = host.querySelector('section[aria-label="Inventory by location"]');
+    expect(matrix?.querySelectorAll("tbody tr")).toHaveLength(shared ? 1 : 2);
+    expect(matrix?.textContent).toContain(rowLabel);
+    expect(host.textContent).not.toContain("Inventory across all products and locations");
+    const saveCount = matrix?.querySelector<HTMLButtonElement>(`button[aria-label="Save ${rowLabel} at Storefront"]`);
+    await act(async () => saveCount!.click());
+    expect(countWrites).toEqual([{
+      path: `/api/admin/catalogue/inventory/${shared ? 34 : 35}/locations/1/balance`,
+      body: { quantityOnHand: "0" },
+    }]);
     const save = [...host.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save Changes");
     await act(async () => save!.click());
     await vi.waitFor(() => expect(writes).toHaveLength(1));

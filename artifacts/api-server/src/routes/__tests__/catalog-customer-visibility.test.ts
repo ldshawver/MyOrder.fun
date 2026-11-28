@@ -134,6 +134,28 @@ beforeEach(() => {
 });
 
 describe("customer catalogue visibility", () => {
+  it("returns checkout editing fields only in the authorized admin catalog view", async () => {
+    const checkoutFields = {
+      merchantImage: "https://checkout.example.test/image.png",
+      merchantCategory: "Safe category",
+      merchantSku: "SAFE-10",
+    };
+    rows.catalog = [catalogRow(10, checkoutFields)];
+    actor.role = "admin";
+    const adminList = await supertest(app).get("/api/catalog?mode=alavont");
+    expect(adminList.status, adminList.text).toBe(200);
+    expect(adminList.body.items[0]).toMatchObject(checkoutFields);
+
+    const customerPreview = await supertest(app).get("/api/catalog?mode=alavont&customerPreview=true");
+    actor.role = "customer";
+    const customerList = await supertest(app).get("/api/catalog?mode=alavont");
+    for (const response of [customerPreview, customerList]) {
+      expect(response.status, response.text).toBe(200);
+      expect(response.body.items).toHaveLength(1);
+      for (const key of Object.keys(checkoutFields)) expect(response.body.items[0]).not.toHaveProperty(key);
+    }
+  });
+
   it("uses the default when the optional tenant setting row is absent", async () => {
     rows.settingsPresent = false;
     rows.catalog = [catalogRow(20, { alavontInStock: false })];
