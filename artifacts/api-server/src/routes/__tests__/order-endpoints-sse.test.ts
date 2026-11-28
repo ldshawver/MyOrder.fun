@@ -523,6 +523,15 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
     });
   });
 
+  it("allows checkout without a discount when the saved coupon is not yet eligible", async () => {
+    mockActor = dbState.users[0]!;
+    const response = await supertest(buildApp()).post("/api/checkout/quote")
+      .send({ items: convertedItems, paymentMethod: "cash", couponCode: "PHARMACY1", applyCouponIfEligible: true });
+    expect(response.status, response.text).toBe(200);
+    expect(response.body).toMatchObject({ merchandiseSubtotal: 10, couponPending: true });
+    expect(response.body.coupon).toBeUndefined();
+  });
+
   it("rejects a coupon quote when the current catalog no longer qualifies", async () => {
     mockActor = dbState.users[0]!;
     const app = buildApp();

@@ -934,12 +934,12 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
 
 
 export default function Catalog() {
-  const { getToken } = useAuth();
+  const { getToken, userId, orgId } = useAuth();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [bannerImages, setBannerImages] = useState(DEFAULT_CATALOG_BANNERS);
   const { brand, branding } = useBrand();
-  const { itemCount } = useCart();
+  const { itemCount, coupon, setCoupon } = useCart();
   const [menuMode, setMenuMode] = useState<MenuMode>(() =>
     brand === "lucifer_cruz" ? "lucifer" : "alavont"
   );
@@ -968,6 +968,23 @@ export default function Catalog() {
   const userRole = normalizeNotificationRole(user?.role);
   const canEdit = userRole === "global_admin" || userRole === "admin";
   const isCustomerPreview = canEdit && customerPreview;
+
+  const { data: couponOffer } = useQuery({
+    queryKey: ["catalogCoupon", userId, orgId],
+    enabled: Boolean(userId),
+    staleTime: 5 * 60_000,
+    retry: false,
+    queryFn: async ({ signal }): Promise<{ coupon: "PHARMACY1" | null }> => {
+      const token = await getToken();
+      if (!token) throw new Error("Sign in to view available coupons.");
+      const response = await fetch("/api/catalog/coupon", { signal, headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error("Coupons are unavailable.");
+      return response.json();
+    },
+  });
+  const showCouponOffer = couponOffer?.coupon === "PHARMACY1"
+    && (category === "all" || category.trim().toLowerCase() === "pharmacy")
+    && "pharmacy1 pharmacy coupon $1 off".includes(search.trim().toLowerCase());
 
   const { data: categoriesRes } = useQuery({
     queryKey: ["listCatalogCategories", menuMode, isCustomerPreview],
@@ -1143,6 +1160,17 @@ export default function Catalog() {
       </div>
 
       <div id="catalogue" className="scroll-mt-24 space-y-4">
+      {showCouponOffer && (
+        <article aria-label="Pharmacy coupon" className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-primary/40 bg-primary/5 px-5 py-4">
+          <div className="space-y-1">
+            <h2 className="font-semibold">$1 off Pharmacy</h2>
+            <p className="text-sm text-muted-foreground">Spend $5 or more on Pharmacy items before tax, delivery, and tips.</p>
+          </div>
+          <Button type="button" variant="outline" disabled={isCustomerPreview || coupon === "PHARMACY1"} onClick={() => setCoupon("PHARMACY1")}>
+            {coupon === "PHARMACY1" ? "Coupon added" : "Add coupon to cart"}
+          </Button>
+        </article>
+      )}
       {catalogQuery.isError && (
         <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm">
           The catalogue and product options could not be loaded.

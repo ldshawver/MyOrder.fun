@@ -12,7 +12,11 @@ export type CartItem = {
   imageUrl?: string | null;
 };
 
+export type CartCoupon = "PHARMACY1";
+
 interface CartContextValue {
+  coupon: CartCoupon | null;
+  setCoupon: (coupon: CartCoupon | null) => void;
   cart: CartItem[];
   brand: Brand;
   addItem: (item: { id: number; optionId?: number; optionValues?: Record<string, string>; name: string; price: number; imageUrl?: string | null }, quantity?: number) => void;
@@ -27,6 +31,8 @@ interface CartContextValue {
 
 const CartContext = createContext<CartContextValue>({
   cart: [],
+  coupon: null,
+  setCoupon: () => {},
   brand: "alavont",
   addItem: () => {},
   removeItem: () => {},
@@ -40,11 +46,11 @@ const CartContext = createContext<CartContextValue>({
 
 const STORAGE_KEY = "orderflow_cart";
 
-type PersistedCart = { alavont: CartItem[]; lucifer_cruz: CartItem[] };
+type PersistedCart = { alavont: CartItem[]; lucifer_cruz: CartItem[]; coupons: Partial<Record<Brand, CartCoupon | null>> };
 type StoredCartState = { storageKey: string | null; carts: PersistedCart };
 
 function emptyCart(): PersistedCart {
-  return { alavont: [], lucifer_cruz: [] };
+  return { alavont: [], lucifer_cruz: [], coupons: {} };
 }
 
 function loadFromStorage(storageKey: string): PersistedCart {
@@ -55,6 +61,10 @@ function loadFromStorage(storageKey: string): PersistedCart {
     return {
       alavont: Array.isArray(parsed.alavont) ? parsed.alavont : [],
       lucifer_cruz: Array.isArray(parsed.lucifer_cruz) ? parsed.lucifer_cruz : [],
+      coupons: {
+        alavont: parsed.coupons?.alavont === "PHARMACY1" ? "PHARMACY1" : null,
+        lucifer_cruz: parsed.coupons?.lucifer_cruz === "PHARMACY1" ? "PHARMACY1" : null,
+      },
     };
   } catch {
     return emptyCart();
@@ -90,6 +100,12 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }, [cartState, isLoaded, storageKey]);
 
   const cart = cartState.carts[brand];
+  const coupon = cartState.storageKey === storageKey ? cartState.carts.coupons[brand] ?? null : null;
+  const setCoupon = useCallback((next: CartCoupon | null) => {
+    setCartState(previous => previous.storageKey === storageKey
+      ? { ...previous, carts: { ...previous.carts, coupons: { ...previous.carts.coupons, [brand]: next } } }
+      : previous);
+  }, [brand, storageKey]);
 
   const mutate = useCallback((fn: (prev: CartItem[]) => CartItem[]) => {
     setCartState(prev => prev.storageKey === storageKey
@@ -133,8 +149,10 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }, [mutate]);
 
   const clearCart = useCallback(() => {
-    mutate(() => []);
-  }, [mutate]);
+    setCartState(previous => previous.storageKey === storageKey
+      ? { ...previous, carts: { ...previous.carts, [brand]: [], coupons: { ...previous.carts.coupons, [brand]: null } } }
+      : previous);
+  }, [brand, storageKey]);
 
   const replaceCart = useCallback((items: CartItem[]) => {
     setCartState(prev => prev.storageKey === storageKey
@@ -146,7 +164,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const cartTotal = cart.reduce((s, i) => s + i.price * i.quantity, 0);
 
   return (
-    <CartContext.Provider value={{ cart, brand, addItem, removeItem, updateQuantity, setQuantity, clearCart, replaceCart, itemCount, cartTotal }}>
+    <CartContext.Provider value={{ cart, coupon, setCoupon, brand, addItem, removeItem, updateQuantity, setQuantity, clearCart, replaceCart, itemCount, cartTotal }}>
       {children}
     </CartContext.Provider>
   );

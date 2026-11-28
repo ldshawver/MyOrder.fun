@@ -562,6 +562,7 @@ const CheckoutQuoteBody = z.object({
   paymentMethod: z.enum(["cash", "paypal", "paypal_card", "customer_credit"]),
   customerCreditAmount: z.number().finite().nonnegative().refine(value => /^\d+(?:\.\d{1,2})?$/.test(String(value)), "Customer Credit must use whole cents").optional(),
   couponCode: z.string().trim().max(32).transform(code => code.toUpperCase()).optional(),
+  applyCouponIfEligible: z.boolean().optional(),
   tipAmount: z.number().finite().nonnegative().optional(),
   deliveryMethod: z.enum(["pickup", "manual_delivery", "csr_delivery", "uber_direct", "carrier"]).default("pickup"),
   deliveryQuoteId: z.string().min(1).optional(),
@@ -773,7 +774,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
   try {
     const lines = await normalizeCheckoutCart(parsed.data.items, undefined, true, tenantId, true, { isCurrentEmployee: actor.isCurrentEmployee === true });
     const totals = computeBaseCheckoutTotals(lines);
-    const coupon = await resolvePharmacyCoupon(tenantId, parsed.data.couponCode, lines);
+    const coupon = await resolvePharmacyCoupon(tenantId, parsed.data.couponCode, lines, parsed.data.applyCouponIfEligible);
     const [settings] = await db.select({
       cashDiscountEnabled: adminSettingsTable.cashDiscountEnabled,
       cashDiscountType: adminSettingsTable.cashDiscountType,
@@ -881,6 +882,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       taxConfigurationId: taxSettings.taxConfigurationId,
       quoteSnapshot: {
         ...(coupon ? { coupon, merchandiseCents } : {}),
+        ...(parsed.data.applyCouponIfEligible && parsed.data.couponCode ? { couponSelection: parsed.data.couponCode } : {}),
         taxRate: taxSettings.taxRate,
         taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase),
         taxCents,
@@ -893,7 +895,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       },
       expiresAt: new Date(Date.now() + CHECKOUT_TAX_QUOTE_TTL_MS),
     });
-    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, pickup, fulfillmentGroups, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken, ...(coupon ? { coupon: { code: coupon.code, discount: amount(coupon.amountCents) } } : {}) });
+    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, pickup, fulfillmentGroups, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken, ...(coupon ? { coupon: { code: coupon.code, discount: amount(coupon.amountCents) } } : parsed.data.applyCouponIfEligible && parsed.data.couponCode ? { couponPending: true } : {}) });
   } catch (error) {
     if (error instanceof CheckoutCouponError) { res.status(422).json({ error: error.message }); return; }
     const pickupCode = error instanceof Error && error.message.startsWith("PICKUP_") ? error.message : null;
@@ -1320,12 +1322,15 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     gt(checkoutQuotesTable.expiresAt, new Date()),
   )).limit(1) : [];
   const quoteSnapshot = trustedCheckoutQuote?.quoteSnapshot as {
-    coupon?: { code?: string }; merchandiseCents?: number; taxRate?: unknown; taxableBaseCents?: unknown; taxCents?: unknown; paymentMethod?: unknown;
+    coupon?: { code?: string }; couponSelection?: string; merchandiseCents?: number; taxRate?: unknown; taxableBaseCents?: unknown; taxCents?: unknown; paymentMethod?: unknown;
     deliveryMethod?: unknown; deliveryQuoteId?: unknown; carrierQuoteId?: unknown; pickupAt?: unknown; fulfillmentGroups?: unknown;
   } | undefined;
   let coupon: Awaited<ReturnType<typeof resolvePharmacyCoupon>>;
   try {
-    coupon = await resolvePharmacyCoupon(houseTenantId, quoteSnapshot?.coupon?.code, normalizedLines);
+    coupon = await resolvePharmacyCoupon(
+      houseTenantId, quoteSnapshot?.couponSelection ?? quoteSnapshot?.coupon?.code, normalizedLines,
+      Boolean(quoteSnapshot?.couponSelection),
+    );
   } catch (error) {
     if (error instanceof CheckoutCouponError) { res.status(409).json({ error: "CHECKOUT_QUOTE_STALE" }); return; }
     throw error;
