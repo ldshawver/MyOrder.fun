@@ -90,7 +90,7 @@ export function allocateCentsByWeight<T extends { key: string; weight: number }>
 }
 
 export function allocateOrderLineRefundTax(input: {
-  lines: Array<{ lineIndex: number; orderItemId: number; catalogItemId: number; quantity: number; unitPriceCents: number; taxable: boolean }>;
+  lines: Array<{ lineIndex: number; orderItemId: number; catalogItemId: number; quantity: number; unitPriceCents: number; taxable: boolean; couponDiscountCents?: number }>;
   taxableDiscountCents: number;
   nonTaxableDiscountCents: number;
   taxCents: number;
@@ -100,18 +100,22 @@ export function allocateOrderLineRefundTax(input: {
   assertNonnegativeInteger(input.taxCents, "taxCents");
   const rows = input.lines.map(line => {
     if (!Number.isSafeInteger(line.lineIndex) || line.lineIndex < 0 || !Number.isSafeInteger(line.orderItemId) || line.orderItemId <= 0 || !Number.isSafeInteger(line.quantity) || line.quantity <= 0 || !Number.isSafeInteger(line.unitPriceCents) || line.unitPriceCents < 0) throw new Error("Invalid order line refund data");
-    return { ...line, grossCents: line.unitPriceCents * line.quantity };
+    const grossCents = line.unitPriceCents * line.quantity;
+    const couponCents = line.couponDiscountCents ?? 0;
+    assertNonnegativeInteger(couponCents, "couponDiscountCents");
+    if (couponCents > grossCents) throw new Error("Coupon exceeds line merchandise");
+    return { ...line, grossCents, couponCents, remainingCents: grossCents - couponCents };
   });
   const taxable = rows.filter(line => line.taxable);
   const nonTaxable = rows.filter(line => !line.taxable);
-  const taxableGross = taxable.reduce((sum, line) => sum + line.grossCents, 0);
-  const nonTaxableGross = nonTaxable.reduce((sum, line) => sum + line.grossCents, 0);
+  const taxableGross = taxable.reduce((sum, line) => sum + line.remainingCents, 0);
+  const nonTaxableGross = nonTaxable.reduce((sum, line) => sum + line.remainingCents, 0);
   if (input.taxableDiscountCents > taxableGross || input.nonTaxableDiscountCents > nonTaxableGross) throw new Error("Discount allocation exceeds line merchandise");
-  const taxableDiscounts = new Map(allocateCentsByWeight(input.taxableDiscountCents, taxable.map(line => ({ key: String(line.lineIndex), weight: line.grossCents }))).map(row => [Number(row.key), row.amountCents]));
-  const nonTaxableDiscounts = new Map(allocateCentsByWeight(input.nonTaxableDiscountCents, nonTaxable.map(line => ({ key: String(line.lineIndex), weight: line.grossCents }))).map(row => [Number(row.key), row.amountCents]));
+  const taxableDiscounts = new Map(allocateCentsByWeight(input.taxableDiscountCents, taxable.map(line => ({ key: String(line.lineIndex), weight: line.remainingCents }))).map(row => [Number(row.key), row.amountCents]));
+  const nonTaxableDiscounts = new Map(allocateCentsByWeight(input.nonTaxableDiscountCents, nonTaxable.map(line => ({ key: String(line.lineIndex), weight: line.remainingCents }))).map(row => [Number(row.key), row.amountCents]));
   const netTaxable = rows.map(line => ({
     line,
-    discountCents: line.taxable ? (taxableDiscounts.get(line.lineIndex) ?? 0) : (nonTaxableDiscounts.get(line.lineIndex) ?? 0),
+    discountCents: line.couponCents + ((line.taxable ? taxableDiscounts : nonTaxableDiscounts).get(line.lineIndex) ?? 0),
   })).map(entry => ({ ...entry, netCents: entry.line.grossCents - entry.discountCents }));
   const taxLines = netTaxable.filter(entry => entry.line.taxable);
   const taxAllocations = allocateCentsByWeight(input.taxCents, taxLines.map(entry => ({ key: String(entry.line.lineIndex), weight: entry.netCents })));

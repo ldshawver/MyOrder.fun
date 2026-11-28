@@ -86,6 +86,7 @@ type ConversionPreview = {
   };
 };
 type CheckoutQuote = {
+  coupon?: { code: string; discount: number };
   merchandiseSubtotal: number;
   availableCustomerCredit: number;
   appliedCustomerCredit: number;
@@ -153,6 +154,8 @@ export default function NewOrder() {
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("paypal");
   const [useCustomerCredit, setUseCustomerCredit] = useState(false);
   const [customerCreditAmount, setCustomerCreditAmount] = useState("");
+  const [couponDraft, setCouponDraft] = useState("");
+  const [couponCode, setCouponCode] = useState("");
   const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
   const [checkoutQuoteError, setCheckoutQuoteError] = useState<string | null>(null);
   const [isQuotingCheckout, setIsQuotingCheckout] = useState(false);
@@ -532,6 +535,7 @@ export default function NewOrder() {
         body: JSON.stringify({
           items: checkoutOptionLines(cart),
           paymentMethod: selectedPaymentMethod,
+          ...(couponCode ? { couponCode } : {}),
           ...(useCustomerCredit && selectedPaymentMethod !== "customer_credit" ? { customerCreditAmount: Number(customerCreditAmount || 0) } : {}),
           tipAmount,
           deliveryMethod,
@@ -549,7 +553,7 @@ export default function NewOrder() {
       }).finally(() => { if (!cancelled) setIsQuotingCheckout(false); });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryBlocked, deliveryMethod, deliveryQuote, shippingAddress, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected, activeClosure]);
+  }, [conversionPreview, cart, selectedPaymentMethod, couponCode, useCustomerCredit, customerCreditAmount, tipAmount, deliveryBlocked, deliveryMethod, deliveryQuote, shippingAddress, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected, activeClosure]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">
@@ -928,6 +932,19 @@ export default function NewOrder() {
                       <span>Tip selected</span>
                       <span className="font-mono">${tipAmount.toFixed(2)}</span>
                     </div>
+                  </div>
+
+                  <div className="rounded-sm border border-border/60 bg-background p-3 space-y-2">
+                    <label htmlFor="checkout-coupon" className="text-sm font-semibold">Coupon code</label>
+                    <div className="flex flex-wrap gap-2">
+                      <Input id="checkout-coupon" value={couponDraft} maxLength={32} onChange={event => setCouponDraft(event.target.value)} className="min-w-32 flex-1" />
+                      <Button type="button" variant="outline" disabled={!couponDraft.trim() || couponDraft.trim().toUpperCase() === couponCode}
+                        onClick={() => { setCheckoutQuote(null); setCouponCode(couponDraft.trim().toUpperCase()); }}>Apply</Button>
+                      {couponCode && <Button type="button" variant="ghost" onClick={() => { setCheckoutQuote(null); setCouponCode(""); setCouponDraft(""); }}>Remove</Button>}
+                    </div>
+                    {checkoutQuote?.coupon && (
+                      <p role="status" className="text-sm">{checkoutQuote.coupon.code} applied · −${checkoutQuote.coupon.discount.toFixed(2)}</p>
+                    )}
                   </div>
 
                   <div className="rounded-sm border border-border/60 bg-background p-3 space-y-3">

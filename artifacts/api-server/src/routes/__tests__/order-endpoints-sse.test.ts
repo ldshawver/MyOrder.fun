@@ -155,7 +155,7 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
         merchant_sku: `LC-${item.catalogItemId}`,
         display_name: "Safe Item",
         display_description: "Safe description",
-        display_category: "Safe category",
+        display_category: dbState.catalog.find(product => product.id === item.catalogItemId)?.category ?? "Safe category",
         display_image: "safe.png",
         merchant_brand_name: "Safe Brand",
         marketing_copy: "Safe copy",
@@ -185,7 +185,7 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
     computeCheckoutTotals: (lines: Array<{ line_subtotal: number }>) => {
       const subtotal = lines.reduce((s, l) => s + l.line_subtotal, 0);
       const tax = parseFloat((subtotal * 0.08).toFixed(2));
-      return { subtotal, tax, total: subtotal + tax, taxRate: 0.08, taxMode: "added" };
+      return { subtotal, taxableSubtotal: subtotal, nonTaxableSubtotal: 0, tax, total: subtotal + tax, taxRate: 0.08, taxMode: "added" };
     },
     getCheckoutTaxSettings: async () => ({ taxRate: 0.08, taxMode: "added", taxJurisdiction: "Synthetic test", taxConfigurationId: 1 }),
     buildMerchantPayloadLines: () => [],
@@ -423,14 +423,14 @@ const checkoutConfirmation = {
   legalDisclaimerText: "All sales are final.",
 };
 
-async function convertedCheckoutPayload(app = buildApp()) {
+async function convertedCheckoutPayload(app = buildApp(), couponCode?: string) {
   const converted = await supertest(app)
     .post("/api/cart/convert")
     .send({ items: convertedItems, confirmation: checkoutConfirmation });
   expect(converted.status).toBe(200);
   const quote = await supertest(app)
     .post("/api/checkout/quote")
-    .send({ items: convertedItems, paymentMethod: "cash" });
+    .send({ items: convertedItems, paymentMethod: "cash", couponCode });
   expect(quote.status, quote.text).toBe(200);
   const { conversionToken, ...checkoutConversionSnapshot } = converted.body as Record<string, unknown> & { conversionToken: string };
   return {
@@ -506,6 +506,34 @@ beforeEach(() => {
 });
 
 describe("checkout conversion enforcement on order/provider API routes", () => {
+  it("quotes and persists the Pharmacy coupon from server-owned catalog and quote data", async () => {
+    mockActor = dbState.users[0]!;
+    const app = buildApp();
+    const unavailable = await supertest(app).post("/api/checkout/quote")
+      .send({ items: convertedItems, paymentMethod: "cash", couponCode: "PHARMACY1" });
+    expect(unavailable.status).toBe(422);
+    dbState.catalog[0]!.category = "Pharmacy";
+    const payload = await convertedCheckoutPayload(app, " pharmacy1 ");
+    expect(dbState.checkoutQuotes[0]?.quoteSnapshot).toMatchObject({ coupon: { code: "PHARMACY1", amountCents: 100 } });
+    const response = await supertest(app).post("/api/orders").send(payload);
+    expect(response.status, response.text).toBe(201);
+    expect(dbState.orders[0]).toMatchObject({
+      grossSubtotal: "10.00", discountTotal: "1.00", total: "9.00",
+      taxSnapshot: { coupon: { code: "PHARMACY1", amountCents: 100 }, lineTaxAllocations: [{ discountCents: 100 }] },
+    });
+  });
+
+  it("rejects a coupon quote when the current catalog no longer qualifies", async () => {
+    mockActor = dbState.users[0]!;
+    const app = buildApp();
+    dbState.catalog[0]!.category = "Pharmacy";
+    const payload = await convertedCheckoutPayload(app, "PHARMACY1");
+    dbState.catalog[0]!.category = "Other";
+    const response = await supertest(app).post("/api/orders").send(payload);
+    expect(response.status, response.text).toBe(409);
+    expect(dbState.orders).toHaveLength(0);
+  });
+
   it("rejects client-selected fulfillment locations on order creation", async () => {
     mockActor = dbState.users[0]!;
     const app = buildApp();
