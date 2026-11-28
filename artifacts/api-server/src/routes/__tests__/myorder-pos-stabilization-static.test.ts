@@ -509,7 +509,7 @@ describe("admin/POS/security cleanup regressions", () => {
     expect(migration).toContain("default system fallback");
     expect(migration).toContain('CREATE INDEX IF NOT EXISTS "shift_routing_config_tenant_idx"');
     expect(orderRouting).toContain("ensureShiftRoutingConfigSchema");
-    expect(orderRouting).toContain("approved ?? ({ routingStrategy: rule === ");
+    expect(orderRouting).toContain("approved?.routingStrategy ?? rule");
     expect(shifts).toContain('CREATE TABLE IF NOT EXISTS "shift_routing_config"');
     expect(migration.replace(/^--.*$/gm, "")).not.toMatch(/\b(UPDATE|DELETE|TRUNCATE|DROP)\b/i);
   });
