@@ -28,36 +28,36 @@ export const FROZEN_RELEASE = Object.freeze({
   tree: "e9beecdec7fae71b7416c2dbe57bac464204866f",
 });
 export const APPROVED_RELEASE = Object.freeze({
-  sha: "b9e9fd52f56a6b4f96e8cea8a4ddee8efbf78f87",
-  tree: "cb67855bd4fbb4a80987efb67c5a54f6417544da",
+  sha: "49fe5e69d6e710333b85b164ad55dad2200e38cd",
+  tree: "1eba12bdfe1c8d149d8c74cfde3438e7b792f713",
   // Production's containerd-backed Docker image store reports the immutable
   // manifest digest as image.Id. Keep registry manifests and their referenced
   // image-config digests separate so neither identity can stand in for the other.
   manifests: Object.freeze({
-    api: "sha256:a3e644a5b2fde65e1757f91f41d0cd2c311f31ead005bb296ac23dcc961cd405",
-    platform: "sha256:ba2ea6f2da75aac1c92f59025bb9f5d90418efff983c987c9732095da278906b",
-    migrate: "sha256:44ccb8ca1d0f31fb26231f8aa8b9e795a15360fe929aae1a5266dd5d767a74b8",
+    api: "sha256:930f85d10eaa3655236c0b7aa27365548df0ae6008ca54652e492b7587e4eed0",
+    platform: "sha256:f2f0760cd806994e413a1e8ef4f6a04cb9cf2b7ef9f42c5ff47225b234f0631a",
+    migrate: "sha256:524e5c4e4ffb1c2f16d512e5330405daddd487298d8b16a58476ed66c2af253e",
   }),
   configs: Object.freeze({
-    api: "sha256:236562eea247a391101f83da2197b7c3331fe04faa45b497f4ecf26b3c2e520e",
-    platform: "sha256:d063dfd52d01e896b27f89648a8cc21134739e079cb6665d785e44696c2e3986",
-    migrate: "sha256:ef9c84da891da9ccb3b0c9f5cdae86ecca2a0df54bf3fbbce936a1602116684f",
+    api: "sha256:47495f8a687530df9d702ed1b58a570d3c88beca275233e7206ef52fbca3156a",
+    platform: "sha256:94b49dd3e191011de5c580716d582c783d8baf68e16704c8f9fbcbddaba1e7ee",
+    migrate: "sha256:6f58275bc9aadf8406c41ca8d3ac2efbe2555028c38db66863a67f3e65c2dcfb",
   }),
   revisions: Object.freeze({
-    api: "b9e9fd52f56a6b4f96e8cea8a4ddee8efbf78f87",
-    platform: "b9e9fd52f56a6b4f96e8cea8a4ddee8efbf78f87",
-    migrate: "b9e9fd52f56a6b4f96e8cea8a4ddee8efbf78f87",
+    api: "49fe5e69d6e710333b85b164ad55dad2200e38cd",
+    platform: "49fe5e69d6e710333b85b164ad55dad2200e38cd",
+    migrate: "49fe5e69d6e710333b85b164ad55dad2200e38cd",
   }),
   references: Object.freeze({
-    api: "ghcr.io/ldshawver/myorder-api@sha256:a3e644a5b2fde65e1757f91f41d0cd2c311f31ead005bb296ac23dcc961cd405",
-    platform: "ghcr.io/ldshawver/myorder-platform@sha256:ba2ea6f2da75aac1c92f59025bb9f5d90418efff983c987c9732095da278906b",
-    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:44ccb8ca1d0f31fb26231f8aa8b9e795a15360fe929aae1a5266dd5d767a74b8",
+    api: "ghcr.io/ldshawver/myorder-api@sha256:930f85d10eaa3655236c0b7aa27365548df0ae6008ca54652e492b7587e4eed0",
+    platform: "ghcr.io/ldshawver/myorder-platform@sha256:f2f0760cd806994e413a1e8ef4f6a04cb9cf2b7ef9f42c5ff47225b234f0631a",
+    migrate: "ghcr.io/ldshawver/myorder-migrate@sha256:524e5c4e4ffb1c2f16d512e5330405daddd487298d8b16a58476ed66c2af253e",
   }),
 });
 const APPROVED_PREDECESSOR = Object.freeze({
-  sha: "ddb77049c247b3c8eb4fec266283768bd00e9e83",
-  api: "sha256:1c631a038de9b2b29c36f7dc2e28169bae6126331d6154c10b92b36e5ed206a5",
-  platform: "sha256:7d43a3b93bb6bcd712ec83a04d8ce5c84b97c30711b3a88893d6ad1cef150ad2",
+  sha: "b9e9fd52f56a6b4f96e8cea8a4ddee8efbf78f87",
+  api: "sha256:a3e644a5b2fde65e1757f91f41d0cd2c311f31ead005bb296ac23dcc961cd405",
+  platform: "sha256:ba2ea6f2da75aac1c92f59025bb9f5d90418efff983c987c9732095da278906b",
 });
 export const PRODUCTION_BASELINE = Object.freeze({
   // Verified from the live Compose containers before preparing this release.
@@ -133,7 +133,7 @@ const STOREFRONT_CLOSURE_MIGRATION = Object.freeze({ tag: "0088_storefront_closu
 const HOLIDAY_DECORATIONS_MIGRATION = Object.freeze({ tag: "0089_holiday_decorations", sha256: "d5feb28cabdddd06d950cf88927183a65b3bd534b0c1f52e8414efb6cb603d9b" });
 const PRODUCTION_PREDECESSOR_LEDGER_ROWS = 63;
 const PRODUCTION_TARGET_LEDGER_ROWS = 64;
-const VERIFIED_RESTORE_LEDGER_ROWS = [51, 52, 53, 54, 55, 56, 58, 62, PRODUCTION_PREDECESSOR_LEDGER_ROWS];
+const VERIFIED_RESTORE_LEDGER_ROWS = [51, 52, 53, 54, 55, 56, 58, 62, PRODUCTION_PREDECESSOR_LEDGER_ROWS, PRODUCTION_TARGET_LEDGER_ROWS];
 const fulfillmentSchemaSql = [
   "checkout_quotes", "order_fulfillment_groups", "carrier_quotes", "cj_order_fulfillments", "cj_fulfillment_events",
 ].map(table => `to_regclass('public.${table}') IS NOT NULL`).join(" AND ");
@@ -305,7 +305,7 @@ export function migrationsForRestoredLedger(ledgerRows) {
     ] : []),
     ...(ledgerRows <= 58 ? FORWARD_MIGRATIONS.map(migration => [migration, `${migration.tag}.sql`]) : []),
     ...(ledgerRows <= 62 ? [[STOREFRONT_CLOSURE_MIGRATION, `${STOREFRONT_CLOSURE_MIGRATION.tag}.sql`]] : []),
-    [HOLIDAY_DECORATIONS_MIGRATION, `${HOLIDAY_DECORATIONS_MIGRATION.tag}.sql`],
+    ...(ledgerRows === PRODUCTION_TARGET_LEDGER_ROWS ? [] : [[HOLIDAY_DECORATIONS_MIGRATION, `${HOLIDAY_DECORATIONS_MIGRATION.tag}.sql`]]),
   ];
 }
 
@@ -1529,9 +1529,9 @@ function createSnapshot(compose, backupRoot) {
     compose,
     "SELECT id || '|' || hash || '|' || created_at::text FROM drizzle.__drizzle_migrations ORDER BY created_at,id",
   );
-  if (ledger.split("\n").length !== PRODUCTION_PREDECESSOR_LEDGER_ROWS)
+  if (![PRODUCTION_PREDECESSOR_LEDGER_ROWS, PRODUCTION_TARGET_LEDGER_ROWS].includes(ledger.split("\n").length))
     throw new Error(
-      "Expected the recognized 63-row pre-0089 production ledger",
+      "Expected the recognized production migration ledger before taking a snapshot",
     );
   const counts = query(
     compose,
@@ -2484,17 +2484,9 @@ async function main() {
       safePrintAssetsCopy(containerBaseline.get("api").id, sharedRoot);
     },
     snapshot: async () => {
-      if (migrationState === "applied") {
-        console.log("production resume: snapshot already completed before the verified migration");
-        return;
-      }
       snapshot.value = createSnapshot(compose, backupRoot);
     },
     "verify-snapshot": async () => {
-      if (migrationState === "applied") {
-        console.log("production resume: snapshot verification already completed before the verified migration");
-        return;
-      }
       if (
         !snapshot.value?.archive ||
         (await sha256File(snapshot.value.archive)) !== snapshot.value.digest
@@ -2508,10 +2500,6 @@ async function main() {
         throw new Error("Snapshot archive inspection is incomplete");
     },
     "restore-rehearsal": async () => {
-      if (migrationState === "applied") {
-        console.log("production resume: isolated restore rehearsal already completed before the verified migration");
-        return;
-      }
       return restoreSnapshotInIsolation(snapshot.value);
     },
     migrate: async () => {
