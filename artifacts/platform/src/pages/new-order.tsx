@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@clerk/react";
 import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, type CatalogItem } from "@workspace/api-client-react";
-import { useCart } from "@/contexts/CartContext";
+import { useCart, type CartItem } from "@/contexts/CartContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -151,6 +151,9 @@ export default function NewOrder() {
   const [acceptedFinalSale, setAcceptedFinalSale] = useState(false);
   const [conversionPreview, setConversionPreview] = useState<ConversionPreview | null>(null);
   const [conversionError, setConversionError] = useState<string | null>(null);
+  const [quantityCheck, setQuantityCheck] = useState<{ key: string; error?: string } | null>(null);
+  const quantityCheckPending = useRef(false);
+  const isCheckingQuantity = quantityCheck !== null && !quantityCheck.error;
   const [isConverting, setIsConverting] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("paypal");
   const [useCustomerCredit, setUseCustomerCredit] = useState(false);
@@ -277,12 +280,12 @@ export default function NewOrder() {
     }
   }, [cart, upsellMutation]);
 
-  const verifyCartAvailability = async (catalogItemId: number, quantity: number): Promise<void> => {
+  const verifyCartAvailability = async (item: Pick<CartItem, "id" | "optionId">, quantity: number): Promise<void> => {
     const token = await getToken();
     const response = await fetch("/api/cart/availability", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ catalogItemId, quantity }),
+      body: JSON.stringify(checkoutOptionLines([{ ...item, quantity }])[0]),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result?.error ?? "Could not verify item availability. Please try again.");
@@ -291,7 +294,7 @@ export default function NewOrder() {
   const addToCart = async (item: CatalogItem | PromotedItem): Promise<boolean> => {
     try {
       const desiredQuantity = (cart.find(cartItem => cartItem.id === item.id)?.quantity ?? 0) + 1;
-      await verifyCartAvailability(item.id, desiredQuantity);
+      await verifyCartAvailability(item, desiredQuantity);
       addItem(item);
       setConversionError(null);
       return true;
@@ -305,13 +308,18 @@ export default function NewOrder() {
     if (await addToCart(item)) setReviewedLastItemPrompt(true);
   };
 
-  const increaseCartQuantity = async (catalogItemId: number, quantity: number) => {
+  const increaseCartQuantity = async (item: CartItem, key: string) => {
+    if (quantityCheckPending.current) return;
+    quantityCheckPending.current = true;
+    setQuantityCheck({ key });
     try {
-      await verifyCartAvailability(catalogItemId, quantity + 1);
-      updateQuantity(catalogItemId, 1);
-      setConversionError(null);
+      await verifyCartAvailability(item, item.quantity + 1);
+      updateQuantity(item.id, 1, item.optionId);
+      setQuantityCheck(null);
     } catch (error) {
-      setConversionError(error instanceof Error ? error.message : "Could not verify item availability. Please try again.");
+      setQuantityCheck({ key, error: error instanceof Error ? error.message : "Could not verify item availability. Please try again." });
+    } finally {
+      quantityCheckPending.current = false;
     }
   };
 
@@ -619,7 +627,7 @@ export default function NewOrder() {
                   <div>
                     <p className="text-sm font-semibold">Pharmacy coupon</p>
                     <p role="status" className="text-xs text-muted-foreground">
-                      {checkoutQuote?.coupon ? "Applied at checkout" : checkoutQuote?.couponPending ? "Add enough Pharmacy items to reach $5." : "Applies automatically when you spend $5 on Pharmacy items."}
+                      {checkoutQuote?.coupon ? "Applied at checkout" : checkoutQuote?.couponPending ? "Add at least 5 Pharmacy items to use this coupon." : "$1 off each Pharmacy item when you buy 5 or more."}
                     </p>
                   </div>
                   <Button type="button" variant="ghost" size="sm" onClick={() => { setCheckoutQuote(null); setCoupon(null); }} aria-label="Remove Pharmacy coupon">Remove</Button>
@@ -634,8 +642,9 @@ export default function NewOrder() {
               ) : (
                 cart.map(item => {
                   const converted = convertedItemById.get(item.id);
+                  const key = `${item.id}:${item.optionId ?? ""}`;
                   return (
-                  <div key={item.id} className="border-b border-dashed border-border/40 pb-3 last:border-0" data-testid={`cart-item-${item.id}`}>
+                  <div key={key} className="border-b border-dashed border-border/40 pb-3 last:border-0" data-testid={`cart-item-${item.id}`}>
                     <div className="flex items-start justify-between gap-3">
                     {converted?.customerSafeImage && <img src={converted.customerSafeImage} alt="" className="h-12 w-12 rounded-sm object-cover border border-border/50" />}
                     <div className="flex-1 min-w-0">
@@ -648,14 +657,17 @@ export default function NewOrder() {
                     </div>
                     <div className="flex items-center justify-between gap-4 mt-3">
                       <div className="flex items-center border border-border/50 rounded-sm bg-background">
-                        <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" onClick={() => updateQuantity(item.id, -1)} data-testid={`button-decrease-${item.id}`}><Minus size={14}/></button>
+                        <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" type="button" aria-label={`Decrease ${item.name} quantity`} disabled={isCheckingQuantity} onClick={() => { setQuantityCheck(null); updateQuantity(item.id, -1, item.optionId); }} data-testid={`button-decrease-${item.id}`}><Minus size={14}/></button>
                         <span className="w-8 text-center text-xs font-mono font-medium">{item.quantity}</span>
-                        <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" onClick={() => void increaseCartQuantity(item.id, item.quantity)} data-testid={`button-increase-${item.id}`}><Plus size={14}/></button>
+                        <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" type="button" aria-label={`Increase ${item.name} quantity`} disabled={isCheckingQuantity} onClick={() => void increaseCartQuantity(item, key)} data-testid={`button-increase-${item.id}`}><Plus size={14}/></button>
                       </div>
-                      <button className="text-muted-foreground hover:text-destructive transition-colors p-1" onClick={() => removeItem(item.id)} data-testid={`button-remove-${item.id}`}>
+                      <button className="text-muted-foreground hover:text-destructive transition-colors p-1" type="button" aria-label={`Remove ${item.name}`} disabled={isCheckingQuantity} onClick={() => { setQuantityCheck(null); removeItem(item.id, item.optionId); }} data-testid={`button-remove-${item.id}`}>
                         <Trash size={14} />
                       </button>
                     </div>
+                    {quantityCheck?.key === key && quantityCheck.error && (
+                      <p role="alert" className="mt-2 text-xs text-destructive">{quantityCheck.error}</p>
+                    )}
                   </div>
                 );})
               )}

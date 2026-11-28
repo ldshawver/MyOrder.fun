@@ -20,8 +20,8 @@ interface CartContextValue {
   cart: CartItem[];
   brand: Brand;
   addItem: (item: { id: number; optionId?: number; optionValues?: Record<string, string>; name: string; price: number; imageUrl?: string | null }, quantity?: number) => void;
-  removeItem: (id: number) => void;
-  updateQuantity: (id: number, delta: number) => void;
+  removeItem: (id: number, optionId?: number) => void;
+  updateQuantity: (id: number, delta: number, optionId?: number) => void;
   setQuantity: (id: number, quantity: number) => void;
   clearCart: () => void;
   replaceCart: (items: CartItem[]) => void;
@@ -124,14 +124,14 @@ export function CartProvider({ children }: { children: ReactNode }) {
     });
   }, [mutate]);
 
-  const removeItem = useCallback((id: number) => {
-    mutate(prev => prev.filter(i => i.id !== id));
+  const removeItem = useCallback((id: number, optionId?: number) => {
+    mutate(prev => prev.filter(i => i.id !== id || (optionId !== undefined && i.optionId !== optionId)));
   }, [mutate]);
 
-  const updateQuantity = useCallback((id: number, delta: number) => {
+  const updateQuantity = useCallback((id: number, delta: number, optionId?: number) => {
     if (!Number.isSafeInteger(delta) || delta === 0) return;
     mutate(prev => prev.flatMap(i => {
-      if (i.id !== id) return [i];
+      if (i.id !== id || (optionId !== undefined && i.optionId !== optionId)) return [i];
       const quantity = i.quantity + delta;
       // A decrement from one uses the normal cart removal behavior; a cart
       // never persists a zero or negative line quantity.

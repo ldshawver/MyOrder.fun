@@ -57,6 +57,7 @@ async function renderCustomerCatalogue(options: Option[], role = "customer") {
     requests.push(path);
     const payload = path.startsWith("/api/catalog/categories") ? { categories: ["Apparel"] }
       : path === "/api/catalog/coupon" ? { coupon: "PHARMACY1" }
+      : path.includes("category=Package") ? { items: [], total: 0, page: 1, limit: 200 }
       : path.startsWith("/api/catalog?") ? { items, total: items.length, page: 1, limit: 200 }
       : { error: "Not available" };
     return new Response(JSON.stringify(payload), { status: path.startsWith("/api/admin/settings") ? 403 : 200,
@@ -74,12 +75,21 @@ async function renderCustomerCatalogue(options: Option[], role = "customer") {
 }
 
 describe("actual customer catalogue card", () => {
-  it("adds a catalog coupon without adding a merchandise line", async () => {
+  it("shows the coupon only in the Package grid and adds no merchandise line", async () => {
     state.userId = "customer-1";
     const page = await renderCustomerCatalogue(shirtOptions);
+    const category = await vi.waitFor(() => {
+      const button = [...page.querySelectorAll("button")].find(button => button.textContent === "Package");
+      expect(button).toBeDefined();
+      return button!;
+    });
+    expect(page.querySelector('[aria-label="Pharmacy coupon"]')).toBeNull();
+    await act(async () => category.click());
     const coupon = await vi.waitFor(() => {
       const card = page.querySelector('[aria-label="Pharmacy coupon"]');
       expect(card).not.toBeNull();
+      expect(card?.parentElement?.classList.contains("grid")).toBe(true);
+      expect(page.querySelector('[data-testid="text-empty-state"]')).toBeNull();
       return card!.querySelector("button")!;
     });
     await act(async () => coupon.click());

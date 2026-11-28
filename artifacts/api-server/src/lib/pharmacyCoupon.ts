@@ -1,5 +1,4 @@
 import type { NormalizedCartLine } from "./checkoutNormalizer";
-import { allocateCentsByWeight } from "./refundAccounting";
 import { getHouseTenantId } from "./singleTenant";
 import { centsToDollars, dollarsToCents } from "./tenderTax";
 
@@ -17,23 +16,24 @@ export async function resolvePharmacyCoupon(tenantId: number, code: string | und
     throw new CheckoutCouponError("This coupon code is unavailable.");
   }
 
-  const eligible = lines.map((line, index) => ({
-    key: String(index),
-    weight: line.display_category.trim().toLowerCase() === "pharmacy"
-      ? dollarsToCents(line.unit_price) * line.quantity : 0,
-    taxable: line.is_taxable !== false,
-  }));
-  if (eligible.reduce((sum, line) => sum + line.weight, 0) < 500) {
+  const eligible = lines.map(line => {
+    const quantity = line.display_category.trim().toLowerCase() === "pharmacy" ? line.quantity : 0;
+    return {
+      quantity,
+      amountCents: Math.min(100, dollarsToCents(line.unit_price)) * quantity,
+      taxable: line.is_taxable !== false,
+    };
+  });
+  if (eligible.reduce((sum, line) => sum + line.quantity, 0) < 5) {
     if (applyIfEligible) return null;
-    throw new CheckoutCouponError("Spend at least $5 on Pharmacy items before tax and delivery to use PHARMACY1.");
+    throw new CheckoutCouponError("Add at least 5 Pharmacy items to use PHARMACY1.");
   }
 
-  const allocated = allocateCentsByWeight(100, eligible);
   return {
     code,
-    amountCents: 100,
-    taxableCents: allocated.reduce((sum, line) => sum + (line.taxable ? line.amountCents : 0), 0),
-    lineDiscountCents: allocated.map(line => line.amountCents),
+    amountCents: eligible.reduce((sum, line) => sum + line.amountCents, 0),
+    taxableCents: eligible.reduce((sum, line) => sum + (line.taxable ? line.amountCents : 0), 0),
+    lineDiscountCents: eligible.map(line => line.amountCents),
   };
 }
 
