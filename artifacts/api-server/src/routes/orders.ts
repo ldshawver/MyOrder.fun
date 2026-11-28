@@ -92,6 +92,7 @@ import { logger } from "../lib/logger";
 import { courierDetailsForDelivery, isUberOrderReadyForDispatch, queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
 import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
+import { CheckoutCouponError, couponAdjustedMerchandise, resolvePharmacyCoupon } from "../lib/pharmacyCoupon";
 import { allocateOrderLineRefundTax } from "../lib/refundAccounting";
 import { CHECKOUT_TAX_QUOTE_TTL_MS, createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
 import { requireOrderCatalogForSale, OrderCatalogUnavailableError } from "../lib/orderCatalogEligibility";
@@ -560,6 +561,8 @@ const CheckoutQuoteBody = z.object({
   items: z.array(DeliveryQuoteCartLineInput).min(1),
   paymentMethod: z.enum(["cash", "paypal", "paypal_card", "customer_credit"]),
   customerCreditAmount: z.number().finite().nonnegative().refine(value => /^\d+(?:\.\d{1,2})?$/.test(String(value)), "Customer Credit must use whole cents").optional(),
+  couponCode: z.string().trim().max(32).transform(code => code.toUpperCase()).optional(),
+  applyCouponIfEligible: z.boolean().optional(),
   tipAmount: z.number().finite().nonnegative().optional(),
   deliveryMethod: z.enum(["pickup", "manual_delivery", "csr_delivery", "uber_direct", "carrier"]).default("pickup"),
   deliveryQuoteId: z.string().min(1).optional(),
@@ -771,6 +774,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
   try {
     const lines = await normalizeCheckoutCart(parsed.data.items, undefined, true, tenantId, true, { isCurrentEmployee: actor.isCurrentEmployee === true });
     const totals = computeBaseCheckoutTotals(lines);
+    const coupon = await resolvePharmacyCoupon(tenantId, parsed.data.couponCode, lines, parsed.data.applyCouponIfEligible);
     const [settings] = await db.select({
       cashDiscountEnabled: adminSettingsTable.cashDiscountEnabled,
       cashDiscountType: adminSettingsTable.cashDiscountType,
@@ -820,7 +824,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     });
     const taxSettings = await getCheckoutTaxSettings(tenantId, checkoutLocationId ?? undefined);
     const cashDiscount = { enabled: Boolean(settings?.cashDiscountEnabled), type: settings?.cashDiscountType === "fixed" ? "fixed" as const : "percentage" as const, value: Number(settings?.cashDiscountValue ?? 0) };
-    const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings.taxRate, taxMode: "added", taxJurisdiction: taxSettings.taxJurisdiction, taxConfigurationId: taxSettings.taxConfigurationId, tender, cashDiscount });
+    const financial = computeOrderFinancialSnapshot({ ...couponAdjustedMerchandise(totals, coupon), taxRate: taxSettings.taxRate, taxMode: "added", taxJurisdiction: taxSettings.taxJurisdiction, taxConfigurationId: taxSettings.taxConfigurationId, tender, cashDiscount });
     const merchandiseCents = dollarsToCents(financial.taxableSubtotal) + dollarsToCents(financial.nonTaxableSubtotal);
     let deliveryFeeCents = 0;
     let deliveryEta: string | null = null;
@@ -877,6 +881,8 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       locationId: checkoutLocationId,
       taxConfigurationId: taxSettings.taxConfigurationId,
       quoteSnapshot: {
+        ...(coupon ? { coupon, merchandiseCents } : {}),
+        ...(parsed.data.applyCouponIfEligible && parsed.data.couponCode ? { couponSelection: parsed.data.couponCode } : {}),
         taxRate: taxSettings.taxRate,
         taxableBaseCents: dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase),
         taxCents,
@@ -889,8 +895,9 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       },
       expiresAt: new Date(Date.now() + CHECKOUT_TAX_QUOTE_TTL_MS),
     });
-    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, pickup, fulfillmentGroups, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken });
+    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), deliveryEta, pickup, fulfillmentGroups, tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), externalTender: amount(dueCents), selectedTender: tender }, checkoutTaxQuoteToken, ...(coupon ? { coupon: { code: coupon.code, discount: amount(coupon.amountCents) } } : parsed.data.applyCouponIfEligible && parsed.data.couponCode ? { couponPending: true } : {}) });
   } catch (error) {
+    if (error instanceof CheckoutCouponError) { res.status(422).json({ error: error.message }); return; }
     const pickupCode = error instanceof Error && error.message.startsWith("PICKUP_") ? error.message : null;
     const pickupMessage = pickupCode ? pickupSelectionErrorMessage(pickupCode) : null;
     res.status(error instanceof CustomerCreditError ? error.status : pickupCode === "PICKUP_LOCATION_UNAVAILABLE" ? 404 : 422).json({ error: error instanceof CustomerCreditError ? error.code : pickupCode ?? "CHECKOUT_QUOTE_UNAVAILABLE", ...(pickupMessage ? { message: pickupMessage } : {}) });
@@ -1306,7 +1313,6 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     }
     throw error;
   }
-  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: checkoutTaxSettings.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: checkoutTaxSettings.taxJurisdiction, taxConfigurationId: checkoutTaxSettings.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
   const submittedCheckoutQuoteId = body.data.checkoutConfirmation?.checkoutTaxQuoteToken;
   const [trustedCheckoutQuote] = typeof submittedCheckoutQuoteId === "string" ? await db.select().from(checkoutQuotesTable).where(and(
     eq(checkoutQuotesTable.id, submittedCheckoutQuoteId),
@@ -1316,9 +1322,20 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     gt(checkoutQuotesTable.expiresAt, new Date()),
   )).limit(1) : [];
   const quoteSnapshot = trustedCheckoutQuote?.quoteSnapshot as {
-    taxRate?: unknown; taxableBaseCents?: unknown; taxCents?: unknown; paymentMethod?: unknown;
+    coupon?: { code?: string }; couponSelection?: string; merchandiseCents?: number; taxRate?: unknown; taxableBaseCents?: unknown; taxCents?: unknown; paymentMethod?: unknown;
     deliveryMethod?: unknown; deliveryQuoteId?: unknown; carrierQuoteId?: unknown; pickupAt?: unknown; fulfillmentGroups?: unknown;
   } | undefined;
+  let coupon: Awaited<ReturnType<typeof resolvePharmacyCoupon>>;
+  try {
+    coupon = await resolvePharmacyCoupon(
+      houseTenantId, quoteSnapshot?.couponSelection ?? quoteSnapshot?.coupon?.code, normalizedLines,
+      Boolean(quoteSnapshot?.couponSelection),
+    );
+  } catch (error) {
+    if (error instanceof CheckoutCouponError) { res.status(409).json({ error: "CHECKOUT_QUOTE_STALE" }); return; }
+    throw error;
+  }
+  const financial = computeOrderFinancialSnapshot({ ...couponAdjustedMerchandise(trustedTotals, coupon), taxRate: checkoutTaxSettings.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: checkoutTaxSettings.taxJurisdiction, taxConfigurationId: checkoutTaxSettings.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
   const quotedImmediatePickupAt = body.data.pickupAt == null && Array.isArray(quoteSnapshot?.fulfillmentGroups)
     ? (quoteSnapshot.fulfillmentGroups as Array<{ destination?: { type?: unknown; pickupAt?: unknown } }>)
       .find(group => group.destination?.type === "pickup")?.destination?.pickupAt
@@ -1334,6 +1351,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     && trustedCheckoutQuote.cartFingerprint === checkoutFingerprint(normalizedLines)
     && trustedCheckoutQuote.locationId === checkoutLocationId
     && trustedCheckoutQuote.taxConfigurationId === checkoutTaxSettings.taxConfigurationId
+    && isDeepStrictEqual(quoteSnapshot?.coupon ?? null, coupon)
+    && (!coupon || quoteSnapshot?.merchandiseCents === dollarsToCents(financial.taxableSubtotal) + dollarsToCents(financial.nonTaxableSubtotal))
     && quoteSnapshot?.taxRate === checkoutTaxSettings.taxRate
     && quoteSnapshot?.taxableBaseCents === dollarsToCents(financial.taxSnapshot.customerTaxableTenderBase)
     && quoteSnapshot?.taxCents === dollarsToCents(financial.taxCollected)
@@ -1435,11 +1454,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: "Customer Credit must cover the full amount when it is the only tender" });
     return;
   }
-  const preDiscountTaxableCents = dollarsToCents(trustedTotals.taxableSubtotal);
-  const preDiscountGrossCents = dollarsToCents(trustedTotals.subtotal);
+  const preDiscountTaxableCents = dollarsToCents(trustedTotals.taxableSubtotal) - (coupon?.taxableCents ?? 0);
+  const preDiscountGrossCents = dollarsToCents(trustedTotals.subtotal) - (coupon?.amountCents ?? 0);
   const totalDiscountCents = dollarsToCents(cashDiscountAmount);
   const taxableDiscountCents = preDiscountGrossCents === 0 ? 0 : Number((BigInt(totalDiscountCents) * BigInt(preDiscountTaxableCents) * 2n + BigInt(preDiscountGrossCents)) / (2n * BigInt(preDiscountGrossCents)));
   const nonTaxableDiscountCents = totalDiscountCents - taxableDiscountCents;
+  const totalMerchandiseDiscount = centsToDollars(totalDiscountCents + (coupon?.amountCents ?? 0));
   const externalTenderType = tender === "paypal_card" ? "paypal" : tender;
   const externalTenderCents = finalTotalCents - requestedCreditCents;
   const originalTenderAllocations = {
@@ -1459,6 +1479,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       quantity: line.quantity,
       unitPriceCents: dollarsToCents(line.unit_price),
       taxable: line.is_taxable !== false,
+      couponDiscountCents: coupon?.lineDiscountCents[lineIndex],
     })),
     taxableDiscountCents,
     nonTaxableDiscountCents,
@@ -1466,6 +1487,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   });
   const checkoutTaxSnapshot = {
     ...taxSnapshot,
+    grossSubtotal: trustedTotals.subtotal,
+    discounts: Number(totalMerchandiseDiscount),
+    ...(coupon ? { coupon } : {}),
     locationId: checkoutLocationId,
     pendingTender: false,
     taxableMerchandiseBase: financial.taxableSubtotal,
@@ -1598,7 +1622,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         tax: String(tax.toFixed(2)),
         total: String(finalTotal.toFixed(2)),
         grossSubtotal: String(trustedTotals.subtotal.toFixed(2)),
-        discountTotal: String(cashDiscountAmount.toFixed(2)),
+        discountTotal: totalMerchandiseDiscount,
         taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)),
         nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         customerCreditApplied: "0.00",
@@ -1926,7 +1950,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         locationId: checkoutLocationId, taxConfigurationId: checkoutTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId,
         grossSales: String(trustedTotals.subtotal.toFixed(2)),
         taxRate: String(checkoutTaxSettings?.taxRate ?? trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
-        discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
+        discountAmount: totalMerchandiseDiscount, cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
         taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: financial.taxSnapshot.exemptionReason,
         snapshotJson: {
           tax: finalizedTaxSnapshot,

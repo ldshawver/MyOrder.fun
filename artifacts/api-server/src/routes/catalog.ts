@@ -24,6 +24,8 @@ import { catalogAmountError } from "../lib/catalogPricing";
 
 import { holidayDisplay } from "../lib/holidayDecorations";
 
+import { hasPharmacyCoupon, PHARMACY_COUPON_CODE } from "../lib/pharmacyCoupon";
+
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireCatalogReadAccess, requireTenantContext);
 
@@ -385,6 +387,11 @@ async function getShowOutOfStockSetting(tenantId: number): Promise<boolean> {
 router.get("/catalog/holiday-decorations", async (req, res): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
   res.json(await holidayDisplay(req.authorizedTenantId!));
+});
+
+router.get("/catalog/coupon", async (req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ coupon: await hasPharmacyCoupon(req.authorizedTenantId!) ? PHARMACY_COUPON_CODE : null });
 });
 
 router.get("/catalog", async (req, res): Promise<void> => {

@@ -4,12 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const state = vi.hoisted(() => ({ addItem: vi.fn(), getToken: vi.fn(async () => "test-token"), userRole: "customer" }));
-vi.mock("@clerk/react", () => ({ useAuth: () => ({ getToken: state.getToken }) }));
+const state = vi.hoisted(() => ({ addItem: vi.fn(), setCoupon: vi.fn(), userId: undefined as string | undefined, getToken: vi.fn(async () => "test-token"), userRole: "customer" }));
+vi.mock("@clerk/react", () => ({ useAuth: () => ({ getToken: state.getToken, userId: state.userId }) }));
 vi.mock("@/contexts/BrandContext", () => ({ useBrand: () => ({ brand: "alavont", branding: {
   customer: { displayName: "Alavont" }, supplier: { displayName: "Supplier" },
 } }) }));
-vi.mock("@/contexts/CartContext", () => ({ useCart: () => ({ cart: [], itemCount: 0, addItem: state.addItem }) }));
+vi.mock("@/contexts/CartContext", () => ({ useCart: () => ({ cart: [], itemCount: 0, addItem: state.addItem, setCoupon: state.setCoupon }) }));
 vi.mock("@/components/CatalogNotice", () => ({ CatalogNotice: () => null }));
 vi.mock("@workspace/api-client-react", () => ({
   useGetCurrentUser: () => ({ data: { role: state.userRole } }),
@@ -37,6 +37,8 @@ afterEach(async () => {
   host = undefined;
   vi.unstubAllGlobals();
   state.addItem.mockClear();
+  state.setCoupon.mockClear();
+  state.userId = undefined;
   state.userRole = "customer";
 });
 
@@ -54,6 +56,7 @@ async function renderCustomerCatalogue(options: Option[], role = "customer") {
     const path = String(input);
     requests.push(path);
     const payload = path.startsWith("/api/catalog/categories") ? { categories: ["Apparel"] }
+      : path === "/api/catalog/coupon" ? { coupon: "PHARMACY1" }
       : path.startsWith("/api/catalog?") ? { items, total: items.length, page: 1, limit: 200 }
       : { error: "Not available" };
     return new Response(JSON.stringify(payload), { status: path.startsWith("/api/admin/settings") ? 403 : 200,
@@ -71,6 +74,19 @@ async function renderCustomerCatalogue(options: Option[], role = "customer") {
 }
 
 describe("actual customer catalogue card", () => {
+  it("adds a catalog coupon without adding a merchandise line", async () => {
+    state.userId = "customer-1";
+    const page = await renderCustomerCatalogue(shirtOptions);
+    const coupon = await vi.waitFor(() => {
+      const card = page.querySelector('[aria-label="Pharmacy coupon"]');
+      expect(card).not.toBeNull();
+      return card!.querySelector("button")!;
+    });
+    await act(async () => coupon.click());
+    expect(state.setCoupon).toHaveBeenCalledWith("PHARMACY1");
+    expect(state.addItem).not.toHaveBeenCalled();
+  });
+
   it("shows Small, Medium and Large directly on one card and sends Medium's option ID to cart", async () => {
     const page = await renderCustomerCatalogue(shirtOptions);
     const select = page.querySelector('select[aria-label="T-Shirt option"]') as HTMLSelectElement;

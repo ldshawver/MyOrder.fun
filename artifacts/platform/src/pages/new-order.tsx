@@ -86,6 +86,8 @@ type ConversionPreview = {
   };
 };
 type CheckoutQuote = {
+  coupon?: { code: string; discount: number };
+  couponPending?: boolean;
   merchandiseSubtotal: number;
   availableCustomerCredit: number;
   appliedCustomerCredit: number;
@@ -136,7 +138,7 @@ function appendDevelopmentCheckoutDebug(message: string, details: ReturnType<typ
 export default function NewOrder() {
   const [, setLocation] = useLocation();
   const { brand } = useBrand();
-  const { cart, addItem, removeItem, updateQuantity, replaceCart, clearCart } = useCart();
+  const { cart, coupon, setCoupon, addItem, removeItem, updateQuantity, replaceCart, clearCart } = useCart();
   const preItemId = parseInt(new URLSearchParams(window.location.search).get("item") || "0", 10) || undefined;
   const [search, setSearch] = useState("");
   const [shippingAddress, setShippingAddress] = useState("");
@@ -532,6 +534,7 @@ export default function NewOrder() {
         body: JSON.stringify({
           items: checkoutOptionLines(cart),
           paymentMethod: selectedPaymentMethod,
+          ...(coupon ? { couponCode: coupon, applyCouponIfEligible: true } : {}),
           ...(useCustomerCredit && selectedPaymentMethod !== "customer_credit" ? { customerCreditAmount: Number(customerCreditAmount || 0) } : {}),
           tipAmount,
           deliveryMethod,
@@ -549,7 +552,7 @@ export default function NewOrder() {
       }).finally(() => { if (!cancelled) setIsQuotingCheckout(false); });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryBlocked, deliveryMethod, deliveryQuote, shippingAddress, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected, activeClosure]);
+  }, [conversionPreview, cart, selectedPaymentMethod, coupon, useCustomerCredit, customerCreditAmount, tipAmount, deliveryBlocked, deliveryMethod, deliveryQuote, shippingAddress, pickupChoice, pickupLocationId, getToken, pickupWaitingForBusinessHours, scheduledPickupSelected, activeClosure]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">
@@ -611,10 +614,21 @@ export default function NewOrder() {
                 <div className="text-[10px] text-muted-foreground mt-1 font-mono">{new Date().toLocaleString()}</div>
               </div>
               <div className="min-h-[420px] p-4 space-y-3">
+              {coupon && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-primary/40 bg-primary/5 p-3">
+                  <div>
+                    <p className="text-sm font-semibold">Pharmacy coupon</p>
+                    <p role="status" className="text-xs text-muted-foreground">
+                      {checkoutQuote?.coupon ? "Applied at checkout" : checkoutQuote?.couponPending ? "Add enough Pharmacy items to reach $5." : "Applies automatically when you spend $5 on Pharmacy items."}
+                    </p>
+                  </div>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => { setCheckoutQuote(null); setCoupon(null); }} aria-label="Remove Pharmacy coupon">Remove</Button>
+                </div>
+              )}
               {cart.length === 0 ? (
                 <div className="h-72 flex flex-col items-center justify-center text-center text-muted-foreground text-sm font-mono uppercase tracking-wider border border-dashed border-border/50 rounded-sm">
                   <ShoppingCart size={24} className="mb-3" />
-                  Your order is empty
+                  {coupon ? "Add Pharmacy items to your order" : "Your order is empty"}
                   <Link href="/catalog" className="mt-3 text-primary normal-case font-semibold hover:underline">Browse Catalogue</Link>
                 </div>
               ) : (
@@ -651,6 +665,12 @@ export default function NewOrder() {
                   <span className="text-muted-foreground">Subtotal</span>
                   <span className="font-mono">${subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                 </div>
+                {checkoutQuote?.coupon && (
+                  <div className="flex justify-between text-sm">
+                    <span>Pharmacy coupon</span>
+                    <span className="font-mono">−${checkoutQuote.coupon.discount.toFixed(2)}</span>
+                  </div>
+                )}
                 {conversionPreview && (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Tax</span>
