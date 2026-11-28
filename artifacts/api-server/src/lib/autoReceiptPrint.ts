@@ -1,4 +1,4 @@
-/** Best-effort printing for an order whose cash closeout committed. */
+/** Best-effort printing for an order whose completion committed. */
 import { and, eq } from "drizzle-orm";
 import { db, ordersTable, orderItemsTable } from "@workspace/db";
 import { enqueueOrderPrintJobs } from "./printService";
@@ -6,7 +6,7 @@ import { logger as _logger } from "./logger";
 
 const log = _logger.child({ module: "autoReceiptPrint" });
 
-export async function printCashCloseoutReceipt(tenantId: number, orderId: number): Promise<void> {
+export async function printCompletedOrderReceipt(tenantId: number, orderId: number): Promise<void> {
 
   try {
     const [order] = await db
@@ -14,7 +14,7 @@ export async function printCashCloseoutReceipt(tenantId: number, orderId: number
       .from(ordersTable)
       .where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId)))
       .limit(1);
-    if (!order?.tenantId || order.paymentStatus !== "paid" || (order.selectedPaymentMethod ?? order.paymentMethod) !== "cash") return;
+    if (!order?.tenantId || order.status !== "completed" || order.paymentStatus !== "paid") return;
 
     const items = await db
       .select()
@@ -29,7 +29,7 @@ export async function printCashCloseoutReceipt(tenantId: number, orderId: number
       paymentStatus: order.paymentStatus,
       paymentMethod: order.paymentMethod,
       selectedPaymentMethod: order.selectedPaymentMethod,
-      cashCloseout: true,
+      closeoutReceipt: true,
       notes: order.notes,
       subtotal: String(order.subtotal),
       tax: String(order.tax),

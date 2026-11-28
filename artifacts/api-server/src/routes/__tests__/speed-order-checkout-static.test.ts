@@ -14,6 +14,7 @@ describe("Speed Order member checkout boundary", () => {
     expect(speedOrder).toContain('router.get("/speed-order/categories", requirePermission("speed_order.use")');
     expect(speedOrder).toContain('router.get("/speed-order/category-items", requirePermission("speed_order.use")');
     expect(speedOrder).toContain('router.put("/speed-order/pins", requirePermission("speed_order.pin")');
+    expect(speedOrder).toContain("btrim(${catalogItemsTable.alavontCategory})");
     expect(speedOrder).toContain("browseEligible(tenantId), eq(browseCategory, category), gt(catalogItemsTable.id, Number(after))");
   });
 

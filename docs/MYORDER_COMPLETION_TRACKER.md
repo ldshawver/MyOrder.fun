@@ -6,6 +6,14 @@ Development branch: `release/all-owner-requests-20261123`
 
 ## Verified increments
 
+### POS receipts, cash storage, and Speed Order categories (2026-11-27)
+
+- Customer receipts enqueue after a paid order reaches completed status. Manual receipt printing uses the same eligibility. Order placement retains the Expo ticket, and old work jobs cannot dispatch.
+- New orders snapshot the effective sale unit price and employee savings. The customer receipt shows these beside the charged item amounts. Incomplete print templates fall back to a receipt with item lines and an order total.
+- CSR Settings lets each box choose a cash bag or drawer. Only completed cash receipts for a drawer-enabled box request a pulse, and the printer must also support the drawer.
+- Speed Order category browsing and category results use the Alavont category field.
+- Existing orders may lack the receipt pricing snapshot. Verification on a physical printer and live account diagnostics remain pending.
+
 ### Automatic seasonal holiday decorations (2026-11-26)
 
 - Implemented ten themes across the guest catalog, signed-in catalog, product details, cart, checkout, and customer order pages. Product image accents use CSS overlays. Effects use built-in glyphs, ignore pointer input, and respect the system reduced-motion setting.

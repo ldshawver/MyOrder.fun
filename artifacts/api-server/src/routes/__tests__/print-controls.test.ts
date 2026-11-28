@@ -285,7 +285,7 @@ describe("automatic paths read tenant controls, not the global row", () => {
     expect(printService).toContain("const controls = await getPrintControls(tenantId);");
     expect(printService).not.toMatch(/settings\.autoPrint(Orders|Receipts|Labels)/);
     expect(src("lib/autoReceiptPrint.ts")).toContain("enqueueOrderPrintJobs");
-    expect(printService).toContain("order.cashCloseout === true");
+    expect(printService).toContain("order.closeoutReceipt === true");
     expect(src("routes/shifts.ts")).toContain("if (!(await getPrintControls(tenantId)).autoPrintReceipts) return;");
     expect(src("routes/shifts.ts")).not.toMatch(/getSettings\(\)\)\.autoPrint/);
   });

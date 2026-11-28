@@ -59,8 +59,9 @@ const browseEligible = (tenantId: number) => and(
   eq(catalogItemsTable.tenantId, tenantId),
   eq(catalogItemsTable.isAvailable, true),
   publicCatalogEligibility(),
+  sql`nullif(btrim(${catalogItemsTable.alavontCategory}), '') is not null`,
 );
-const browseCategory = sql<string>`btrim(${catalogItemsTable.category})`;
+const browseCategory = sql<string>`btrim(${catalogItemsTable.alavontCategory})`;
 const BROWSE_PAGE_SIZE = 40;
 
 router.get("/speed-order/categories", requirePermission("speed_order.use"), async (req, res): Promise<void> => {

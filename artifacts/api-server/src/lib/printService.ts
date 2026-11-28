@@ -21,6 +21,7 @@ import {
   printSettingsTable,
   adminSettingsTable,
   shiftPrintAssignmentsTable,
+  labTechShiftsTable,
 } from "@workspace/db";
 import { eq, and, inArray, lt, sql } from "drizzle-orm";
 import { decodeStoredReceiptText, renderCustomerReceipt, renderCustomerReceiptBody } from "./receiptRenderer";
@@ -505,6 +506,13 @@ async function rerouteFailedReceiptToBrightek(
  * when the routed printer cannot print.
  */
 export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
+  if (job.jobType === "order_ticket" || (job.payloadJson as { documentType?: string } | null)?.documentType === "WORK") {
+    await db.update(printJobsTable).set({ status: "failed", errorMessage: "Work tickets are disabled" }).where(and(
+      eq(printJobsTable.tenantId, job.tenantId), eq(printJobsTable.id, job.id),
+      inArray(printJobsTable.status, ["queued", "retrying"]),
+    ));
+    return;
+  }
   if (await failClosedScopeMismatch(job, printer)) return;
   if (!(await claimJob(job))) return;
 
@@ -651,11 +659,12 @@ async function renderAutomaticReceipt(
 }
 
 export function automaticOrderReceiptPolicy(order: {
-  paymentStatus: string; paymentMethod?: string | null; selectedPaymentMethod?: string | null; cashCloseout?: boolean;
+  status?: string; paymentStatus: string; paymentMethod?: string | null;
+  selectedPaymentMethod?: string | null; closeoutReceipt?: boolean; cashDrawerConfigured?: boolean;
 }) {
+  const printReceipt = order.closeoutReceipt === true && order.status === "completed" && order.paymentStatus === "paid";
   const isCash = (order.selectedPaymentMethod ?? order.paymentMethod) === "cash";
-  const cashReceipt = isCash && order.cashCloseout === true && order.paymentStatus === "paid";
-  return { printReceipt: isCash ? cashReceipt : !order.cashCloseout, openCashDrawer: cashReceipt };
+  return { printReceipt, openCashDrawer: printReceipt && isCash && order.cashDrawerConfigured === true };
 }
 
 export async function enqueueOrderPrintJobs(order: {
@@ -664,7 +673,7 @@ export async function enqueueOrderPrintJobs(order: {
   paymentStatus: string;
   paymentMethod?: string | null;
   selectedPaymentMethod?: string | null;
-  cashCloseout?: boolean;
+  closeoutReceipt?: boolean;
   notes: string | null;
   subtotal: string;
   tax: string;
@@ -757,7 +766,7 @@ export async function enqueueOrderPrintJobs(order: {
     shippingAddress: order.shippingAddress ?? null,
   };
 
-  // ── Receipt, expo and work tickets ────────────────────────────────────────
+  // ── Customer receipt and Expo ticket ────────────────────────────────────────
   // Each is routed by document type to exactly one registered printer. The
   // legacy resolvers keep today's destinations when no route is configured.
   const routeContext = { tenantId, locationId: orderAssignment?.locationId ?? null, shiftId: order.assignedShiftId ?? null };
@@ -774,6 +783,20 @@ export async function enqueueOrderPrintJobs(order: {
   const pendingDispatches: Array<() => Promise<void>> = [];
 
   const receiptPolicy = automaticOrderReceiptPolicy(order);
+  if (receiptPolicy.printReceipt && order.assignedShiftId && (order.selectedPaymentMethod ?? order.paymentMethod) === "cash") {
+    const [assignment] = await db.select({ box: labTechShiftsTable.boxAssignmentId, locations: adminSettingsTable.shiftLocationOptions })
+      .from(labTechShiftsTable)
+      .leftJoin(adminSettingsTable, eq(adminSettingsTable.tenantId, labTechShiftsTable.tenantId))
+      .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, order.assignedShiftId))).limit(1);
+    if (assignment?.box && assignment.locations) {
+      try {
+        const locations: unknown = JSON.parse(assignment.locations);
+        receiptPolicy.openCashDrawer = Array.isArray(locations) && locations.some(
+          location => location?.id === assignment.box && location?.cashStorage === "drawer",
+        );
+      } catch { /* Invalid configuration leaves the drawer closed. */ }
+    }
+  }
   if ((controls.autoPrintReceipts || controls.autoPrintOrders) && receiptPolicy.printReceipt) {
     const result = await queueDocumentPrint({
       ...documentBase,
@@ -791,7 +814,7 @@ export async function enqueueOrderPrintJobs(order: {
     else if (result.status === "no-route") pLog.warn({ event: "receipt_no_route", orderId: order.id, reason: result.reason }, "receipt not printed: no route");
   }
 
-  if (controls.autoPrintOrders && !order.cashCloseout) {
+  if (controls.autoPrintOrders && !order.closeoutReceipt) {
     const { loadReceiptData } = await import("./print/receiptPipeline");
     const { buildExpoTicket } = await import("./print/documents");
     // Customer receipts use the configured safe-name mode. Staff tickets must
@@ -828,7 +851,7 @@ export async function enqueueOrderPrintJobs(order: {
   }
 
   // ── Label ─────────────────────────────────────────────────────────────────
-  if (controls.autoPrintLabels && !order.cashCloseout) {
+  if (controls.autoPrintLabels && !order.closeoutReceipt) {
     const { resolveRoutingDecision, shouldPrintLabel } = await import("./printRoutingResolver.js");
 
     // Label eligibility gate — only delivery orders or Lucifer Cruz shipments

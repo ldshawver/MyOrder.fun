@@ -1061,6 +1061,7 @@ router.put("/admin/csr-settings", requirePermission("shift_settings.manage"), as
       id: String(option.id || `location-${index + 1}`),
       label: String(option.label || "Shift location"),
       address: String(option.address || ""),
+      cashStorage: option.cashStorage === "drawer" ? "drawer" : "bag",
       pickupInstructionId: String(option.pickupInstructionId || ""),
       deliveryOptionId: String(option.deliveryOptionId || ""),
     })));

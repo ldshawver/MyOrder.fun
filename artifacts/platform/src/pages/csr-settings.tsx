@@ -11,7 +11,7 @@ import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 type SectionKey = "pickup" | "location" | "wifi" | "shift";
 type PickupOption = { id: string; label: string; instructions: string };
-type ShiftLocation = { id: string; label: string; address: string; pickupInstructionId: string; deliveryOptionId: string };
+type ShiftLocation = { cashStorage?: "bag" | "drawer"; id: string; label: string; address: string; pickupInstructionId: string; deliveryOptionId: string };
 type DeliveryOption = { id: string; label: string; instructions: string; separatePaymentRequired: boolean; uberSteps?: string[] };
 type PrinterConfig = { onsiteMode: string; ssid: string; passwordSet: boolean; raspberryPiBluetooth: boolean; password?: string; approvedSsids?: string[] };
 
@@ -230,6 +230,16 @@ export default function CsrSettings() {
               <div>
                 <Label className="text-xs uppercase tracking-wider text-muted-foreground">Address</Label>
                 <Input disabled={!canEdit || !selectedLocation} value={selectedLocation?.address ?? ""} onChange={(e) => selectedLocation && updateLocation(selectedLocation.id, { address: e.target.value })} className="mt-1 rounded-sm" />
+              </div>
+              <div>
+                <Label htmlFor="box-cash-storage" className="text-xs uppercase tracking-wider text-muted-foreground">Cash storage</Label>
+                <select id="box-cash-storage" disabled={!canEdit || !selectedLocation}
+                  className="mt-1 h-9 w-full rounded-sm bg-background border border-input px-3 text-sm"
+                  value={selectedLocation?.cashStorage ?? "bag"}
+                  onChange={event => selectedLocation && updateLocation(selectedLocation.id, { cashStorage: event.target.value === "drawer" ? "drawer" : "bag" })}>
+                  <option value="bag">Cash bag</option>
+                  <option value="drawer">Cash drawer</option>
+                </select>
               </div>
               <div>
                 <Label className="text-xs uppercase tracking-wider text-muted-foreground">Default Pickup Instructions</Label>

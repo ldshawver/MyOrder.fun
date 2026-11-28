@@ -1794,6 +1794,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           optionId: option?.optionId ?? null,
           optionLabelSnapshot: option?.label ?? null,
           variantSnapshot: option ? { variantId: option.optionId, sku: option.sku, barcode: option.barcode,
+            receiptPricing: line.receiptPricing,
             label: option.label, optionValues: option.optionValues ?? {}, wooProductId: option.wooProductId,
             wooVariationId: option.wooVariationId,
             ...(isSpecial && special ? { specialComponents: specialComponentSnapshot(special.components) } : {}) } : null,
@@ -2130,6 +2131,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   res.status(201).json(GetOrderResponse.parse(orderObj));
 });
 
+
+async function printAfterOrderCompletion(tenantId: number, order: typeof ordersTable.$inferSelect) {
+  if (order.status !== "completed" || order.paymentStatus !== "paid") return;
+  await import("../lib/autoReceiptPrint").then(({ printCompletedOrderReceipt }) =>
+    printCompletedOrderReceipt(tenantId, order.id),
+  ).catch(() => logger.warn({ tenantId, orderId: order.id }, "Completed order receipt enqueue failed"));
+}
 
 function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
   publishOrderEvent({
@@ -2560,9 +2568,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     return;
   }
   emitUpdated(outcome.updated, "cash_closeout_completed");
-  await import("../lib/autoReceiptPrint").then(({ printCashCloseoutReceipt }) =>
-    printCashCloseoutReceipt(tenantId, outcome.updated.id),
-  ).catch(() => logger.warn({ tenantId, orderId }, "Cash receipt enqueue failed"));
+  await printAfterOrderCompletion(tenantId, outcome.updated);
   await queueUberDeliveryForPaidOrder(tenantId, outcome.updated.id).catch(() => {
     logger.warn({ tenantId, orderId: outcome.updated.id, failure: "handoff_unavailable" }, "Uber Direct handoff will require recovery");
   });
@@ -3115,6 +3121,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     ipAddress: req.ip,
   });
   emitUpdated(updated, status);
+  await printAfterOrderCompletion(tenantId, updated);
   res.json(await buildOrderResponse(updated));
 }
 
@@ -3435,6 +3442,7 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
     emitUpdated(updated, "fulfillment_changed");
   }
 
+  await printAfterOrderCompletion(tenantId, updated);
   res.json({ id: updated.id, fulfillmentStatus: updated.fulfillmentStatus, status: updated.status });
 }
 
@@ -3514,6 +3522,7 @@ router.patch("/orders/:id/fulfillment-groups/:groupId/status", requireRole("glob
     });
     if (!result) { res.status(404).json({ error: "Fulfillment group not found" }); return; }
     emitUpdated(result.updatedOrder, "fulfillment_group_changed");
+    await printAfterOrderCompletion(tenantId, result.updatedOrder);
     res.json({ id: groupId, orderId, status: result.groupStatus, parentStatus: result.parentStatus, idempotent: result.idempotent });
   } catch (error) {
     if (error instanceof IllegalOrderTransitionError) { res.status(409).json({ error: error.message, from: error.from, to: error.to }); return; }

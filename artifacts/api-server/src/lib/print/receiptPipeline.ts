@@ -109,6 +109,23 @@ export async function loadLegacyReceiptPresentation(tenantId: number): Promise<L
   };
 }
 
+export function receiptPricingDetails(snapshot: unknown): string[] {
+  if (!snapshot || typeof snapshot !== "object" || !("receiptPricing" in snapshot)) return [];
+  const pricing = snapshot.receiptPricing;
+  if (!pricing || typeof pricing !== "object") return [];
+  const amount = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+  const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  const details: string[] = [];
+  const sale = amount("saleUnitCents" in pricing ? pricing.saleUnitCents : null);
+  const discount = amount("employeeDiscountCents" in pricing ? pricing.employeeDiscountCents : null);
+  if (sale !== null) details.push(`Sale price: ${dollars(sale)} ea`);
+  if (discount !== null) {
+    const label = "employeeDiscountPercent" in pricing && pricing.employeeDiscountPercent === 20 ? "Employee discount (20%)" : "Employee discount";
+    details.push(`${label}: -${dollars(discount)}`);
+  }
+  return details;
+}
+
 /**
  * Builds ReceiptData for one of the tenant's orders from its stored snapshot:
  * order-line names and prices, and the order's financial/tax snapshot.
@@ -169,6 +186,7 @@ export async function loadReceiptData(
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       totalPrice: item.totalPrice,
+      pricingDetails: receiptPricingDetails(item.variantSnapshot),
       note: (() => {
         const components = displaySpecialComponents(item.variantSnapshot);
         return components.length ? specialIncludesNote(components) : null;
@@ -204,7 +222,7 @@ function legacyReceiptOrder(data: ReceiptData, presentation: LegacyReceiptPresen
       quantity: item.quantity,
       unitPrice: item.unitPriceCents / 100,
       totalPrice: item.lineTotalCents / 100,
-      notes: item.note ?? undefined,
+      notes: [...item.pricingDetails ?? [], item.note].filter(Boolean).join(" · ") || undefined,
     })),
     subtotal: data.totals.subtotalCents / 100,
     discount: data.totals.discountCents / 100,
@@ -246,7 +264,7 @@ export function renderReceipt(
   if (columns) presentation = { ...presentation, paperWidth: columns <= 32 ? "58mm" : "80mm" };
   if (template) {
     try {
-      const lines = renderReceiptFromTemplate(template.layout, data, columns ?? charWidth(template.paperWidth));
+      const lines = renderReceiptFromTemplate(template.layout, data, columns ?? charWidth(template.paperWidth), output === "escpos");
       return {
         text: output === "escpos" ? encodeStoredReceiptText(encodeReceiptEscPos(lines, true)) : encodeReceiptPlain(lines),
         plainText: encodeReceiptPlain(lines),

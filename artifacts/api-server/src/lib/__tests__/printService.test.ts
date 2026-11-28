@@ -505,14 +505,14 @@ describe("print job status integrity", () => {
   });
 });
 
-it("prints and pulses a cash receipt only after a paid cash closeout", async () => {
+it("prints only completed paid receipts and only opens a configured cash drawer", async () => {
   const { automaticOrderReceiptPolicy } = await import("../printService");
-  const cash = { selectedPaymentMethod: "cash", paymentMethod: "cash", paymentStatus: "unpaid" };
-  expect(automaticOrderReceiptPolicy(cash)).toEqual({ printReceipt: false, openCashDrawer: false });
-  expect(automaticOrderReceiptPolicy({ ...cash, cashCloseout: true })).toEqual({ printReceipt: false, openCashDrawer: false });
-  expect(automaticOrderReceiptPolicy({ ...cash, paymentStatus: "paid" })).toEqual({ printReceipt: false, openCashDrawer: false });
-  expect(automaticOrderReceiptPolicy({ ...cash, cashCloseout: true, paymentStatus: "paid", paymentMethod: "customer_credit+cash" }))
-    .toEqual({ printReceipt: true, openCashDrawer: true });
-  expect(automaticOrderReceiptPolicy({ paymentMethod: "paypal", paymentStatus: "paid" }))
-    .toEqual({ printReceipt: true, openCashDrawer: false });
+  const pending = { status: "confirmed", paymentStatus: "paid", selectedPaymentMethod: "cash", cashDrawerConfigured: true };
+  const closed = { ...pending, status: "completed", closeoutReceipt: true };
+  expect(automaticOrderReceiptPolicy(pending)).toEqual({ printReceipt: false, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy({ ...pending, closeoutReceipt: true })).toEqual({ printReceipt: false, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy({ ...closed, paymentStatus: "unpaid" })).toEqual({ printReceipt: false, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy(closed)).toEqual({ printReceipt: true, openCashDrawer: true });
+  expect(automaticOrderReceiptPolicy({ ...closed, cashDrawerConfigured: false })).toEqual({ printReceipt: true, openCashDrawer: false });
+  expect(automaticOrderReceiptPolicy({ ...closed, selectedPaymentMethod: "paypal" })).toEqual({ printReceipt: true, openCashDrawer: false });
 });

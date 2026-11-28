@@ -4,7 +4,7 @@ import { isCatalogItemForSale, isCatalogItemLifecycleEligible } from "./catalogE
 import { and, eq, gte, isNull, lte, or } from "drizzle-orm";
 import { logger } from "./logger";
 import { dollarsToCents } from "./tenderTax";
-import { resolveEmployeeUnitPrice } from "./employeePricing";
+import { EMPLOYEE_PERCENT_OFF, resolveEmployeeUnitPrice } from "./employeePricing";
 
 // ─── Strict input contract ─────────────────────────────────────────────────────
 // Lines coming in over the wire MUST contain only catalogItemId + quantity.
@@ -49,6 +49,7 @@ export interface NormalizedCartLine {
   receipt_lucifer_name: string;
   merchant_image_url: string | null;
   unit_price: number;
+  receiptPricing?: { saleUnitCents: number | null; employeeDiscountCents: number; employeeDiscountPercent: number | null };
   quantity: number;
   line_subtotal: number;
   is_taxable: boolean;
@@ -360,6 +361,14 @@ export async function normalizeCheckoutCart(
       receipt_lucifer_name,
       merchant_image_url,
       unit_price,
+      receiptPricing: {
+        saleUnitCents: dollarsToCents(retailUnitPrice) < dollarsToCents(String(ci.regularPrice ?? "").trim() || ci.price)
+          ? dollarsToCents(retailUnitPrice) : null,
+        employeeDiscountCents: employeePricing?.isCurrentEmployee === true
+          ? Math.max(0, dollarsToCents(retailUnitPrice) - dollarsToCents(unit_price)) * line.quantity : 0,
+        employeeDiscountPercent: employeePricing?.isCurrentEmployee === true && !String(ci.homiePrice ?? "").trim()
+          ? EMPLOYEE_PERCENT_OFF : null,
+      },
       quantity: line.quantity,
       line_subtotal,
       is_taxable: ci.isTaxable,
