@@ -377,6 +377,22 @@ async function failClosedScopeMismatch(job: PrintJob, printer: PrintPrinter): Pr
 
 // ── Full Dispatch with Failover ────────────────────────────────────────────────
 
+// Keep future automatic Expo tickets out of the dispatch claim and the worker batch.
+function automaticExpoIsDue() {
+  return sql`(
+    ${printJobsTable.jobType} <> 'expo_ticket'
+    OR ${printJobsTable.idempotencyKey} <> concat('expo_ticket:', ${printJobsTable.tenantId}, ':', ${printJobsTable.orderId})
+    OR EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.id = ${printJobsTable.orderId} AND o.tenant_id = ${printJobsTable.tenantId}
+        AND CASE WHEN o.delivery_method = 'pickup' AND o.pickup_schedule_snapshot->>'mode' = 'scheduled'
+          THEN o.pickup_at <= now() + interval '30 minutes'
+            AND o.status NOT IN ('cancelled', 'refunded', 'archived', 'voided', 'completed')
+          ELSE true END
+    )
+  )`;
+}
+
 /**
  * Atomically moves a queued/retrying job to "sending". A request's inline
  * dispatch and the retry worker can both hold the same new job; only the one
@@ -389,10 +405,11 @@ async function claimJob(job: PrintJob): Promise<boolean> {
       eq(printJobsTable.tenantId, job.tenantId),
       eq(printJobsTable.id, job.id),
       inArray(printJobsTable.status, ["queued", "retrying"]),
+      automaticExpoIsDue(),
     ))
     .returning({ id: printJobsTable.id });
   if (claimed.length > 0) return true;
-  pLog.info({ event: "dispatch_skipped_already_claimed", jobId: job.id }, "job already claimed by another dispatcher");
+  pLog.info({ event: "dispatch_skipped_not_claimable", jobId: job.id }, "job is deferred or has already been handled");
   return false;
 }
 
@@ -954,7 +971,7 @@ export function startPrintWorker() {
     try {
       await failStaleSendingJobs();
       const retrying = await db.select().from(printJobsTable)
-        .where(and(inArray(printJobsTable.status, ["queued", "retrying"]), sql`${printJobsTable.jobType} <> 'thank_you_sticker'`))
+        .where(and(inArray(printJobsTable.status, ["queued", "retrying"]), sql`${printJobsTable.jobType} <> 'thank_you_sticker'`, automaticExpoIsDue()))
         .limit(10);
 
       for (const job of retrying) {

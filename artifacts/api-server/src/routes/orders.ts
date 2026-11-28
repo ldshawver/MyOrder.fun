@@ -1651,7 +1651,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         routingMessage: routing.routingMessage,
         routedAt: now,
         promisedMinutes: routing.promisedMinutes,
-        estimatedReadyAt: routing.estimatedReadyAt,
+        estimatedReadyAt: requestedDeliveryMethod === "pickup" && pickupSelection?.mode === "scheduled" ? pickupSelection.pickupAt : routing.estimatedReadyAt,
         fulfillmentStatus: "submitted",
         finalConfirmationAt,
         legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
@@ -2014,7 +2014,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
       // The event and channel jobs commit with the order. Provider work is
       // performed only by the independent worker after this transaction.
-      await enqueueOrderCreated(tx, houseTenantId, createdOrder.id, createdOrder.createdAt);
+      await enqueueOrderCreated(tx, houseTenantId, createdOrder.id, createdOrder.createdAt,
+        requestedDeliveryMethod === "pickup" && pickupSelection?.mode === "scheduled" ? pickupSelection.pickupAt : undefined);
 
       return currentOrder;
     });
@@ -2148,7 +2149,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     total: finalTotal,
     itemCount: normalizedLines.reduce((s, l) => s + l.quantity, 0),
     routedAt: now.toISOString(),
-    estimatedReadyAt: routing.estimatedReadyAt.toISOString(),
+    estimatedReadyAt: order.estimatedReadyAt?.toISOString() ?? routing.estimatedReadyAt.toISOString(),
     promisedMinutes: routing.promisedMinutes,
   });
 

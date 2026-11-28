@@ -159,6 +159,31 @@ const config = { light_enabled: true, sms_enabled: true, alert_duration_seconds:
     expect(attempts).toBe(2);
   });
 
+  it("holds the light until the scheduled pickup preparation window", async () => {
+    await pool.query("DELETE FROM order_notification_jobs WHERE tenant_id=$1", [tenantA]);
+    await pool.query("DELETE FROM order_light_alerts WHERE tenant_id=$1", [tenantA]);
+    const order = await createOrder();
+    const pickupAt = new Date(Date.now() + 3_600_000);
+    await pool.query(`UPDATE orders SET delivery_method='pickup', pickup_at=$2,
+      pickup_schedule_snapshot='{"mode":"scheduled"}' WHERE id=$1`, [order.id, pickupAt]);
+    await db.transaction(async tx => enqueueOrderCreated(tx, tenantA, order.id, order.created_at, pickupAt));
+
+    const light = vi.fn(async (_on: boolean) => {});
+    const providers: NotificationProviders = { light, sms: vi.fn(async () => "SM_TEST") };
+    expect(await processOneNotificationJob(pool, providers, tenantA)).toBe(true); // SMS channel
+    expect(await processOneNotificationJob(pool, providers, tenantA)).toBe(false);
+    expect(light).not.toHaveBeenCalled();
+    const due = await pool.query<{ next_attempt_at: Date }>(
+      "SELECT next_attempt_at FROM order_notification_jobs WHERE order_id=$1 AND notification_type='tuya_on'", [order.id]);
+    expect(due.rows[0]!.next_attempt_at.getTime()).toBe(pickupAt.getTime() - 1_800_000);
+
+    await pool.query("UPDATE order_notification_jobs SET next_attempt_at=now() WHERE order_id=$1 AND notification_type='tuya_on'", [order.id]);
+    expect(await processOneNotificationJob(pool, providers, tenantA)).toBe(false);
+    await pool.query("UPDATE orders SET pickup_at=now()+interval '29 minutes 55 seconds' WHERE id=$1", [order.id]);
+    expect(await processOneNotificationJob(pool, providers, tenantA)).toBe(true);
+    expect(light).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
   it("serializes simultaneous orders and keeps the latest durable OFF deadline", async () => {
     const orders = await Promise.all(Array.from({ length: 6 }, () => createOrder()));
     const times = orders.map((_, index) => new Date(Date.now() + index * 1_000));
