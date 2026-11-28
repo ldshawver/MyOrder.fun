@@ -1,6 +1,6 @@
 /** Best-effort printing for an order whose completion committed. */
 import { and, eq } from "drizzle-orm";
-import { db, ordersTable, orderItemsTable } from "@workspace/db";
+import { db, ordersTable, orderItemsTable, cashLedgerEntriesTable } from "@workspace/db";
 import { enqueueOrderPrintJobs } from "./printService";
 import { logger as _logger } from "./logger";
 
@@ -21,6 +21,20 @@ export async function printCompletedOrderReceipt(tenantId: number, orderId: numb
       .from(orderItemsTable)
       .where(eq(orderItemsTable.orderId, orderId));
 
+    // Cash accountability can belong to General Queue or to the closing shift.
+    // Use the committed register even when the order has no assigned shift.
+    const [cashRegister] = (order.selectedPaymentMethod ?? order.paymentMethod) === "cash"
+      ? await db.select({
+          box: cashLedgerEntriesTable.boxAssignmentId,
+          locationId: cashLedgerEntriesTable.locationId,
+          shiftId: cashLedgerEntriesTable.shiftId,
+        }).from(cashLedgerEntriesTable).where(and(
+          eq(cashLedgerEntriesTable.tenantId, tenantId),
+          eq(cashLedgerEntriesTable.orderId, orderId),
+          eq(cashLedgerEntriesTable.entryType, "cash_sale_closeout"),
+        )).limit(1)
+      : [];
+
     // The canonical tenant-scoped router is the only permitted automatic path.
     // Never invoke local/system-default CUPS from order completion.
     await enqueueOrderPrintJobs({
@@ -39,6 +53,7 @@ export async function printCompletedOrderReceipt(tenantId: number, orderId: numb
       fulfillmentType: order.deliveryMethod === "pickup" ? "pickup" : "delivery",
       shippingAddress: order.shippingAddress,
       assignedShiftId: order.assignedShiftId,
+      cashRegister,
       items: items.map((item) => ({
         quantity: item.quantity,
         catalogItemName: item.catalogItemName,

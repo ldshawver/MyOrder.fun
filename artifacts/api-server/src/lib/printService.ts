@@ -658,6 +658,15 @@ async function renderAutomaticReceipt(
   return { text: renderCustomerReceipt({ ...legacyOrder, paperWidth }), plainText: renderCustomerReceiptBody({ ...legacyOrder, paperWidth }), templateId: null, templateVersion: null };
 }
 
+export function cashRegisterUsesDrawer(locations: string | null | undefined, box: string): boolean {
+  try {
+    const configured: unknown = JSON.parse(locations ?? "[]");
+    return Array.isArray(configured) && configured.some(location => location?.id === box && location?.cashStorage === "drawer");
+  } catch {
+    return false;
+  }
+}
+
 export function automaticOrderReceiptPolicy(order: {
   status?: string; paymentStatus: string; paymentMethod?: string | null;
   selectedPaymentMethod?: string | null; closeoutReceipt?: boolean; cashDrawerConfigured?: boolean;
@@ -694,6 +703,7 @@ export async function enqueueOrderPrintJobs(order: {
   tenantId?: number | null;
   shippingAddress?: string | null;
   assignedShiftId?: number | null;
+  cashRegister?: { box: string; locationId: number | null; shiftId: number | null };
 }) {
   if (!order.tenantId) {
     pLog.error({ event: "printing_blocked_missing_tenant", orderId: order.id }, "printing failed closed: order has no tenant ownership");
@@ -719,7 +729,8 @@ export async function enqueueOrderPrintJobs(order: {
   // Resolve operator
   const operator = await selectActiveOperator(tenantId);
   const profile = operator?.profile ?? null;
-  const [orderAssignment] = order.assignedShiftId ? await db.select().from(shiftPrintAssignmentsTable).where(and(eq(shiftPrintAssignmentsTable.tenantId, tenantId), eq(shiftPrintAssignmentsTable.shiftId, order.assignedShiftId))).limit(1) : [];
+  const closingShiftId = order.cashRegister ? order.cashRegister.shiftId : order.assignedShiftId ?? null;
+  const [orderAssignment] = closingShiftId ? await db.select().from(shiftPrintAssignmentsTable).where(and(eq(shiftPrintAssignmentsTable.tenantId, tenantId), eq(shiftPrintAssignmentsTable.shiftId, closingShiftId))).limit(1) : [];
   const operatorName = operator
     ? (`${operator.firstName ?? ""} ${operator.lastName ?? ""}`).trim() || operator.email || undefined
     : undefined;
@@ -769,7 +780,7 @@ export async function enqueueOrderPrintJobs(order: {
   // ── Customer receipt and Expo ticket ────────────────────────────────────────
   // Each is routed by document type to exactly one registered printer. The
   // legacy resolvers keep today's destinations when no route is configured.
-  const routeContext = { tenantId, locationId: orderAssignment?.locationId ?? null, shiftId: order.assignedShiftId ?? null };
+  const routeContext = { tenantId, locationId: order.cashRegister?.locationId ?? orderAssignment?.locationId ?? null, shiftId: closingShiftId };
   const { queueDocumentPrint } = await import("./print/documentJobs");
   const { shiftLocationId } = await import("./print/shiftDocuments");
   const documentBase = {
@@ -783,18 +794,17 @@ export async function enqueueOrderPrintJobs(order: {
   const pendingDispatches: Array<() => Promise<void>> = [];
 
   const receiptPolicy = automaticOrderReceiptPolicy(order);
-  if (receiptPolicy.printReceipt && order.assignedShiftId && (order.selectedPaymentMethod ?? order.paymentMethod) === "cash") {
-    const [assignment] = await db.select({ box: labTechShiftsTable.boxAssignmentId, locations: adminSettingsTable.shiftLocationOptions })
-      .from(labTechShiftsTable)
-      .leftJoin(adminSettingsTable, eq(adminSettingsTable.tenantId, labTechShiftsTable.tenantId))
-      .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, order.assignedShiftId))).limit(1);
-    if (assignment?.box && assignment.locations) {
-      try {
-        const locations: unknown = JSON.parse(assignment.locations);
-        receiptPolicy.openCashDrawer = Array.isArray(locations) && locations.some(
-          location => location?.id === assignment.box && location?.cashStorage === "drawer",
-        );
-      } catch { /* Invalid configuration leaves the drawer closed. */ }
+  if (receiptPolicy.printReceipt && (order.selectedPaymentMethod ?? order.paymentMethod) === "cash") {
+    let box = order.cashRegister?.box;
+    if (!box && closingShiftId) {
+      const [shift] = await db.select({ box: labTechShiftsTable.boxAssignmentId }).from(labTechShiftsTable)
+        .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, closingShiftId))).limit(1);
+      box = shift?.box ?? undefined;
+    }
+    if (box) {
+      const [settings] = await db.select({ locations: adminSettingsTable.shiftLocationOptions }).from(adminSettingsTable)
+        .where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
+      receiptPolicy.openCashDrawer = cashRegisterUsesDrawer(settings?.locations, box);
     }
   }
   if ((controls.autoPrintReceipts || controls.autoPrintOrders) && receiptPolicy.printReceipt) {

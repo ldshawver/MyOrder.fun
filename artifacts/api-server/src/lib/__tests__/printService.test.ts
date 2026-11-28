@@ -516,3 +516,15 @@ it("prints only completed paid receipts and only opens a configured cash drawer"
   expect(automaticOrderReceiptPolicy({ ...closed, cashDrawerConfigured: false })).toEqual({ printReceipt: true, openCashDrawer: false });
   expect(automaticOrderReceiptPolicy({ ...closed, selectedPaymentMethod: "paypal" })).toEqual({ printReceipt: true, openCashDrawer: false });
 });
+
+it("uses the register's drawer setting and leaves cash bags and unknown registers closed", async () => {
+  const { cashRegisterUsesDrawer } = await import("../printService");
+  const registers = JSON.stringify([
+    { id: "sales-box-1", cashStorage: "drawer" },
+    { id: "sales-box-2", cashStorage: "bag" },
+  ]);
+  expect(cashRegisterUsesDrawer(registers, "sales-box-1")).toBe(true);
+  expect(cashRegisterUsesDrawer(registers, "sales-box-2")).toBe(false);
+  expect(cashRegisterUsesDrawer(registers, "general-queue-location-1")).toBe(false);
+  expect(cashRegisterUsesDrawer("{", "sales-box-1")).toBe(false);
+});
