@@ -91,7 +91,7 @@ jobs:
               grep -RFl -- "$PRODUCTION_CLERK_PUBLISHABLE_KEY" /usr/share/nginx/html >/dev/null
               ! grep -Rqs "pk_test_" /usr/share/nginx/html
               grep -Rqs "https://myorder.fun/api/__clerk" /usr/share/nginx/html
-              grep -RqsF "V2.2.5" /usr/share/nginx/html
+              grep -RqsF "V2.2.6" /usr/share/nginx/html
             '
           echo "Verified: production publishable key is embedded, test keys are absent, and the expected Clerk proxy is embedded."
 
