@@ -1725,3 +1725,19 @@ test("post-migration resume accepts only exact approved runtime identities", () 
   );
   assert.match(controller, /exact 64-row migration lineage is applied/);
 });
+
+test("recognizes only the verified oneshot SSH firewall service as a non-writer", () => {
+  const unit = "myorder-ssh-guard.service";
+  const properties = {
+    Id: unit, ActiveState: "active", SubState: "exited", Type: "oneshot",
+    FragmentPath: "/etc/systemd/system/myorder-ssh-guard.service",
+    ExecStart: "{ path=/usr/sbin/nft ; argv[]=/usr/sbin/nft -f /etc/myorder-ssh-guard.nft ; ignore_errors=no ; pid=100 ; code=exited ; status=0 }",
+  };
+  assert.equal(assertKnownNonWriterService(unit, properties), true);
+  for (const drift of [
+    { ExecStart: properties.ExecStart + " { path=/usr/bin/docker ; argv[]=/usr/bin/docker exec db psql ; }" },
+    { ExecStartPost: "{ path=/usr/bin/docker ; }" },
+    { DropInPaths: "/etc/systemd/system/myorder-ssh-guard.service.d/override.conf" },
+    { Type: "simple" },
+  ]) assert.throws(() => assertKnownNonWriterService(unit, { ...properties, ...drift }), /mismatch/);
+});

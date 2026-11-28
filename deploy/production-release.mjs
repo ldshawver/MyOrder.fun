@@ -417,6 +417,23 @@ export function assertReleaseArchiveEntries(entries) {
 }
 
 export function assertKnownNonWriterService(service, properties) {
+  if (service === "myorder-ssh-guard.service") {
+    const expected = {
+      Id: service,
+      ActiveState: "active",
+      SubState: "exited",
+      Type: "oneshot",
+      FragmentPath: "/etc/systemd/system/myorder-ssh-guard.service",
+    };
+    for (const key of ["User", "Group", "WorkingDirectory", "DropInPaths", "EnvironmentFiles", "ExecStartPre", "ExecStartPost", "ExecStop", "ExecStopPost", "ExecCondition"]) expected[key] = "";
+    for (const [key, value] of Object.entries(expected)) {
+      if ((properties?.[key] ?? "") !== value) throw new Error(`Known non-writer service identity mismatch: ${key}`);
+    }
+    const command = /^\{ path=\/usr\/sbin\/nft ; argv\[\]=\/usr\/sbin\/nft -f \/etc\/myorder-ssh-guard\.nft ; ignore_errors=no ; [^{}]* \}$/;
+    if (!command.test(properties?.ExecStart ?? "")) throw new Error("Known non-writer service command mismatch");
+    return true;
+  }
+
   if (service !== "myorder-preview.service")
     throw new Error("Service is not an approved non-writer");
   const expected = {
@@ -1146,15 +1163,15 @@ function verifyWriterSet(compose) {
     .trim()
     .split("\n")
     .filter(Boolean);
-  const previewUnit = "myorder-preview.service";
-  const previewIndex = externalWriterCandidates.indexOf(previewUnit);
-  if (previewIndex !== -1) {
+  for (const unit of ["myorder-preview.service", "myorder-ssh-guard.service"]) {
+    const candidateIndex = externalWriterCandidates.indexOf(unit);
+    if (candidateIndex === -1) continue;
     const properties = Object.fromEntries(
       run("systemctl", [
         "show",
-        previewUnit,
+        unit,
         "--no-pager",
-        "--property=Id,ActiveState,SubState,User,Group,ExecStart,WorkingDirectory,FragmentPath,EnvironmentFiles",
+        "--property=Id,ActiveState,SubState,Type,User,Group,ExecStart,ExecStartPre,ExecStartPost,ExecStop,ExecStopPost,ExecCondition,WorkingDirectory,FragmentPath,DropInPaths,EnvironmentFiles",
       ])
         .trim()
         .split("\n")
@@ -1164,8 +1181,8 @@ function verifyWriterSet(compose) {
           return [line.slice(0, separator), line.slice(separator + 1)];
         }),
     );
-    assertKnownNonWriterService(previewUnit, properties);
-    externalWriterCandidates.splice(previewIndex, 1);
+    assertKnownNonWriterService(unit, properties);
+    externalWriterCandidates.splice(candidateIndex, 1);
   }
   if (externalWriterCandidates.length)
     throw new Error(
