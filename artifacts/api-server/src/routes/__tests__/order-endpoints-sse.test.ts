@@ -383,7 +383,7 @@ vi.mock("drizzle-orm", () => ({
   inArray: vi.fn((col, vals) => ({ col, vals })),
   asc: vi.fn((c) => c),
   desc: vi.fn((c) => c),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn((parts: TemplateStringsArray) => ({ text: parts.join("?") })), { raw: vi.fn() }),
 }));
 
 import ordersRouter from "../orders";
@@ -423,18 +423,18 @@ const checkoutConfirmation = {
   legalDisclaimerText: "All sales are final.",
 };
 
-async function convertedCheckoutPayload(app = buildApp(), couponCode?: string) {
+async function convertedCheckoutPayload(app = buildApp(), couponCode?: string, items = convertedItems) {
   const converted = await supertest(app)
     .post("/api/cart/convert")
-    .send({ items: convertedItems, confirmation: checkoutConfirmation });
+    .send({ items, confirmation: checkoutConfirmation });
   expect(converted.status).toBe(200);
   const quote = await supertest(app)
     .post("/api/checkout/quote")
-    .send({ items: convertedItems, paymentMethod: "cash", couponCode });
+    .send({ items, paymentMethod: "cash", couponCode });
   expect(quote.status, quote.text).toBe(200);
   const { conversionToken, ...checkoutConversionSnapshot } = converted.body as Record<string, unknown> & { conversionToken: string };
   return {
-    items: convertedItems,
+    items,
     checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash", checkoutTaxQuoteToken: quote.body.checkoutTaxQuoteToken },
     checkoutConversionToken: conversionToken,
     checkoutConversionSnapshot,
@@ -505,6 +505,33 @@ beforeEach(() => {
   _resetBus();
 });
 
+describe("cart quantity availability", () => {
+  it("validates the desired quantity for the selected option through the inventory gate", async () => {
+    mockActor = dbState.users[0]!;
+    const api = supertest(buildApp());
+    vi.mocked(db.execute).mockImplementation(async (query) => {
+      const text = (query as { text?: string }).text ?? "";
+      const rows = text.includes('SELECT co.catalog_item_id AS "catalogItemId"') ? [{ catalogItemId: 1 }]
+        : text.includes('SELECT ii.catalog_item_id AS "inventoryCatalogItemId"') ? [{ inventoryCatalogItemId: 1, consumptionQuantity: "1" }]
+        : [];
+      return { rows } as never;
+    });
+    try {
+      const available = await api.post("/api/cart/availability").send({ optionId: 17, quantity: 5 });
+      expect(available.status, available.text).toBe(200);
+      expect(available.body.available).toBe(true);
+
+      const unavailable = await api.post("/api/cart/availability").send({ optionId: 17, quantity: 11 });
+      expect(unavailable.status, unavailable.text).toBe(409);
+      expect(unavailable.body.error).toContain("enough local inventory");
+    } finally {
+      vi.mocked(db.execute).mockResolvedValue(undefined as never);
+    }
+    const malformed = await api.post("/api/cart/availability").send({ optionId: 17, catalogItemId: 1, quantity: 5 });
+    expect(malformed.status, malformed.text).toBe(400);
+  });
+});
+
 describe("checkout conversion enforcement on order/provider API routes", () => {
   it("quotes and persists the Pharmacy coupon from server-owned catalog and quote data", async () => {
     mockActor = dbState.users[0]!;
@@ -513,13 +540,13 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
       .send({ items: convertedItems, paymentMethod: "cash", couponCode: "PHARMACY1" });
     expect(unavailable.status).toBe(422);
     dbState.catalog[0]!.category = "Pharmacy";
-    const payload = await convertedCheckoutPayload(app, " pharmacy1 ");
-    expect(dbState.checkoutQuotes[0]?.quoteSnapshot).toMatchObject({ coupon: { code: "PHARMACY1", amountCents: 100 } });
+    const payload = await convertedCheckoutPayload(app, " pharmacy1 ", [{ catalogItemId: 1, quantity: 5 }]);
+    expect(dbState.checkoutQuotes[0]?.quoteSnapshot).toMatchObject({ coupon: { code: "PHARMACY1", amountCents: 500 } });
     const response = await supertest(app).post("/api/orders").send(payload);
     expect(response.status, response.text).toBe(201);
     expect(dbState.orders[0]).toMatchObject({
-      grossSubtotal: "10.00", discountTotal: "1.00", total: "9.00",
-      taxSnapshot: { coupon: { code: "PHARMACY1", amountCents: 100 }, lineTaxAllocations: [{ discountCents: 100 }] },
+      grossSubtotal: "50.00", discountTotal: "5.00", total: "45.00",
+      taxSnapshot: { coupon: { code: "PHARMACY1", amountCents: 500 }, lineTaxAllocations: [{ discountCents: 500 }] },
     });
   });
 
@@ -536,7 +563,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
     mockActor = dbState.users[0]!;
     const app = buildApp();
     dbState.catalog[0]!.category = "Pharmacy";
-    const payload = await convertedCheckoutPayload(app, "PHARMACY1");
+    const payload = await convertedCheckoutPayload(app, "PHARMACY1", [{ catalogItemId: 1, quantity: 5 }]);
     dbState.catalog[0]!.category = "Other";
     const response = await supertest(app).post("/api/orders").send(payload);
     expect(response.status, response.text).toBe(409);

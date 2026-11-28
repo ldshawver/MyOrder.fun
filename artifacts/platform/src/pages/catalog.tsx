@@ -1022,7 +1022,7 @@ export default function Catalog() {
     ?? "Package";
   const couponAvailable = couponOffer?.coupon === "PHARMACY1";
   const showCouponOffer = couponAvailable && category === packageCategory
-    && "$1 off pharmacy coupon pharmacy1".includes(search.trim().toLowerCase());
+    && "$1 off each pharmacy coupon pharmacy1".includes(search.trim().toLowerCase());
   const categories = [...new Set(["all", ...catalogCategories, ...(couponAvailable ? [packageCategory] : [])])]
     .filter(cat => cat === "all" || !isLC || LC_MAIN_CATEGORIES.includes(cat) || (couponAvailable && cat === packageCategory))
     .sort((a, b) => {
@@ -1230,14 +1230,14 @@ export default function Catalog() {
               <div className="holiday-product-image grid aspect-square place-items-center bg-primary/10 text-primary" aria-hidden="true">
                 <div className="grid justify-items-center gap-2">
                   <TicketPercent className="size-10" />
-                  <span className="text-3xl font-bold">$1 OFF</span>
+                  <span className="text-center text-xl font-bold sm:text-2xl">$1 OFF EACH</span>
                 </div>
               </div>
               <div className="flex flex-1 flex-col gap-3 p-4">
                 <div className="flex-1">
                   <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{packageCategory}</div>
-                  <h2 className="text-sm font-bold leading-snug">$1 off Pharmacy</h2>
-                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Spend $5 or more on Pharmacy items before tax, delivery, and tips.</p>
+                  <h2 className="text-sm font-bold leading-snug">$1 off each Pharmacy item</h2>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Buy 5 or more Pharmacy items to use this coupon.</p>
                 </div>
                 <Button type="button" size="sm" variant="outline" className="h-auto min-h-9 whitespace-normal"
                   disabled={isCustomerPreview || coupon === "PHARMACY1"} onClick={() => setCoupon("PHARMACY1")}>

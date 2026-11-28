@@ -392,7 +392,8 @@ function queryRows<T>(value: unknown): T[] {
 // before the existing conversion and order schemas see a catalogue identity.
 router.use(async (req, res, next) => {
   if (req.method !== "POST" || !CUSTOMER_CHECKOUT_POST_PATHS.has(req.path)) { next(); return; }
-  const incoming = (req.body as { items?: unknown } | undefined)?.items;
+  const singleLine = req.path === "/cart/availability";
+  const incoming = singleLine ? [req.body] : (req.body as { items?: unknown } | undefined)?.items;
   if (!Array.isArray(incoming) || !incoming.some(line => line && typeof line === "object" && "optionId" in line)) { next(); return; }
   const count = z.number().int().positive();
   const parsed = z.array(z.union([
@@ -421,7 +422,8 @@ router.use(async (req, res, next) => {
     selectedOptionByCatalog.set(option.catalogItemId, line.optionId);
     mapped.push({ catalogItemId: option.catalogItemId, quantity: line.quantity });
   }
-  (req.body as { items: unknown }).items = mapped;
+  if (singleLine) req.body = mapped[0];
+  else (req.body as { items: unknown }).items = mapped;
   (req as OptionCheckoutRequest).selectedOptionByCatalog = selectedOptionByCatalog;
   next();
 });
